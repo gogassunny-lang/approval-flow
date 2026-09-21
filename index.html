@@ -141,7 +141,27 @@ button,input,select,textarea{font:inherit;color:inherit}
   .tabbar button.raise svg{width:40px;height:40px;padding:8px;margin-top:-14px}
   .top h1{font-size:18px}
   .empty{padding:34px 16px} .empty h3{font-size:16px}
+  /* Reports: six filters become a 2-column grid; the summary line drops under the buttons */
+  .filters{grid-template-columns:1fr 1fr!important;gap:10px!important}
+  .actions .summary{margin-left:0!important;flex:0 0 100%;text-align:left;margin-top:6px}
+  /* Requests I can see: search on its own line, selects side by side */
+  .filters-row>div{flex:1 1 100%!important} .filters-row select{flex:1 1 calc(50% - 6px);width:auto!important}
+  /* People / Team cards: the action buttons sit on their own line */
+  table.cards td.acts{text-align:left!important;white-space:normal!important;margin-top:8px;display:flex;gap:8px}
+  table.cards td.acts .hint{align-self:center}
+  table.cards.people td.meta{display:inline}
+  /* chain builders: name takes the row, buttons wrap underneath aligned right */
+  .picked .r{flex-wrap:wrap} .picked .who{flex:1 1 55%} .picked .acts{flex:0 0 100%;display:flex;gap:6px;justify-content:flex-end;padding-left:62px;margin-top:2px}
+  .picked .acts .btn{padding:6px 11px;min-height:36px}
+  .hdr-actions{margin-left:0!important;flex:0 0 100%;margin-top:10px} .hdr-actions .btn{flex:1}
+  /* wide data tables scroll sideways inside their card rather than breaking the page */
+  .scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .scroll-x:before{content:"Swipe sideways to see every column";display:block;padding:8px 14px 0;color:var(--steel);font-size:12px}
+  .kv dt{font-size:12.5px}
+  .finder .results{max-height:60vh}
 }
+.scroll-x{overflow-x:auto}
+.filters{grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
 .tabbar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);z-index:60;
   padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));justify-content:space-around}
 .tabbar button{flex:1;background:none;border:0;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:var(--steel);padding:4px 0;position:relative;font-weight:500}
