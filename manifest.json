@@ -1,10 +1,28 @@
 {
-  "name": "Approval Flow",
-  "short_name": "Approvals",
-  "description": "Indent and work order approvals",
+  "name": "SETU \u2014 Approvals",
+  "short_name": "SETU",
+  "description": "Setu: the bridge between desks. Indent and work order approvals.",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#F4F2EE",
-  "theme_color": "#0A66C2",
-  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "theme_color": "#0159BB",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
 }

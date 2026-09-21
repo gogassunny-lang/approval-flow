@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="theme-color" content="#0A66C2" />
-<title>Approval Flow</title>
+<meta name="theme-color" content="#0159BB" />
+<title>SETU — indent &amp; work order approvals</title>
 <link rel="manifest" href="manifest.json" />
-<link rel="icon" href="icon.svg" type="image/svg+xml" />
-<link rel="apple-touch-icon" href="icon.svg" />
+<link rel="icon" href="favicon.png" type="image/png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
@@ -16,7 +16,7 @@
 :root{
   --paper:#F4F2EE; --surface:#FFFFFF; --surface-2:#F7F9F9;
   --ink:#0F1419; --ink-soft:#3C4349; --steel:#536471; --line:#E1E3E6; --line-2:#CFD3D7;
-  --indigo:#0A66C2; --indigo-soft:#E7F1FC; --indigo-deep:#004182;
+  --indigo:#0159BB; --indigo-soft:#E6EFFA; --indigo-deep:#003F8A;
   --sky:#1D9BF0;
   --seal:#016B47; --seal-soft:#DFF3EA;
   --hold:#8A5A0B; --hold-soft:#FBF1DC;
@@ -38,9 +38,11 @@ button,input,select,textarea{font:inherit;color:inherit}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
 #signin{min-height:100vh;display:grid;grid-template-columns:1.05fr .95fr}
-.si-art{background:linear-gradient(160deg,#0A66C2 0%,#004182 60%,#00305F 100%);color:#DCEBFA;position:relative;overflow:hidden;padding:56px 48px;display:flex;flex-direction:column;justify-content:space-between}
+.si-art{background:linear-gradient(160deg,#0159BB 0%,#003F8A 60%,#002E66 100%);color:#DCEBFA;position:relative;overflow:hidden;padding:56px 48px;display:flex;flex-direction:column;justify-content:space-between}
 .si-art h1{color:#fff;font-size:40px;max-width:13ch}
 .si-art p{color:#B9D5F0;max-width:46ch}
+.setu-tag{color:#9FC4E8;font-size:13px;margin-top:12px;letter-spacing:.3px}
+.si-logo{width:150px;height:auto;display:block;margin-bottom:34px}
 .si-art:after{content:"";position:absolute;width:420px;height:420px;right:-160px;top:-120px;border-radius:50%;background:radial-gradient(circle,rgba(120,190,255,.3),transparent 68%);pointer-events:none}
 .rail-demo{margin:38px 0;display:flex;flex-direction:column}
 .rail-demo div{display:flex;align-items:center;gap:14px;padding:9px 0;color:#9FC4E8;font-size:13.5px}
@@ -54,7 +56,8 @@ button,input,select,textarea{font:inherit;color:inherit}
 .shell{display:grid;grid-template-columns:246px 1fr;min-height:100vh}
 .side{background:var(--surface);color:var(--ink-soft);border-right:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
 .brand{padding:18px 18px 14px;border-bottom:1px solid var(--line)}
-.brand b{color:var(--ink);font-size:19px;font-weight:700;letter-spacing:-.02em}
+.brand b{color:var(--indigo);font-size:20px;font-weight:800;letter-spacing:.08em;display:block}
+.brand-mark{display:block;width:118px;height:auto;margin-bottom:6px}
 .brand span{display:block;color:var(--steel);font-size:12px}
 .nav{padding:12px 10px;flex:1;overflow:auto}
 .nav button{width:100%;display:flex;align-items:center;gap:10px;background:none;border:0;color:var(--ink-soft);padding:9px 12px;border-radius:999px;cursor:pointer;text-align:left;font-size:14.5px}
@@ -223,7 +226,9 @@ tbody tr:last-child td{border-bottom:0}
 <section id="signin">
   <div class="si-art">
     <div>
+      <img src="logo-lockup-white.png" alt="SETU" class="si-logo">
       <h1>Every file, and whose desk it is on.</h1>
+      <div class="setu-tag">सेतु · the bridge between desks</div>
       <p style="margin-top:14px">Raise an indent or a work order, attach the ERP document, pick who signs off and in what order. Nobody downstream can touch it until the person before them has acted.</p>
       <div class="rail-demo">
         <div class="on"><i>1</i> Raised, ERP document attached</div>
@@ -254,7 +259,7 @@ tbody tr:last-child td{border-bottom:0}
 
 <div class="shell hide" id="app">
   <aside class="side">
-    <div class="brand"><b>Approval Flow</b><span>Indent &amp; work order sign-off</span></div>
+    <div class="brand"><img src="logo-mark.png" alt="" class="brand-mark"><b>SETU</b><span>Indent &amp; work order approvals</span></div>
     <nav class="nav" id="nav"></nav>
     <div class="side-foot">
       <div class="who"><div class="av dark sm" id="me-av"></div><div><b id="me-name"></b><small id="me-role"></small></div></div>

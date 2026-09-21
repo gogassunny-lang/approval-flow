@@ -1,5 +1,5 @@
 /* ============================================================
-   Approval Flow — web app on Supabase
+   SETU — indent & work order approvals, web app on Supabase
    The browser never decides anything. It reads what row level
    security lets it see, and every change is a database function
    that enforces the rules itself.
@@ -46,8 +46,11 @@ function modal({title,body,footer,cls,onOpen}){
   v.innerHTML='<div class="modal '+(cls||'')+'"><div class="h"><h3>'+esc(title)+'</h3><button class="btn ghost sm" data-x>Close</button></div>'+
     '<div class="c">'+body+'</div>'+(footer?'<div class="f">'+footer+'</div>':'')+'</div>';
   $('#modal-root').appendChild(v);
-  const close=()=>v.remove();
+  const close=()=>{ v.remove(); window.removeEventListener('popstate',onPop); if(history.state&&history.state.modal){ skipPop=true; history.back() } };
   v.addEventListener('click',e=>{if(e.target===v||e.target.hasAttribute('data-x'))close()});
+  try{ history.pushState(Object.assign({},history.state||ROUTE,{modal:true}),''); }catch(e){}
+  const onPop=()=>{ v.remove(); window.removeEventListener('popstate',onPop) };
+  window.addEventListener('popstate',onPop);
   document.addEventListener('keydown',function k(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',k)}});
   if(onOpen)onOpen(v,close); return {el:v,close};
 }
@@ -469,7 +472,7 @@ async function enter(session){
     await SB.rpc('record_login');
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
-    paintPin(); go({name:'dash'}); subscribe();
+    paintPin(); const h=routeFromHash(); go((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id))?h:{name:'dash'},true); subscribe();
     if(!ME.role||!ME.dept) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
   }catch(e){ fail(e) } finally { busy(false) }
@@ -480,7 +483,7 @@ function leave(){ ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#s
 let channel=null;
 function subscribe(){
   unsubscribe();
-  channel=SB.channel('af-live')
+  channel=SB.channel('setu-live')
     .on('postgres_changes',{event:'*',schema:'public',table:'requests'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'steps'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},reloadSoon)
@@ -566,7 +569,23 @@ function paintNav(){
   $('#nav').innerHTML=h;
   $$('#nav button').forEach(b=>b.onclick=()=>go({name:b.dataset.k}));
 }
-const go=r=>{ROUTE=r;paintNav();paintPin();render();window.scrollTo(0,0)};
+/* every screen is a history entry, so the Android back button (and the browser's)
+   steps back through screens instead of leaving the app */
+const routeHash=r=>'#'+r.name+(r.id?'/'+r.id:'');
+const go=(r,replace)=>{
+  ROUTE=r;
+  try{ const url=location.pathname+location.search+routeHash(r);
+    if(replace||!history.state) history.replaceState(r,'',url); else if(routeHash(history.state)!==routeHash(r)) history.pushState(r,'',url) }catch(e){}
+  paintNav();paintPin();render();window.scrollTo(0,0);
+};
+let skipPop=false;
+window.addEventListener('popstate',e=>{
+  if(skipPop){ skipPop=false; return }              // a dialog closed itself and rewound its own entry
+  if($('.veil')) return;                            // back pressed with a dialog open: the dialog handles it, the screen stays
+  if(ME&&e.state&&e.state.name){ ROUTE=e.state; paintNav(); paintPin(); render(); window.scrollTo(0,0) }
+});
+/* deep links: opening .../#detail/<id> lands on that request once signed in */
+function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?$/); return m?{name:m[1],id:m[2]}:null }
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
 function render(){
   if(!ME) return;
@@ -1103,7 +1122,7 @@ function wireReport(v){
   $('#r-x',v).onclick=()=>{const R=repRows(), wb=XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(R.A),'Requests');XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(R.B),'Approval steps');
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(R.D),'Assigned tasks');XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(R.C),'Audit trail');
-    XLSX.writeFile(wb,'approval-report-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Spreadsheet downloaded.','ok')};
+    XLSX.writeFile(wb,'setu-report-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Spreadsheet downloaded.','ok')};
   wireList(v);
 }
 
@@ -1138,7 +1157,7 @@ function wireUsage(v){
     const B=[['Date'].concat(DB.users.map(u=>u.name))]; const days={}; DB.users.forEach(u=>Object.keys(statsOf(u).daily).forEach(d=>days[d]=1));
     Object.keys(days).sort().reverse().forEach(d=>B.push([d].concat(DB.users.map(u=>hms(statsOf(u).daily[d]||0)))));
     const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(A),'Usage summary'); XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(B),'Day by day');
-    XLSX.writeFile(wb,'usage-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Usage downloaded.','ok')};
+    XLSX.writeFile(wb,'setu-usage-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Usage downloaded.','ok')};
 }
 
 /* ============================================================
@@ -1222,7 +1241,7 @@ function localPicker(mount,label,onFile){
 window.addEventListener('offline',()=>{if(!$('#off')){const d=document.createElement('div');d.id='off';d.className='offline';d.textContent='You are offline — changes cannot be saved until the connection is back.';document.body.appendChild(d)}});
 window.addEventListener('online',()=>{const d=$('#off');if(d)d.remove();if(ME)reload()});
 if('serviceWorker' in navigator&&location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
-document.title=CONFIG.APP_NAME||'Approval Flow';
+document.title=CONFIG.APP_NAME||'SETU';
 
 (async function boot(){
   try{ const {data}=await SB.from('departments').select('name').order('name'); if(data) DB.departments=data.map(d=>d.name) }catch(e){}
