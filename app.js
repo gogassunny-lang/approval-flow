@@ -321,7 +321,7 @@ function uploader(mount,list,opts){
   const accept=support?'.pdf,.xlsx,.xls,.csv,.docx,.doc,image/*':'.pdf,.xlsx,.xls,.csv,.docx,.doc';
   const paint=()=>{
     const total=list.reduce((t,f)=>t+f.size,0);
-    mount.innerHTML='<div class="drop" tabindex="0" role="button">'+(opts.label||(support?'Add photos, Excel, Word or PDF in support of the document':'Attach the ERP document — PDF, Excel or Word'))+'</div>'+
+    mount.innerHTML='<div class="drop" tabindex="0" role="button">'+(opts.label||(support?'Add quotations, photos, Excel or Word — several at once is fine':'Attach the ERP document — PDF, Excel or Word'))+'</div>'+
       '<input type="file" class="hide" '+(opts.single?'':'multiple ')+'accept="'+accept+'"'+(support?' capture="environment"':'')+'>'+
       '<div class="filelist">'+list.map(f=>'<div class="filerow"><span class="ft '+kindOf(f.name)+'">'+esc(kindOf(f.name)==='img'?'IMG':extOf(f.name).slice(0,4).toUpperCase())+'</span>'+
         '<div style="min-width:0;flex:1"><div style="font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(f.name)+'</div>'+
@@ -660,8 +660,9 @@ function pinDialog(){
     }});
 }
 function paintPin(){ const c=$('#pinchip'); if(!c||!ME) return;
-  if(pinOK(ME)){c.classList.add('ok');$('#pinchip-txt').textContent='PIN active · '+tillMidnight()+' left'}
-  else{c.classList.remove('ok');$('#pinchip-txt').textContent="Set today's PIN"} }
+  const narrow=window.innerWidth<900;
+  if(pinOK(ME)){c.classList.add('ok');$('#pinchip-txt').textContent=narrow?'PIN · '+tillMidnight():'PIN active · '+tillMidnight()+' left'}
+  else{c.classList.remove('ok');$('#pinchip-txt').textContent=narrow?'Set PIN':"Set today's PIN"} }
 $('#pinchip').onclick=pinDialog;
 /* the PIN is collected here and sent with the decision; the server checks it */
 function confirmPin(label,then){
@@ -848,7 +849,7 @@ function viewNew(){
   return '<div class="tabs"><button data-t="indent" class="'+(formTab==='indent'?'on':'')+'">Indent</button>'+
     '<button data-t="workorder" class="'+(formTab==='workorder'?'on':'')+'">Work order</button></div>'+
     '<div id="form-body">'+(formTab==='indent'?indentForm():woForm())+'</div>'+
-    '<div class="row" style="margin-top:18px;gap:10px;flex-wrap:wrap"><button class="btn primary" id="n-send">Send for approval</button>'+
+    '<div class="row form-actions" style="margin-top:18px;gap:10px;flex-wrap:wrap"><button class="btn primary" id="n-send">Send for approval</button>'+
     '<button class="btn" id="n-clear">Clear form</button><span class="hint" id="n-note"></span></div>';
 }
 const txt=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="'+id+'">'+esc(label)+(conf?'<span class="flag '+conf+'">'+(conf==='hi'?'from PDF':'check this')+'</span>':'')+'</label>'+
@@ -856,7 +857,7 @@ const txt=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="
 const area=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="'+id+'">'+esc(label)+(conf?'<span class="flag '+conf+'">from PDF</span>':'')+'</label>'+
   '<textarea id="'+id+'"'+(ph?' placeholder="'+esc(ph)+'"':'')+'>'+esc(val||'')+'</textarea></div>';
 const uploadCard=()=>'<div class="card pad"><h3>The ERP document</h3><p class="hint" style="margin-top:5px">The indent or work order PDF the ERP generated. The fields below fill in from it — every one of them stays editable.</p><div id="n-files" style="margin-top:14px"></div></div>'+
-  '<div class="card pad'+(draft.files.length?'':' hide')+'" id="n-supp-card"><h3>Supporting documents <span class="hint" style="font-weight:400">optional</span></h3>'+
+  '<div class="card pad" id="n-supp-card"><h3>Supporting documents <span class="hint" style="font-weight:400">optional</span></h3>'+
   '<p class="hint" style="margin-top:5px">Quotations, comparison sheets, photos of the site or the equipment, a signed note — anything an approver would want alongside the ERP document. Photos are shrunk before upload, so send them straight from the phone.</p>'+
   '<div id="n-support" style="margin-top:14px"></div></div>';
 function chainCard(){
@@ -920,7 +921,7 @@ function wireNew(v){
   $$('.tabs button',v).forEach(b=>b.onclick=()=>{formTab=b.dataset.t;draft=null;render()});
   const body=$('#form-body',v), f=draft.f;
   uploader($('#n-files',body),draft.files,{single:true,label:'Attach the indent or work order PDF',
-    onChange:list=>{const c=$('#n-supp-card',body); if(c) c.classList.toggle('hide',list.length===0)},
+    onChange:()=>{ if(typeof syncSupport==='function') syncSupport() },
     onFile:async(file)=>{
     if(extOf(file.name)!=='pdf') return;
     try{
@@ -935,6 +936,11 @@ function wireNew(v){
     }catch(e){ toast('Could not read that PDF. Fill the fields in by hand.','bad') }
   }});
   uploader($('#n-support',body),draft.support,{mode:'support'});
+  /* supporting files wait for the ERP document, but the card is always visible so people know it exists */
+  const syncSupport=()=>{ const d=$('#n-support .drop',body); if(!d) return; const ok=draft.files.length>0;
+    d.classList.toggle('disabled',!ok);
+    if(!ok) d.textContent='Attach the ERP document above first, then add quotations, photos, Excel or Word here'; };
+  syncSupport();
   paintSite($('#i-sitewrap',body)||$('#w-sitewrap',body));
   const bind=(id,key,num)=>{const el=$(id,body);if(el)el.oninput=()=>{f[key]=num?(el.value===''?'':Number(el.value)):el.value}};
   bind('#i-no','indentNo');bind('#i-date','indentDate');bind('#i-rem','remarks');bind('#w-no','orderNo');bind('#w-date','woDate');bind('#w-vn','vendorName');bind('#w-va','vendorAddress');
