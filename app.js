@@ -121,7 +121,7 @@ async function load(){
   if(me) ME=me;
 }
 let reloadT=null;
-async function reload(){ try{ await load(); render(); paintNav(); paintPin() }catch(e){ fail(e) } }
+async function reload(){ try{ await load(); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
 function reloadSoon(){ clearTimeout(reloadT); reloadT=setTimeout(reload,600) }
 
 /* ---------- model helpers (read-only views over what was loaded) ---------- */
@@ -711,6 +711,43 @@ function paintNav(){
     h+='<button data-k="'+p.k+'" class="'+(ROUTE.name===p.k?'on':'')+'">'+esc(p.label)+(n?'<span class="pill">'+n+'</span>':'')+'</button>'});
   $('#nav').innerHTML=h;
   $$('#nav button').forEach(b=>b.onclick=()=>go({name:b.dataset.k}));
+  paintTabbar();
+}
+/* the five things a phone needs within thumb reach; everything else is under More */
+const ICON={
+  home:'<svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
+  desk:'<svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  plus:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  bell:'<svg viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0v5l2 3H4l2-3zM10 19a2 2 0 0 0 4 0"/></svg>',
+  more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>'};
+function paintTabbar(){
+  const bar=$('#tabbar'); if(!bar||!ME) return;
+  const desk=myQueue().length+myTasks().length+myStuck().length, un=unread().length;
+  const on=k=>ROUTE.name===k?'on':'';
+  const inDesk=['queue','tasks','stuck'].includes(ROUTE.name);
+  const inMore=!['dash','queue','tasks','stuck','new','inbox'].includes(ROUTE.name);
+  bar.innerHTML=
+    '<button data-k="dash" class="'+on('dash')+'">'+ICON.home+'Home</button>'+
+    '<button data-k="queue" class="'+(inDesk?'on':'')+'">'+ICON.desk+'My desk'+(desk?'<span class="pill">'+desk+'</span>':'')+'</button>'+
+    '<button data-k="new" class="raise '+on('new')+'">'+ICON.plus+'Raise</button>'+
+    '<button data-k="inbox" class="'+on('inbox')+'">'+ICON.bell+'Alerts'+(un?'<span class="pill">'+un+'</span>':'')+'</button>'+
+    '<button data-k="more" class="'+(inMore?'on':'')+'">'+ICON.more+'More</button>';
+  $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
+}
+function moreSheet(){
+  const items=PAGES.filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k));
+  modal({title:'More',
+    body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
+        return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
+      '<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>'+
+      '<button data-act="me">My directory entry</button><button data-act="pw">Change password</button>'+
+      '<button data-act="out" style="color:var(--stop)">Sign out</button></div>'+
+      '<div class="hint" style="margin-top:12px;text-align:center">'+esc(ME.name)+' · '+esc(ME.role||'')+'<br>Built by Sunny Gupta</div>',
+    onOpen:(v,close)=>{
+      $$('[data-go]',v).forEach(b=>b.onclick=()=>{close();go({name:b.dataset.go})});
+      $$('[data-act]',v).forEach(b=>b.onclick=()=>{close();const a=b.dataset.act;
+        if(a==='pin')pinDialog(); else if(a==='me')profileDialog(); else if(a==='pw')newPasswordDialog({title:'Change your password',cancellable:true}); else if(a==='out')SB.auth.signOut()});
+    }});
 }
 /* every screen is a history entry, so the Android back button (and the browser's)
    steps back through screens instead of leaving the app */
@@ -771,7 +808,7 @@ function viewDash(){
     return '<div style="margin-bottom:12px"><div class="row" style="justify-content:space-between;font-size:13px;margin-bottom:5px"><span>'+k+'</span><b class="num">'+v+'</b></div>'+
       '<div class="bar"><i style="width:'+Math.round(v/tot*100)+'%;background:'+c+'"></i></div></div>'}).join('');
   const line=r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(typeLabel(r))+' · '+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td>'+
-    '<td class="hint num">'+daysBetween(r.createdAt,Date.now())+'d</td><td>'+tagFor(r)+'</td></tr>';
+    '<td class="hint num meta">'+daysBetween(r.createdAt,Date.now())+'d open</td><td class="meta">'+tagFor(r)+'</td></tr>';
   const warn=!pinOK(ME)?'<div class="banner hold"><div><b>Your PIN is not set for today.</b><div class="hint" style="color:var(--hold)">You cannot approve, reject or send anything back until you set it.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-pin">Set PIN</button></div>':'';
   const feed=DB.audit.slice(0,14);
   return warn+'<div class="grid g4">'+
@@ -781,9 +818,9 @@ function viewDash(){
     stat('Open beyond 7 days',aged,'Out of '+open.length+' open requests',aged?'var(--stop)':'var(--seal)')+'</div>'+
   '<div class="grid g2" style="margin-top:18px;align-items:start">'+
    '<div class="card"><div class="row" style="padding:16px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on me</h3>'+(q.length?'<span class="tag t-prog" style="margin-left:auto">'+q.length+'</span>':'')+'</div>'+
-     (q.length?'<table><tbody>'+q.map(line).join('')+'</tbody></table>':'<div class="empty"><h3>Nothing on your desk</h3><p class="hint">Requests appear the moment the person before you signs off.</p></div>')+'</div>'+
+     (q.length?'<table class="cards"><tbody>'+q.map(line).join('')+'</tbody></table>':'<div class="empty"><h3>Nothing on your desk</h3><p class="hint">Requests appear the moment the person before you signs off.</p></div>')+'</div>'+
    '<div class="card"><div class="row" style="padding:16px 18px;border-bottom:1px solid var(--line)"><h3>Sent back to me</h3>'+(st.length?'<span class="tag t-hold" style="margin-left:auto">'+st.length+'</span>':'')+'</div>'+
-     (st.length?'<table><tbody>'+st.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">Stuck at step '+(r.infoStep+2)+' with '+esc(user(r.chain[r.infoStep].userId).name)+'</div></td></tr>').join('')+'</tbody></table>'
+     (st.length?'<table class="cards"><tbody>'+st.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">Stuck at step '+(r.infoStep+2)+' with '+esc(user(r.chain[r.infoStep].userId).name)+'</div></td></tr>').join('')+'</tbody></table>'
        :'<div class="empty"><h3>Nothing held up</h3><p class="hint">If an approver wants more, it comes back here and opens at that step.</p></div>')+'</div></div>'+
   '<div class="grid g2" style="margin-top:18px;align-items:start">'+
    '<div class="card pad"><h3 style="margin-bottom:14px">Where everything stands</h3>'+bars+'<div class="sep"></div><div class="row" style="justify-content:space-between"><span class="hint">'+all.length+' requests · '+mine.length+' raised by you</span>'+
@@ -972,9 +1009,9 @@ function stepLabel(r){
   return 'Step '+(r.current+2)+' of '+(r.chain.length+1)+' — with '+user(r.chain[r.current].userId).name;
 }
 function rowsHTML(list){
-  return '<table><thead><tr><th>Request</th><th>Type</th><th>Amount</th><th>Raised</th><th>Status</th><th>Position</th></tr></thead><tbody>'+
-   list.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td><td class="hint">'+esc(typeLabel(r))+'</td>'+
-   '<td class="num">'+(r.type==='workorder'?money(r.f.amountPost):'—')+'</td><td class="hint num">'+esc(fmtD(r.createdAt))+'</td><td>'+tagFor(r)+'</td><td class="hint">'+esc(stepLabel(r))+'</td></tr>').join('')+'</tbody></table>';
+  return '<table class="cards"><thead><tr><th>Request</th><th>Type</th><th>Amount</th><th>Raised</th><th>Status</th><th>Position</th></tr></thead><tbody>'+
+   list.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td><td class="hint meta">'+esc(typeLabel(r))+'</td>'+
+   '<td class="num meta">'+(r.type==='workorder'?money(r.f.amountPost):'—')+'</td><td class="hint num meta">'+esc(fmtD(r.createdAt))+'</td><td class="meta">'+tagFor(r)+'</td><td class="hint pos">'+esc(stepLabel(r))+'</td></tr>').join('')+'</tbody></table>';
 }
 function viewList(list,t,s,et,es){ head(t,s);
   if(!list.length) return '<div class="card"><div class="empty"><h3>'+esc(et)+'</h3><p class="hint">'+esc(es)+'</p></div></div>';
@@ -984,7 +1021,7 @@ function viewTasks(){
   head('Tasks given to me','Work a manager has assigned you inside a request');
   const l=myTasks();
   if(!l.length) return '<div class="card"><div class="empty"><h3>No tasks assigned to you</h3><p class="hint">When a manager breaks their step into pieces, your piece lands here.</p></div></div>';
-  return '<div class="card"><table><thead><tr><th>Request</th><th>Given by</th><th>The task</th><th>Given</th></tr></thead><tbody>'+
+  return '<div class="card"><table class="cards"><thead><tr><th>Request</th><th>Given by</th><th>The task</th><th>Given</th></tr></thead><tbody>'+
     l.map(r=>{const m=myOpenTask(r);return '<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(typeLabel(r))+' · '+esc(r.ref)+'</div></td><td class="hint">'+esc(user(m.step.userId).name)+'</td><td>'+esc(m.task.task)+'</td><td class="hint num">'+esc(fmtD(m.task.assignedAt))+'</td></tr>'}).join('')+'</tbody></table></div>';
 }
 let allF={q:'',status:'',type:''};
