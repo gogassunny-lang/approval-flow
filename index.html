@@ -1,85 +1,379 @@
-// SETU — "admin-create-user" edge function
-// Lets an administrator create an account directly, instead of the person self-registering.
-// Two modes:
-//   password → creates the account with a temporary password the admin passes on; the
-//              person is forced to choose their own at first sign-in
-//   invite   → emails the person a link to set their own password (needs working email;
-//              see the SMTP note in the README)
-// The service-role key never leaves this function.
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0159BB" />
+<title>SETU — indent &amp; work order approvals</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="favicon.png" type="image/png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{
+  --paper:#F4F2EE; --surface:#FFFFFF; --surface-2:#F7F9F9;
+  --ink:#0F1419; --ink-soft:#3C4349; --steel:#536471; --line:#E1E3E6; --line-2:#CFD3D7;
+  --indigo:#0159BB; --indigo-soft:#E6EFFA; --indigo-deep:#003F8A;
+  --sky:#1D9BF0;
+  --seal:#016B47; --seal-soft:#DFF3EA;
+  --hold:#8A5A0B; --hold-soft:#FBF1DC;
+  --stop:#B02A17; --stop-soft:#FBE9E5;
+  --cyan:#0F6E7A; --cyan-soft:#E0F1F3;
+  --r:8px; --r-lg:10px;
+  --sh:0 0 0 1px rgba(15,20,25,.04), 0 2px 6px -2px rgba(15,20,25,.12);
+  --grad:#0A66C2;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{font-family:inherit;font-weight:700;line-height:1.25;margin:0;letter-spacing:-.01em}
+h1{font-size:24px} h2{font-size:19px} h3{font-size:16px}
+a{color:var(--indigo)}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--indigo);outline-offset:2px;border-radius:4px}
+.num{font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
-import { createClient } from "npm:@supabase/supabase-js@2";
+#signin{min-height:100vh;background:linear-gradient(160deg,#0159BB 0%,#003F8A 62%,#00305F 100%);display:flex;align-items:center;justify-content:center;
+  padding:calc(28px + env(safe-area-inset-top,0px)) 20px calc(28px + env(safe-area-inset-bottom,0px));position:relative;overflow:hidden}
+#signin:after{content:"";position:absolute;width:560px;height:560px;right:-200px;top:-200px;border-radius:50%;background:radial-gradient(circle,rgba(120,190,255,.28),transparent 68%);pointer-events:none}
+.si-wrap{position:relative;z-index:1;width:100%;max-width:1040px;display:grid;grid-template-columns:1.1fr 420px;gap:56px;align-items:center}
+.si-copy{color:#DCEBFA}
+.si-copy h1{color:#fff;font-size:40px;line-height:1.12;margin:0 0 16px;letter-spacing:-.02em}
+.si-lead{color:#B9D5F0;font-size:16px;max-width:46ch;margin:0}
+.si-logo{width:150px;height:auto;display:block;margin-bottom:34px}
+.si-foot{color:#8FB8E4;font-size:12.5px;line-height:1.6;margin-top:26px}
+.si-foot b{color:#fff}
+.rail-demo{margin:32px 0 0;display:flex;flex-direction:column}
+.rail-demo div{display:flex;align-items:center;gap:14px;padding:8px 0;color:#9FC4E8;font-size:14px}
+.rail-demo i{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.1);color:#CFE4F7;flex:none}
+.rail-demo div.on i{background:#fff;color:var(--indigo-deep);border-color:#fff}
+.rail-demo div.on{color:#fff}
+.si-card{background:var(--surface);border-radius:18px;padding:34px 32px 28px;box-shadow:0 30px 80px -30px rgba(0,20,60,.7)}
+.si-card-logo{display:none;width:84px;height:auto;margin:0 auto 18px}
+@media(max-width:860px){
+  #signin{align-items:flex-start;padding:calc(16px + env(safe-area-inset-top,0px)) 14px calc(24px + env(safe-area-inset-bottom,0px))}
+  .si-wrap{grid-template-columns:1fr;gap:18px}
+  .si-copy{text-align:center} .si-copy h1{font-size:22px;margin:0 0 6px} .si-logo{width:110px;margin:6px auto 18px}
+  .si-lead{font-size:14px;margin:0 auto} .rail-demo,.si-foot{display:none}
+  .si-card{padding:24px 20px 20px;border-radius:16px}
+}
+.shell{display:grid;grid-template-columns:246px 1fr;min-height:100vh}
+.side{background:var(--surface);color:var(--ink-soft);border-right:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{padding:18px 18px 14px;border-bottom:1px solid var(--line)}
+.brand b{color:var(--indigo);font-size:20px;font-weight:800;letter-spacing:.08em;display:block}
+.brand-mark{display:block;width:118px;height:auto;margin-bottom:6px}
+.brand span{display:block;color:var(--steel);font-size:12px}
+.nav{padding:12px 10px;flex:1;overflow:auto}
+.nav button{width:100%;display:flex;align-items:center;gap:10px;background:none;border:0;color:var(--ink-soft);padding:9px 12px;border-radius:999px;cursor:pointer;text-align:left;font-size:14.5px}
+.nav button:hover{background:#EFF3F4;color:var(--ink)}
+.nav button.on{background:var(--indigo-soft);color:var(--indigo-deep);font-weight:700}
+.nav .pill{margin-left:auto;background:var(--indigo);color:#fff;border-radius:999px;padding:1px 8px;font-size:11.5px;font-weight:700;min-width:20px;text-align:center}
+.nav .grp{color:var(--steel);font-size:11px;letter-spacing:.7px;text-transform:uppercase;font-weight:600;padding:16px 13px 6px}
+.side-foot{padding:12px;border-top:1px solid var(--line)}
+.side-foot .who{display:flex;gap:10px;align-items:center;margin-bottom:9px}
+.side-foot .who b{color:var(--ink);font-size:13.5px;display:block;line-height:1.25}
+.side-foot .who small{color:var(--steel)}
+.main{min-width:0;display:flex;flex-direction:column}
+.top{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:14px 26px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:20}
+.top h1{font-size:22px} .top .sub{color:var(--steel);font-size:13px}
+.wrap{padding:24px 26px 60px;max-width:1180px;width:100%}
+/* ---------- phone layout: bottom tabs, compact header, stacked cards ---------- */
+.tabbar{display:none}
+.tlogo{display:none}
+@media(max-width:900px){
+  body{font-size:15px}
+  .shell{grid-template-columns:1fr;padding-bottom:calc(66px + env(safe-area-inset-bottom,0px))}
+  .side{display:none}
+  .top{padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;gap:10px;position:sticky;top:0}
+  .top h1{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .top .sub{display:none}
+  .tlogo{display:block;height:34px;width:auto;flex:none;margin-right:2px}
+  .top{border-bottom:1px solid var(--line)}
+  .pinchip{padding:4px 9px;font-size:11.5px;white-space:nowrap}
+  .wrap{padding:12px 12px 24px}
+  .wrap .grid.g4,.wrap .grid.g3{grid-template-columns:1fr 1fr;gap:10px} .wrap .grid.g2{grid-template-columns:1fr}
+  .stat{padding:12px 13px 11px} .stat .v{font-size:26px;margin-top:0} .stat .k{font-size:12px;line-height:1.3} .stat .hint{font-size:11.5px;line-height:1.3}
+  .stat:before{width:auto;height:3px;inset:0 0 auto 0}
+  .card.pad{padding:15px}
+  h3{font-size:15.5px}
+  input[type=text],input[type=number],input[type=password],input[type=email],input[type=date],select,textarea{font-size:16px;padding:11px 12px}
+  .btn{padding:11px 16px;font-size:15px;min-height:44px} .btn.sm{padding:8px 13px;font-size:14px;min-height:38px} .btn.ghost.sm{min-height:0}
+  .detail-grid{grid-template-columns:1fr;gap:14px}
+  .tabs button{padding:11px 12px;font-size:15px}
+  .kv{grid-template-columns:104px 1fr}
+  .node{padding-left:42px} .node .body{padding:11px 12px}
+  .handover{margin-left:42px}
+  /* every request list becomes a stack of tappable cards */
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%;box-sizing:border-box}
+  table.cards thead{display:none}
+  table.cards tr{padding:12px 14px;border-bottom:1px solid var(--line)}
+  table.cards tr:last-child{border-bottom:0}
+  table.cards td{padding:1px 0;border:0}
+  table.cards td.meta{display:inline-block;width:auto;margin-right:10px;color:var(--steel);font-size:13px}
+  table.cards td.pos{margin-top:4px}
+  /* dialogs slide up as sheets */
+  .veil{align-items:end;padding:0}
+  .modal{width:100%;max-height:92vh;border-radius:18px 18px 0 0;box-shadow:0 -10px 40px rgba(20,32,47,.25)}
+  .modal .f{border-radius:0;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  .modal.viewer{max-height:100vh;height:100vh;border-radius:0}
+  .pinbox{justify-content:center} .pinbox input{width:58px;height:62px}
+  #toasts{left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px))} .toast{max-width:none}
+  .tabbar{display:flex}
+  /* the two document-type tabs become a segmented control */
+  .tabs{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:4px;gap:4px;margin-bottom:14px}
+  .tabs button{flex:1;border-bottom:0;border-radius:9px;padding:10px 8px;font-size:15px;text-align:center}
+  .tabs button.on{background:var(--surface);box-shadow:0 1px 3px rgba(15,20,25,.12);border-bottom:0}
+  /* the primary action stays within reach while the form scrolls */
+  .form-actions{position:sticky;bottom:calc(66px + env(safe-area-inset-bottom,0px));background:linear-gradient(to top,var(--paper) 70%,transparent);padding:14px 0 6px;margin-top:6px;z-index:5}
+  .form-actions .btn.primary{flex:1}
+  .form-actions .hint{width:100%;text-align:center}
+  label{font-size:13.5px;margin-bottom:6px} .hint{font-size:13px}
+  .card{border-radius:14px;box-shadow:0 1px 2px rgba(15,20,25,.05)}
+  .drop{padding:20px 14px;border:1.5px dashed #9DBCE8;background:var(--indigo-soft);color:var(--indigo-deep);font-weight:600;border-radius:12px;line-height:1.35}
+  .drop:before{content:"";display:block;width:26px;height:26px;margin:0 auto 8px;background:no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230159BB' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 16V4M6 10l6-6 6 6M4 20h16'/></svg>")}
+  .drop.disabled{opacity:.45;pointer-events:none;border-style:solid;font-weight:500}
+  .filerow{padding:10px 12px;border-radius:12px}
+  .tabbar button{font-size:11.5px;gap:4px} .tabbar svg{width:24px;height:24px}
+  .tabbar button.raise svg{width:40px;height:40px;padding:8px;margin-top:-14px}
+  .top h1{font-size:18px}
+  .empty{padding:34px 16px} .empty h3{font-size:16px}
+  /* Reports: six filters become a 2-column grid; the summary line drops under the buttons */
+  .filters{grid-template-columns:1fr 1fr!important;gap:10px!important}
+  .actions .summary{margin-left:0!important;flex:0 0 100%;text-align:left;margin-top:6px}
+  /* Requests I can see: search on its own line, selects side by side */
+  .filters-row>div{flex:1 1 100%!important} .filters-row select{flex:1 1 calc(50% - 6px);width:auto!important}
+  /* People / Team cards: the action buttons sit on their own line */
+  table.cards td.acts{text-align:left!important;white-space:normal!important;margin-top:8px;display:flex;gap:8px}
+  table.cards td.acts .hint{align-self:center}
+  table.cards.people td.meta{display:inline}
+  /* chain builders: name takes the row, buttons wrap underneath aligned right */
+  .picked .r{flex-wrap:wrap} .picked .who{flex:1 1 55%} .picked .acts{flex:0 0 100%;display:flex;gap:6px;justify-content:flex-end;padding-left:62px;margin-top:2px}
+  .picked .acts .btn{padding:6px 11px;min-height:36px}
+  .hdr-actions{margin-left:0!important;flex:0 0 100%;margin-top:10px} .hdr-actions .btn{flex:1}
+  /* wide data tables scroll sideways inside their card rather than breaking the page */
+  .scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .scroll-x:before{content:"Swipe sideways to see every column";display:block;padding:8px 14px 0;color:var(--steel);font-size:12px}
+  .kv dt{font-size:12.5px}
+  .finder .results{max-height:60vh}
+}
+.scroll-x{overflow-x:auto}
+.filters{grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.tabbar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);z-index:60;
+  padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));justify-content:space-around}
+.tabbar button{flex:1;background:none;border:0;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:var(--steel);padding:4px 0;position:relative;font-weight:500}
+.tabbar button.on{color:var(--indigo);font-weight:700}
+.tabbar svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.tabbar button.raise svg{width:34px;height:34px;background:var(--indigo);color:#fff;border-radius:50%;padding:6px;margin-top:-10px;box-shadow:0 4px 12px -4px rgba(1,89,187,.7)}
+.tabbar .pill{position:absolute;top:0;left:calc(50% + 4px);background:var(--stop);color:#fff;border-radius:999px;font-size:10px;padding:0 5px;min-width:16px;height:16px;line-height:16px;font-weight:700;text-align:center}
+.sheet-list button{width:100%;display:flex;align-items:center;gap:12px;background:none;border:0;border-bottom:1px solid var(--line);padding:13px 4px;text-align:left;font-size:15.5px;color:var(--ink)}
+.sheet-list button:last-child{border-bottom:0}
+.sheet-list .pill{margin-left:auto;background:var(--indigo);color:#fff;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:700}
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-const reply = (status: number, body: unknown) =>
-  new Response(JSON.stringify(body), { status, headers: { ...CORS, "content-type": "application/json" } });
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh)}
+.card.pad{padding:20px}
+.row{display:flex;gap:14px;align-items:center}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:840px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:540px){.g2,.g3,.g4{grid-template-columns:1fr}}
+label{display:block;font-size:13px;color:var(--ink-soft);font-weight:500;margin-bottom:5px}
+.hint{color:var(--steel);font-size:12.5px;margin-top:5px}
+input[type=text],input[type=number],input[type=password],input[type=email],input[type=date],select,textarea{width:100%;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r);padding:9px 11px}
+input:focus,select:focus,textarea:focus{border-color:var(--indigo);outline:none;box-shadow:0 0 0 3px var(--indigo-soft)}
+textarea{min-height:80px;resize:vertical}
+.btn{border:1px solid var(--line-2);background:var(--surface);border-radius:999px;padding:7px 16px;cursor:pointer;font-weight:600;font-size:14px}
+.btn:hover{background:#EFF3F4;border-color:var(--ink-soft)}
+.btn.primary{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.btn.primary:hover{background:var(--indigo-deep);border-color:var(--indigo-deep)}
+.btn.ok:hover{filter:brightness(.93)}
+.btn.bad:hover{filter:brightness(.93)}
+.btn.hold:hover{filter:brightness(.93)}
+.btn.ok{background:var(--seal);border-color:var(--seal);color:#fff}
+.btn.bad{background:var(--stop);border-color:var(--stop);color:#fff}
+.btn.hold{background:var(--hold);border-color:var(--hold);color:#fff}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--indigo);padding:6px 10px;font-weight:600}
+.btn.ghost:hover{background:var(--indigo-soft)}
+.btn.sm{padding:5px 13px;font-size:13px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.tag{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;border:1px solid}
+.t-prog{background:var(--indigo-soft);color:var(--indigo-deep);border-color:#BFDCF8}
+.t-ok{background:var(--seal-soft);color:var(--seal);border-color:#AFE0CB}
+.t-bad{background:var(--stop-soft);color:var(--stop);border-color:#F2C4B9}
+.t-hold{background:var(--hold-soft);color:var(--hold);border-color:#EBD7A6}
+.t-wait{background:var(--surface-2);color:var(--steel);border-color:var(--line)}
+.av{width:34px;height:34px;border-radius:50%;background:var(--indigo-soft);color:var(--indigo-deep);display:grid;place-items:center;font-weight:700;font-size:12.5px;flex:none;border:1px solid #CFE3F7}
+.av.sm{width:26px;height:26px;font-size:11px}
+.av.dark{background:var(--indigo);color:#fff;border-color:transparent}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:12.5px;color:var(--steel);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--line)}
+td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr:hover{background:#F7F9F9;cursor:pointer}
+tbody tr:last-child td{border-bottom:0}
+.empty{text-align:center;padding:46px 20px;color:var(--steel)}
+.empty h3{color:var(--ink);margin-bottom:6px}
+.stat{padding:17px 18px;position:relative;overflow:hidden}
+.stat:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--acc,var(--indigo))}
+.stat .v{color:var(--acc,var(--ink))}
+.stat .k{font-size:12.5px;color:var(--steel)}
+.stat .v{font-size:28px;font-weight:700;line-height:1.15;margin-top:2px;letter-spacing:-.02em}
+.bar{height:9px;border-radius:6px;background:var(--surface-2);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:6px}
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  if (req.method !== "POST") return reply(405, { error: "POST only" });
+.rail{position:relative;padding-left:8px}
+.node{position:relative;padding:0 0 4px 46px}
+.node:before{content:"";position:absolute;left:16px;top:30px;bottom:-6px;width:2px;background:var(--line-2)}
+.node:last-child:before{display:none}
+.node.done:before{background:var(--seal)}
+.node .dot{position:absolute;left:0;top:2px;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;background:var(--surface);border:2px solid var(--line-2);color:var(--steel)}
+.node.done .dot{background:var(--seal);border-color:var(--seal);color:#fff}
+.node.stop .dot{background:var(--stop);border-color:var(--stop);color:#fff}
+.node.hold .dot{background:var(--hold);border-color:var(--hold);color:#fff}
+.node.live .dot{background:var(--indigo);border-color:var(--indigo);color:#fff;box-shadow:0 0 0 4px var(--indigo-soft)}
+.node .body{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:14px;background:var(--surface)}
+.node.live .body{border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-soft)}
+.node.locked .body{opacity:.42;filter:saturate(.4)}
+.node.locked:hover .body{opacity:.8;filter:none}
+.node .body h4{font-size:14.5px;font-weight:700}
+.node .meta{color:var(--steel);font-size:12.5px}
+.node .said{margin-top:9px;border-left:3px solid var(--line-2);padding:2px 0 2px 11px;color:var(--ink-soft);font-size:13.5px;white-space:pre-wrap}
+.node.cond .said{border-left-color:var(--hold)}
+.node.flash .body{animation:flash 1.6s ease-out}
+@keyframes flash{0%{box-shadow:0 0 0 0 rgba(47,62,158,.45)}100%{box-shadow:0 0 0 14px rgba(47,62,158,0)}}
 
-  const url = Deno.env.get("SUPABASE_URL")!, service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const admin = createClient(url, service, { auth: { persistSession: false } });
+.handover{display:flex;align-items:center;gap:10px;margin:2px 0 14px 46px;font-size:12px;color:var(--steel)}
+.handover i{flex:1;height:1px;background:repeating-linear-gradient(90deg,var(--line-2) 0 5px,transparent 5px 10px)}
+.handover b{color:#fff;background:var(--ink);border:0;border-radius:999px;padding:3px 12px;font-size:11.5px;font-weight:600}
+.handover span{background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:2px 11px}
+.sub{margin-top:11px;border-left:2px solid var(--line-2);padding-left:13px}
+.sub-h{font-size:12px;color:var(--steel);margin-bottom:8px}
+.subrow{display:flex;gap:10px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2);margin-bottom:7px}
+.drop{border:1.5px dashed var(--line-2);border-radius:var(--r);padding:18px;text-align:center;color:var(--steel);background:var(--surface-2);cursor:pointer}
+.drop:hover{border-color:var(--indigo);color:var(--indigo-deep)}
+.drop.busy{opacity:.6;pointer-events:none}
+.filelist{margin-top:10px;display:flex;flex-direction:column;gap:7px}
+.filerow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface)}
+.ft{width:32px;height:30px;border-radius:7px;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;flex:none}
+.ft.pdf{background:var(--stop)}.ft.xls{background:var(--seal)}.ft.doc{background:var(--indigo)}.ft.oth{background:var(--steel)}
 
-  // who is asking? (the app sends the signed-in person's token)
-  const jwt = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-  const { data: who } = await admin.auth.getUser(jwt);
-  if (!who?.user) return reply(401, { error: "Sign in first" });
-  const { data: caller } = await admin.from("profiles").select("is_admin,is_owner,active,name").eq("id", who.user.id).single();
-  if (!caller?.is_admin || !caller.active) return reply(403, { error: "Administrators only" });
+.finder{position:relative}
+.results{position:absolute;z-index:30;left:0;right:0;top:100%;margin-top:4px;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r);box-shadow:var(--sh);max-height:250px;overflow:auto}
+.results button{width:100%;display:flex;gap:10px;align-items:center;background:none;border:0;padding:9px 12px;cursor:pointer;text-align:left}
+.results button:hover{background:var(--indigo-soft)}
+.picked{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-top:12px}
+.picked .r{display:flex;align-items:center;gap:11px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface)}
+.picked .r:last-child{border-bottom:0}
+.seq{width:26px;height:26px;border-radius:50%;background:var(--indigo);color:#fff;display:grid;place-items:center;font-size:12.5px;font-weight:700;flex:none}
 
-  let b: any;
-  try { b = await req.json(); } catch { return reply(400, { error: "Bad request" }); }
-  const name = String(b.name || "").trim(), email = String(b.email || "").trim().toLowerCase();
-  const role = String(b.role || "").trim(), dept = String(b.dept || "").trim();
-  const mode = b.mode === "invite" ? "invite" : "password";
-  if (name.length < 3) return reply(400, { error: "Enter the person's full name" });
-  if (!/^\S+@\S+\.\S+$/.test(email)) return reply(400, { error: "Enter a valid work email" });
-  if (role.length < 2) return reply(400, { error: "Enter a designation" });
-  const makeAdmin = !!b.is_admin;
-  if (makeAdmin && !caller.is_owner) return reply(403, { error: "Only the system owner can create administrators" });
-  // admins are a system role, not a step in the flow: a department is optional for them
-  if (dept) {
-    const { data: deptRow } = await admin.from("departments").select("name").eq("name", dept).maybeSingle();
-    if (!deptRow) return reply(400, { error: "Choose a department from the list" });
-  } else if (!makeAdmin) return reply(400, { error: "Choose a department from the list" });
+.auto{position:relative}
+.auto .flag{position:absolute;right:9px;top:0;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:20px;pointer-events:none}
+.auto .flag.hi{background:var(--seal-soft);color:var(--seal)}
+.auto .flag.mid{background:var(--hold-soft);color:var(--hold)}
+.auto.hi input,.auto.hi select,.auto.hi textarea{border-color:#8FC9BC;background:#FBFEFD}
+.auto.mid input,.auto.mid select,.auto.mid textarea{border-color:#D9B871;background:#FFFDF7}
 
-  const meta = { name, role, dept, manager_id: b.manager_id || "" };
-  let userId: string, tempPassword: string | null = null;
+.pinchip{display:flex;align-items:center;gap:8px;border:1px solid var(--line-2);border-radius:999px;padding:5px 12px;background:var(--surface);font-size:12.5px;cursor:pointer}
+.pinchip .led{width:8px;height:8px;border-radius:50%;background:var(--stop)}
+.pinchip.ok .led{background:var(--seal)}
+.pinbox{display:flex;gap:8px}
+.pinbox input{width:52px;height:56px;text-align:center;font-size:22px;font-weight:600}
 
-  if (mode === "invite") {
-    const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-      data: meta, redirectTo: Deno.env.get("APP_URL") || undefined,
-    });
-    if (error) return reply(400, { error: /already/i.test(error.message) ? "That email is already registered" : error.message });
-    userId = data.user.id;
-  } else {
-    // 10 characters, no look-alike letters, easy to read out over the phone
-    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789";
-    const bytes = crypto.getRandomValues(new Uint8Array(10));
-    tempPassword = Array.from(bytes, (x) => alphabet[x % alphabet.length]).join("");
-    const { data, error } = await admin.auth.admin.createUser({
-      email, password: tempPassword, email_confirm: true, user_metadata: meta,
-    });
-    if (error) return reply(400, { error: /already/i.test(error.message) ? "That email is already registered" : error.message });
-    userId = data.user.id;
-  }
+.veil{position:fixed;inset:0;background:rgba(20,32,47,.6);display:grid;place-items:center;padding:20px;z-index:100}
+.modal{background:var(--surface);border-radius:var(--r-lg);width:min(520px,100%);max-height:88vh;overflow:auto;box-shadow:0 30px 70px -20px rgba(20,32,47,.6)}
+.modal .h{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px}
+.modal .c{padding:20px 22px}
+.modal .f{padding:14px 22px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:9px;align-items:center;background:var(--surface-2);border-radius:0 0 var(--r-lg) var(--r-lg)}
+.modal.viewer{width:min(1000px,100%);max-height:94vh;display:flex;flex-direction:column;overflow:hidden}
+.modal.viewer .c{flex:1;overflow:auto;background:#5A6675;padding:16px;display:flex;flex-direction:column;align-items:center;gap:14px}
+.modal.viewer canvas{box-shadow:0 6px 20px rgba(0,0,0,.35);background:#fff;max-width:100%}
+.sheet{background:#fff;padding:18px;border-radius:8px;max-width:100%;overflow:auto;font-size:13px}
+.sheet table{min-width:460px}
+.sheet td,.sheet th{border:1px solid var(--line);padding:5px 9px;white-space:nowrap}
+#toasts{position:fixed;right:18px;bottom:18px;z-index:200;display:flex;flex-direction:column;gap:9px}
+.toast{background:var(--ink);color:#fff;padding:11px 16px;border-radius:var(--r);box-shadow:var(--sh);max-width:340px;font-size:13.5px}
+.toast.ok{background:var(--seal)}.toast.bad{background:var(--stop)}
+.credit{text-align:center;font-size:11.5px;color:var(--steel);margin-top:10px;letter-spacing:.2px}
+.credit b{color:var(--ink-soft);font-weight:600}
+.hide{display:none!important}
+.sep{height:1px;background:var(--line);margin:16px 0}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:5px 14px;font-size:13.5px}
+.kv dt{color:var(--steel)} .kv dd{margin:0;font-weight:500;word-break:break-word}
+.amount{font-size:25px;font-weight:700;letter-spacing:-.02em}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 15px;cursor:pointer;color:var(--steel);white-space:nowrap}
+.tabs button.on{color:var(--indigo);border-bottom-color:var(--indigo);border-bottom-width:3px;font-weight:700}
+.banner{border-radius:var(--r);padding:13px 16px;display:flex;gap:12px;align-items:flex-start;margin-bottom:16px}
+.banner.hold{background:var(--hold-soft);border:1px solid #EBD7A6;border-left:4px solid var(--hold)}
+.banner.live{background:var(--indigo-soft);border:1px solid #BFDCF8;border-left:4px solid var(--indigo)}
+.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
+@media(max-width:960px){.detail-grid{grid-template-columns:1fr}}
+.spin{width:15px;height:15px;border:2px solid var(--line-2);border-top-color:var(--indigo);border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
 
-  // the profile row was created by the database trigger; apply the access flags on top
-  const { error: upErr } = await admin.from("profiles").update({
-    is_manager: !!b.is_manager, see_all: !!b.see_all || makeAdmin, is_admin: makeAdmin,
-    manager_id: b.manager_id || null, manager_confirmed: !!b.manager_id,
-    must_change_password: true,
-  }).eq("id", userId);
-  if (upErr) return reply(500, { error: "Account created but access could not be set: " + upErr.message });
+.offline{position:fixed;left:50%;transform:translateX(-50%);bottom:12px;background:var(--stop);color:#fff;padding:7px 14px;border-radius:999px;font-size:13px;z-index:300}
+.busy-veil{position:fixed;inset:0;background:rgba(255,255,255,.55);display:grid;place-items:center;z-index:90}
+</style>
+</head>
+<body>
 
-  await admin.from("audit").insert({
-    request_id: null, ref: null, actor_id: who.user.id, actor_name: caller.name,
-    action: "Created an account", detail: `${name} <${email}> · ${makeAdmin ? "Admin" : "User"} · ${role}${dept ? " · " + dept : ""} · ${mode}`,
-  });
+<section id="signin">
+  <div class="si-wrap">
+    <div class="si-copy">
+      <img src="logo-lockup-white.png" alt="SETU" class="si-logo">
+      <h1>Every file,<br>and whose desk it is on.</h1>
+      <p class="si-lead">Raise an indent or a work order, attach the ERP document, choose who signs and in what order. Each person acts only when the one before them has.</p>
+      <div class="rail-demo">
+        <div class="on"><i>1</i> Raised, ERP document attached</div>
+        <div class="on"><i>2</i> Approved by the site manager</div>
+        <div class="on"><i>3</i> With finance now</div>
+        <div><i>4</i> Director waits his turn</div>
+      </div>
+      <div class="si-foot">Decisions are signed with a PIN set fresh each day. The record is never deleted.<br>Designed and developed by <b>Sunny Gupta</b></div>
+    </div>
+    <div class="si-card">
+      <img src="logo-lockup.png" alt="SETU" class="si-card-logo">
+      <h2 id="si-title">Sign in</h2>
+      <p class="hint" style="margin:6px 0 18px" id="si-sub"></p>
+      <div id="si-fields"></div>
+      <div id="si-err" class="hide" style="color:var(--stop);font-size:13px;margin-top:10px"></div>
+      <button class="btn primary" style="width:100%;margin-top:16px" id="si-go">Sign in</button>
+      <p class="hint" style="text-align:center;margin-top:12px" id="si-swapwrap">
+        <span id="si-swap-t">New here?</span>
+        <button class="btn ghost sm" id="si-swap">Create an account</button>
+      </p>
+    </div>
+  </div>
+</section>
 
-  return reply(200, { id: userId, email, mode, tempPassword });
-});
+<div class="shell hide" id="app">
+  <aside class="side">
+    <div class="brand"><img src="logo-mark.png" alt="" class="brand-mark"><b>SETU</b><span>Indent &amp; work order approvals</span></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="who"><div class="av dark sm" id="me-av"></div><div><b id="me-name"></b><small id="me-role"></small></div></div>
+      <button class="btn sm" style="width:100%" id="signout">Sign out</button>
+      <div class="credit">Built by <b>Sunny Gupta</b></div>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="top">
+      <img src="logo-lockup.png" alt="SETU" class="tlogo"><div style="min-width:0"><h1 id="page-title">Dashboard</h1><div class="sub" id="page-sub"></div></div>
+      <div style="margin-left:auto"><div class="pinchip" id="pinchip"><span class="led"></span><span id="pinchip-txt">PIN not set</span></div></div>
+    </header>
+    <div class="wrap" id="view"></div>
+  </div>
+  <nav class="tabbar" id="tabbar"></nav>
+</div>
+
+<div id="modal-root"></div>
+<div id="toasts"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
