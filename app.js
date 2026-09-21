@@ -817,12 +817,12 @@ function viewDash(){
     stat('Tasks given to me',tk.length,tk.length?'Close these to unblock a manager':'No task assigned to you','var(--cyan)')+
     stat('Needs my input',st.length,st.length?'Someone asked you for more':'Nothing sent back to you','var(--hold)')+
     stat('Open beyond 7 days',aged,'Out of '+open.length+' open requests',aged?'var(--stop)':'var(--seal)')+'</div>'+
-  '<div class="grid g2" style="margin-top:18px;align-items:start">'+
-   '<div class="card"><div class="row" style="padding:16px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on me</h3>'+(q.length?'<span class="tag t-prog" style="margin-left:auto">'+q.length+'</span>':'')+'</div>'+
-     (q.length?'<table class="cards"><tbody>'+q.map(line).join('')+'</tbody></table>':'<div class="empty"><h3>Nothing on your desk</h3><p class="hint">Requests appear the moment the person before you signs off.</p></div>')+'</div>'+
-   '<div class="card"><div class="row" style="padding:16px 18px;border-bottom:1px solid var(--line)"><h3>Sent back to me</h3>'+(st.length?'<span class="tag t-hold" style="margin-left:auto">'+st.length+'</span>':'')+'</div>'+
-     (st.length?'<table class="cards"><tbody>'+st.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">Stuck at step '+(r.infoStep+2)+' with '+esc(user(r.chain[r.infoStep].userId).name)+'</div></td></tr>').join('')+'</tbody></table>'
-       :'<div class="empty"><h3>Nothing held up</h3><p class="hint">If an approver wants more, it comes back here and opens at that step.</p></div>')+'</div></div>'+
+  (q.length||st.length
+    ?'<div class="grid g2" style="margin-top:14px;align-items:start">'+
+      (q.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on me</h3><span class="tag t-prog" style="margin-left:auto">'+q.length+'</span></div><table class="cards"><tbody>'+q.map(line).join('')+'</tbody></table></div>':'')+
+      (st.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Sent back to me</h3><span class="tag t-hold" style="margin-left:auto">'+st.length+'</span></div><table class="cards"><tbody>'+st.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">Stuck at step '+(r.infoStep+2)+' with '+esc(user(r.chain[r.infoStep].userId).name)+'</div></td></tr>').join('')+'</tbody></table></div>':'')+
+     '</div>'
+    :'<div class="card" style="margin-top:14px"><div class="empty" style="padding:26px 16px"><h3>Your desk is clear</h3><p class="hint">Requests appear here the moment the person before you signs off, and anything sent back to you lands here too.</p></div></div>')+
   '<div class="grid g2" style="margin-top:18px;align-items:start">'+
    '<div class="card pad"><h3 style="margin-bottom:14px">Where everything stands</h3>'+bars+'<div class="sep"></div><div class="row" style="justify-content:space-between"><span class="hint">'+all.length+' requests · '+mine.length+' raised by you</span>'+
      '<button class="btn ghost sm" id="d-all">Open all requests</button></div></div>'+
