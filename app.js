@@ -487,6 +487,48 @@ async function enter(session){
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
+/* ---------- owner deletion (testing, and the go-live reset) ---------- */
+async function removeObjects(paths){ if(!paths||!paths.length) return 0;
+  const {error}=await SB.storage.from('documents').remove(paths); if(error) throw error; return paths.length }
+function purgeRequestDialog(r){
+  modal({title:'Delete this request',
+    body:'<p style="margin-top:0"><b>'+esc(docTitle(r))+'</b> — '+esc(r.ref)+', raised by '+esc(user(r.requesterId).name)+'.</p>'+
+      '<p class="hint">Every step, task, note, document and audit row on it goes. This is the one exception to the permanent record, available only to the system owner, and the deletion itself is logged where it cannot be removed.</p>'+
+      '<div style="margin-top:14px"><label for="pg-why">Why</label><input id="pg-why" type="text" placeholder="e.g. test entry"></div><div id="pg-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="pg-go">Delete request</button>',
+    onOpen:(v,close)=>{$('#pg-go',v).onclick=async()=>{const why=$('#pg-why',v).value.trim(); if(why.length<4) return $('#pg-err',v).textContent='Say why, in a few words.';
+      $('#pg-go',v).disabled=true;
+      try{ const paths=await rpc('request_file_paths',{p_request:r.id}); await removeObjects(paths);
+        const res=await rpc('purge_request',{p_request:r.id,p_why:why}); close(); await load(); toast(res.ref+' deleted.','ok'); go({name:'all'}) }
+      catch(e){ $('#pg-go',v).disabled=false; $('#pg-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
+}
+function purgeAllDialog(){
+  modal({title:'Delete every request',
+    body:'<p style="margin-top:0">This removes <b>every request in the system</b> — '+DB.requests.length+' visible to you — with all steps, tasks, notes, documents, notifications and audit rows. Accounts, teams, saved hierarchies and masters stay. References restart at 1001.</p>'+
+      '<p class="hint">Meant for one moment: the end of testing, before the first real request. It is logged permanently.</p>'+
+      '<div style="margin-top:14px"><label for="pa-c">Type <b>DELETE EVERYTHING</b> to confirm</label><input id="pa-c" type="text" autocomplete="off"></div>'+
+      '<div style="margin-top:12px"><label for="pa-why">Why</label><input id="pa-why" type="text" placeholder="e.g. end of testing, going live"></div><div id="pa-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="pa-go">Delete everything</button>',
+    onOpen:(v,close)=>{$('#pa-go',v).onclick=async()=>{const c=$('#pa-c',v).value, why=$('#pa-why',v).value.trim();
+      if(c!=='DELETE EVERYTHING') return $('#pa-err',v).textContent='Type it exactly, in capitals.';
+      if(why.length<4) return $('#pa-err',v).textContent='Say why.';
+      $('#pa-go',v).disabled=true;
+      try{ const paths=await rpc('all_file_paths'); await removeObjects(paths);
+        const res=await rpc('purge_all_requests',{p_confirm:c,p_why:why}); close(); await load(); toast(res.requests+' requests and '+res.files+' files deleted.','ok'); go({name:'dash'}) }
+      catch(e){ $('#pa-go',v).disabled=false; $('#pa-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
+}
+function purgeUserDialog(u){
+  modal({title:'Remove '+u.name,
+    body:'<p style="margin-top:0">Removes the account <b>'+esc(u.email)+'</b> entirely. Refused if they still appear on any request — delete those first, or switch the account off instead, which keeps the history.</p>'+
+      '<div style="margin-top:14px"><label for="pu-why">Why</label><input id="pu-why" type="text" placeholder="e.g. test account"></div><div id="pu-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="pu-go">Remove account</button>',
+    onOpen:(v,close)=>{$('#pu-go',v).onclick=async()=>{const why=$('#pu-why',v).value.trim(); if(why.length<4) return $('#pu-err',v).textContent='Say why.';
+      $('#pu-go',v).disabled=true;
+      try{ const res=await rpc('purge_user',{p_user:u.id,p_why:why}); close(); await load(); render();
+        toast(res.auth_deleted?res.name+' removed.':res.name+' switched off; remove the sign-in from Supabase → Authentication → Users.',res.auth_deleted?'ok':'bad') }
+      catch(e){ $('#pu-go',v).disabled=false; $('#pu-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
+}
+
 /* ---------- notifications ---------- */
 const unread=()=>(DB.notifs||[]).filter(x=>!x.read);
 const KIND_ICON={landed:'➜',reply:'↩',task:'✎',task_closed:'✓',info:'?',approved:'✓',rejected:'✕',reassigned:'⇄'};
@@ -1027,12 +1069,14 @@ function viewDetail(id){
       :'<dt>Order date</dt><dd>'+esc(fmtD(f.woDate))+'</dd><dt>Site</dt><dd>'+esc(f.siteName||'—')+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Vendor</dt><dd>'+esc(f.vendorName||'—')+'</dd>'+
        (f.vendorAddress?'<dt>Address</dt><dd>'+esc(f.vendorAddress)+'</dd>':'')+(f.vendorState?'<dt>State</dt><dd>'+esc(f.vendorState)+(f.vendorStateCode?' ('+esc(f.vendorStateCode)+')':'')+'</dd>':'')+
        (f.vendorGstin?'<dt>GSTIN</dt><dd class="num">'+esc(f.vendorGstin)+'</dd>':'')+(f.vendorPan?'<dt>PAN</dt><dd class="num">'+esc(f.vendorPan)+'</dd>':'')+(f.vendorContact?'<dt>Contact</dt><dd>'+esc(f.vendorContact)+'</dd>':'')+(f.billingAddress?'<dt>Billing to</dt><dd>'+esc(f.billingAddress)+'</dd>':''))+
-    '<dt>Raised</dt><dd>'+esc(fmtD(r.createdAt))+'</dd><dt>Approvers</dt><dd>'+r.chain.length+' in sequence</dd></dl>'+(f.remarks?'<div class="sep"></div><div class="hint" style="margin-bottom:5px">Remarks</div><div style="white-space:pre-wrap">'+esc(f.remarks)+'</div>':'')+'</div>';
+    '<dt>Raised</dt><dd>'+esc(fmtD(r.createdAt))+'</dd><dt>Approvers</dt><dd>'+r.chain.length+' in sequence</dd></dl>'+(f.remarks?'<div class="sep"></div><div class="hint" style="margin-bottom:5px">Remarks</div><div style="white-space:pre-wrap">'+esc(f.remarks)+'</div>':'')+
+    (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
   return '<button class="btn ghost sm" id="d-back" style="margin-bottom:12px">Back</button>'+banner+'<div class="detail-grid"><div><div class="card pad"><h3 style="margin-bottom:16px">The chain</h3><div class="rail">'+nodes+'</div></div>'+notes+'</div><div>'+facts+panel+'</div></div>';
 }
 function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
   $('#d-back',v).onclick=()=>go({name:'all'});
+  if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
   let allFiles=r.files.slice(); r.chain.forEach(s=>{allFiles=allFiles.concat(s.files||[]);tasksOf(s).forEach(t=>{allFiles=allFiles.concat(t.files||[])})});
   bindFiles(v,allFiles);
   readForRequest(r.id);
@@ -1285,7 +1329,8 @@ function viewPeople(){
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">System owner</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td>'+esc(u.role||'')+'</td>'+
      '<td class="hint">'+esc(u.dept||'')+'</td><td class="hint">'+(mgr?esc(mgr.name)+(u.managerConfirmed?'':' <span class="tag t-hold">unconfirmed</span>'):'—')+'</td><td>'+(badges||'<span class="hint">—</span>')+'</td><td>'+(pinOK(u)?'<span class="tag t-ok">Set</span>':'<span class="tag t-wait">Not set</span>')+'</td>'+
-     '<td style="text-align:right">'+(ME.admin&&(!u.owner||u.id===ME.id)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+'</td></tr>'}).join('')+'</tbody></table></div>'+
+     '<td style="text-align:right;white-space:nowrap">'+(ME.admin&&(!u.owner||u.id===ME.id)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+
+     (ME.owner&&!u.owner?' <button class="btn sm" data-rmu="'+u.id+'" style="color:var(--stop)">Remove</button>':'')+'</td></tr>'}).join('')+'</tbody></table></div>'+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Departments</h3><p class="hint" style="margin-top:5px">A request shows a handover whenever it crosses from one of these to another, so keep the list tight.</p><div class="row" style="flex-wrap:wrap;gap:7px;margin-top:12px">'+
      DB.departments.map(d=>'<span class="tag t-wait">'+esc(d)+' <button class="btn ghost sm" data-dd="'+esc(d)+'" style="padding:0 4px" title="Remove">×</button></span>').join('')+'</div><div class="row" style="gap:8px;margin-top:14px"><input id="dp-new" type="text" placeholder="Add a department" style="max-width:280px"><button class="btn sm" id="dp-add">Add</button></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Requests stuck on an absent approver</h3><p class="hint" style="margin-top:5px">Only an admin can move a request off someone who is unavailable. The original assignment stays in the trail.</p>'+
@@ -1293,10 +1338,16 @@ function viewPeople(){
    '<div class="grid g2" style="margin-top:16px;align-items:start"><div class="card pad"><h3>Station master</h3><p class="hint" style="margin-top:5px">'+STATIONS.length+' stations loaded.'+(ME.admin?' Upload a replacement to refresh the list — the columns must stay ERP Code, Station Name, State.':'')+'</p>'+(ME.admin?'<div id="p-mast" style="margin-top:12px"></div>':'')+'</div>'+
    '<div class="card pad"><h3>Typed, not in the master</h3>'+(unlisted.length?'<p class="hint" style="margin-top:5px">Typed by requesters and not found in the station master. Worth adding.</p><ul style="margin:10px 0 0;padding-left:18px">'+unlisted.map(n=>'<li>'+esc(n)+'</li>').join('')+'</ul>':'<p class="hint" style="margin-top:5px">Nothing so far — every site used has matched the master.</p>')+
      '<div class="sep"></div><h3>Project names</h3><p class="hint" style="margin-top:5px">'+DB.projects.map(esc).join(', ')+'</p></div></div>'+
-   '<div class="card pad" style="margin-top:16px"><h3>The record is permanent</h3><p class="hint" style="margin-top:5px">Requests, approvals, conditions and the audit trail cannot be deleted or edited once recorded — the database has no way to do it. Corrections are added as new entries so the original stays visible.</p></div>';
+   (ME.owner?'<div class="card pad" style="margin-top:16px;border-color:var(--stop)"><h3>Owner controls — testing and the go-live reset</h3>'+
+     '<p class="hint" style="margin-top:5px">Only the system owner sees this. Deleting is the one exception to the permanent record and every use is logged where nobody, including you, can remove it. Use it to clear test data; once real requests exist, leave it alone.</p>'+
+     '<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn bad sm" id="p-purge-all">Delete every request</button>'+
+     '<span class="hint">Single requests are deleted from the request itself. Test accounts have a Remove button in the table above.</span></div></div>':'')+
+   '<div class="card pad" style="margin-top:16px"><h3>The record is permanent</h3><p class="hint" style="margin-top:5px">Requests, approvals, conditions and the audit trail cannot be deleted or edited once recorded'+(ME.owner?', except by the system owner through the controls above, and those deletions are themselves recorded permanently':' — the database has no way to do it')+'. Corrections are added as new entries so the original stays visible.</p></div>';
 }
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
+  if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
+  $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
   $$('[data-ed]',v).forEach(b=>b.onclick=()=>{const u=user(b.dataset.ed);
     modal({title:'Edit '+u.name,body:'<div class="grid" style="gap:13px"><div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
