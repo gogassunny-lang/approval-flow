@@ -41,6 +41,7 @@ const byCode=new Map(), byName=new Map();
 function indexStations(){ byCode.clear(); byName.clear();
   STATIONS.forEach(s=>{byCode.set(s.code.toUpperCase(),s);byName.set(s.name.toLowerCase(),s)}) }
 
+let skipPop=false;   // set when a dialog rewinds its own history entry, so the router ignores that one pop
 /* ---------- toast / modal ---------- */
 function toast(m,k){const t=document.createElement('div');t.className='toast '+(k||'');t.textContent=m;$('#toasts').appendChild(t);
   setTimeout(()=>{t.style.transition='opacity .3s';t.style.opacity='0';setTimeout(()=>t.remove(),320)},3600)}
@@ -49,11 +50,17 @@ function modal({title,body,footer,cls,onOpen}){
   v.innerHTML='<div class="modal '+(cls||'')+'"><div class="h"><h3>'+esc(title)+'</h3><button class="btn ghost sm" data-x>Close</button></div>'+
     '<div class="c">'+body+'</div>'+(footer?'<div class="f">'+footer+'</div>':'')+'</div>';
   $('#modal-root').appendChild(v);
-  const close=()=>{ v.remove(); window.removeEventListener('popstate',onPop); if(history.state&&history.state.modal){ skipPop=true; history.back() } };
-  v.addEventListener('click',e=>{if(e.target===v||e.target.hasAttribute('data-x'))close()});
-  try{ history.pushState(Object.assign({},history.state||ROUTE,{modal:true}),''); }catch(e){}
+  const mid=uid(); let armed=false;
   const onPop=()=>{ v.remove(); window.removeEventListener('popstate',onPop) };
-  window.addEventListener('popstate',onPop);
+  const close=()=>{ v.remove(); window.removeEventListener('popstate',onPop);
+    if(armed&&history.state&&history.state.mid===mid){ skipPop=true; history.back() } };
+  /* the dialog is a history entry so the phone's back button closes it — but if another dialog
+     just closed, its rewind is still in flight; arm only after that has landed, or this dialog
+     would mistake the rewind for a back press and close itself immediately */
+  const arm=()=>{ if(!v.isConnected) return; try{ history.pushState(Object.assign({},history.state||ROUTE,{modal:true,mid}),'') }catch(e){}
+    window.addEventListener('popstate',onPop); armed=true };
+  if(skipPop) window.addEventListener('popstate',()=>setTimeout(arm,0),{once:true}); else arm();
+  v.addEventListener('click',e=>{if(e.target===v||e.target.hasAttribute('data-x'))close()});
   document.addEventListener('keydown',function k(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',k)}});
   if(onOpen)onOpen(v,close); return {el:v,close};
 }
@@ -641,7 +648,10 @@ function tillMidnight(){const n=new Date(),m=new Date(n.getFullYear(),n.getMonth
 function pinBoxes(id){return '<div class="pinbox" id="'+id+'" style="margin:16px 0 6px">'+[0,1,2,3].map(i=>'<input type="password" inputmode="numeric" maxlength="1" aria-label="Digit '+(i+1)+'">').join('')+'</div>'}
 function wirePinBoxes(v,id,onEnter){
   const ins=$$('#'+id+' input',v); ins[0].focus();
-  ins.forEach((el,i)=>{el.addEventListener('input',()=>{el.value=el.value.replace(/\D/g,'');if(el.value&&ins[i+1])ins[i+1].focus()});
+  ins.forEach((el,i)=>{el.addEventListener('input',()=>{el.value=el.value.replace(/\D/g,'').slice(-1);
+      if(el.value&&ins[i+1]) ins[i+1].focus();
+      else if(el.value&&i===ins.length-1&&ins.every(x=>x.value)) { el.blur(); setTimeout(onEnter,80) }   // fourth digit in: go
+    });
     el.addEventListener('keydown',e=>{if(e.key==='Backspace'&&!el.value&&ins[i-1])ins[i-1].focus();if(e.key==='Enter')onEnter()})});
   return ()=>ins.map(i=>i.value).join('');
 }
@@ -759,7 +769,6 @@ const go=(r,replace)=>{
     if(replace||!history.state) history.replaceState(r,'',url); else if(routeHash(history.state)!==routeHash(r)) history.pushState(r,'',url) }catch(e){}
   paintNav();paintPin();render();window.scrollTo(0,0);
 };
-let skipPop=false;
 window.addEventListener('popstate',e=>{
   if(skipPop){ skipPop=false; return }              // a dialog closed itself and rewound its own entry
   if($('.veil')) return;                            // back pressed with a dialog open: the dialog handles it, the screen stays
