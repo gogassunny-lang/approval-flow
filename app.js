@@ -93,7 +93,7 @@ async function load(){
   const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
-    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,active:p.active,
+    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,active:p.active,mustChange:!!p.must_change_password,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   const U={}; DB.users.forEach(u=>U[u.id]=u);
@@ -488,11 +488,64 @@ async function enter(session){
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
     paintPin(); const h=routeFromHash(); go((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id))?h:{name:'dash'},true); subscribe();
-    if(!ME.role||!ME.dept) setTimeout(profileDialog,400);
+    const incomplete=()=>!ME.role||!ME.dept||DB.departments.indexOf(ME.dept)<0;
+    if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
+        onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(incomplete()) profileDialog(); else if(!pinOK(ME)) pinDialog() }}),300);
+    else if(incomplete()) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
   }catch(e){ fail(e) } finally { busy(false) }
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
+
+/* ---------- an administrator creates an account directly ---------- */
+function createUserDialog(){
+  modal({title:'Create an account',
+    body:'<div class="grid" style="gap:12px"><div><label for="cu-name">Full name</label><input id="cu-name" type="text" placeholder="Neha Kulkarni"></div>'+
+      '<div><label for="cu-email">Work email</label><input id="cu-email" type="email" placeholder="neha@confidencegroup.in"></div>'+
+      '<div class="grid g2"><div><label for="cu-role">Designation</label><input id="cu-role" type="text" list="dl-role" placeholder="Accounts Executive"></div>'+
+      '<div><label for="cu-dept">Department</label><select id="cu-dept">'+deptOptions('')+'</select></div></div>'+
+      '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('')+'</select><div class="hint">Set here, the manager does not need to confirm.</div></div>'+
+      '<div class="sep" style="margin:2px 0"></div>'+
+      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
+      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b></span></label>'+
+      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-adm" style="width:auto"> <span><b>Administrator</b></span></label>'+
+      '<div class="sep" style="margin:2px 0"></div>'+
+      '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">Shown to you once; pass it on. They must choose their own at first sign-in.</div></span></label>'+
+      '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="invite" style="width:auto;margin-top:4px"> <span><b>Email them an invite link</b><div class="hint">They set their own password from the link. Needs the email setup in the README.</div></span></label>'+
+      '</div>'+lists()+'<div id="cu-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="cu-go">Create account</button>',
+    onOpen:(v,close)=>{
+      $('#cu-name',v).focus();
+      $('#cu-go',v).onclick=async()=>{
+        const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
+          manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:$('#cu-adm',v).checked,
+          mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password'};
+        const err=$('#cu-err',v);
+        if(body.name.length<3) return err.textContent='Enter the full name.';
+        if(!/^\S+@\S+\.\S+$/.test(body.email)) return err.textContent='Enter a valid work email.';
+        if(body.role.length<2) return err.textContent='Enter a designation.';
+        if(!body.dept) return err.textContent='Choose a department.';
+        $('#cu-go',v).disabled=true; err.textContent='';
+        const {data,error}=await SB.functions.invoke('admin-create-user',{body});
+        if(error||!data||data.error){ $('#cu-go',v).disabled=false;
+          let msg=(data&&data.error)||(error&&error.message)||'Could not create the account.';
+          try{ if(error&&error.context){ const j=await error.context.json(); if(j&&j.error) msg=j.error } }catch(e){}
+          return err.textContent=/not found|404/i.test(msg)?'The admin-create-user function is not deployed yet — see the README.':msg }
+        close(); await load(); render();
+        if(data.tempPassword) tempPasswordDialog(body.name,body.email,data.tempPassword);
+        else toast('Invite sent to '+body.email+'.','ok');
+      };
+    }});
+}
+function tempPasswordDialog(name,email,pw){
+  modal({title:'Account created',
+    body:'<p style="margin-top:0"><b>'+esc(name)+'</b> can sign in with:</p>'+
+      '<div class="kv" style="margin-top:10px"><dt>Email</dt><dd class="num">'+esc(email)+'</dd><dt>Temporary password</dt><dd class="num" style="font-size:18px;letter-spacing:.06em">'+esc(pw)+'</dd></div>'+
+      '<p class="hint" style="margin-top:14px">This is shown once. Pass it on by a channel you trust — in person or a direct message. At their first sign-in they must replace it with a password of their own.</p>',
+    footer:'<button class="btn" id="tp-copy">Copy details</button><button class="btn primary" data-x>Done</button>',
+    onOpen:(v)=>{$('#tp-copy',v).onclick=async()=>{const txt='SETU sign-in\n'+APP_URL+'\nEmail: '+email+'\nTemporary password: '+pw+'\nYou will be asked to choose your own password when you sign in.';
+      try{ await navigator.clipboard.writeText(txt); toast('Copied.','ok') }catch(e){ toast('Select and copy the details above.','bad') }}}});
+}
 
 /* ---------- owner deletion (testing, and the go-live reset) ---------- */
 async function removeObjects(paths){ if(!paths||!paths.length) return 0;
@@ -1375,8 +1428,8 @@ function profileDialog(){
 function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
-  return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. New people register themselves from the sign-in screen; an admin then sets their access here.</p></div>'+
-    '<div class="row hdr-actions" style="margin-left:auto;gap:8px"><button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
+  return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
+    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">System owner</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
@@ -1398,6 +1451,7 @@ function viewPeople(){
 }
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
+  if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
   if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
