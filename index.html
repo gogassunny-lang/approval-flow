@@ -51,7 +51,11 @@ button,input,select,textarea{font:inherit;color:inherit}
 .rail-demo div.on{color:#fff}
 .si-form{background:var(--surface);padding:56px 48px;display:flex;flex-direction:column;justify-content:center}
 .si-form .box{max-width:400px;width:100%}
-@media(max-width:860px){#signin{grid-template-columns:1fr}.si-art{padding:32px 24px}.si-art h1{font-size:30px}.si-form{padding:32px 24px}}
+@media(max-width:860px){#signin{grid-template-columns:1fr;min-height:100vh}
+  .si-art{padding:calc(24px + env(safe-area-inset-top,0px)) 22px 22px;justify-content:flex-start;gap:0}
+  .si-art h1{font-size:21px;max-width:none} .si-art p,.rail-demo,.setu-tag,.si-art small{display:none}
+  .si-logo{width:104px;margin-bottom:12px}
+  .si-form{padding:22px 20px calc(24px + env(safe-area-inset-bottom,0px));justify-content:flex-start}}
 
 .shell{display:grid;grid-template-columns:246px 1fr;min-height:100vh}
 .side{background:var(--surface);color:var(--ink-soft);border-right:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
@@ -73,7 +77,57 @@ button,input,select,textarea{font:inherit;color:inherit}
 .top{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:14px 26px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:20}
 .top h1{font-size:22px} .top .sub{color:var(--steel);font-size:13px}
 .wrap{padding:24px 26px 60px;max-width:1180px;width:100%}
-@media(max-width:900px){.shell{grid-template-columns:1fr}.side{position:static;height:auto}.nav{display:flex;gap:6px;overflow-x:auto;padding:10px}.nav .grp{display:none}.nav button{width:auto;white-space:nowrap}.wrap{padding:18px 16px 50px}.top{padding:12px 16px}}
+/* ---------- phone layout: bottom tabs, compact header, stacked cards ---------- */
+.tabbar{display:none}
+.tlogo{display:none}
+@media(max-width:900px){
+  body{font-size:15px}
+  .shell{grid-template-columns:1fr;padding-bottom:calc(66px + env(safe-area-inset-bottom,0px))}
+  .side{display:none}
+  .top{padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;gap:10px;position:sticky;top:0}
+  .top h1{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .top .sub{display:none}
+  .tlogo{display:block;width:24px;height:auto;flex:none}
+  .pinchip{padding:4px 9px;font-size:11.5px;white-space:nowrap}
+  .wrap{padding:12px 12px 24px}
+  .g4,.g3{grid-template-columns:1fr 1fr} .g2{grid-template-columns:1fr}
+  .stat{padding:13px 14px} .stat .v{font-size:24px} .stat .k{font-size:12px}
+  .card.pad{padding:15px}
+  h3{font-size:15.5px}
+  input[type=text],input[type=number],input[type=password],input[type=email],input[type=date],select,textarea{font-size:16px;padding:11px 12px}
+  .btn{padding:11px 16px;font-size:15px;min-height:44px} .btn.sm{padding:8px 13px;font-size:14px;min-height:38px} .btn.ghost.sm{min-height:0}
+  .detail-grid{grid-template-columns:1fr;gap:14px}
+  .tabs button{padding:11px 12px;font-size:15px}
+  .kv{grid-template-columns:104px 1fr}
+  .node{padding-left:42px} .node .body{padding:11px 12px}
+  .handover{margin-left:42px}
+  /* every request list becomes a stack of tappable cards */
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%;box-sizing:border-box}
+  table.cards thead{display:none}
+  table.cards tr{padding:12px 14px;border-bottom:1px solid var(--line)}
+  table.cards tr:last-child{border-bottom:0}
+  table.cards td{padding:1px 0;border:0}
+  table.cards td.meta{display:inline-block;width:auto;margin-right:10px;color:var(--steel);font-size:13px}
+  table.cards td.pos{margin-top:4px}
+  /* dialogs slide up as sheets */
+  .veil{align-items:end;padding:0}
+  .modal{width:100%;max-height:92vh;border-radius:18px 18px 0 0;box-shadow:0 -10px 40px rgba(20,32,47,.25)}
+  .modal .f{border-radius:0;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  .modal.viewer{max-height:100vh;height:100vh;border-radius:0}
+  .pinbox{justify-content:center} .pinbox input{width:58px;height:62px}
+  #toasts{left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px))} .toast{max-width:none}
+  .tabbar{display:flex}
+}
+.tabbar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);z-index:60;
+  padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));justify-content:space-around}
+.tabbar button{flex:1;background:none;border:0;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:var(--steel);padding:4px 0;position:relative;font-weight:500}
+.tabbar button.on{color:var(--indigo);font-weight:700}
+.tabbar svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.tabbar button.raise svg{width:34px;height:34px;background:var(--indigo);color:#fff;border-radius:50%;padding:6px;margin-top:-10px;box-shadow:0 4px 12px -4px rgba(1,89,187,.7)}
+.tabbar .pill{position:absolute;top:0;left:calc(50% + 4px);background:var(--stop);color:#fff;border-radius:999px;font-size:10px;padding:0 5px;min-width:16px;height:16px;line-height:16px;font-weight:700;text-align:center}
+.sheet-list button{width:100%;display:flex;align-items:center;gap:12px;background:none;border:0;border-bottom:1px solid var(--line);padding:13px 4px;text-align:left;font-size:15.5px;color:var(--ink)}
+.sheet-list button:last-child{border-bottom:0}
+.sheet-list .pill{margin-left:auto;background:var(--indigo);color:#fff;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:700}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh)}
 .card.pad{padding:20px}
@@ -269,11 +323,12 @@ tbody tr:last-child td{border-bottom:0}
   </aside>
   <div class="main">
     <header class="top">
-      <div style="min-width:0"><h1 id="page-title">Dashboard</h1><div class="sub" id="page-sub"></div></div>
+      <img src="logo-mark.png" alt="" class="tlogo"><div style="min-width:0"><h1 id="page-title">Dashboard</h1><div class="sub" id="page-sub"></div></div>
       <div style="margin-left:auto"><div class="pinchip" id="pinchip"><span class="led"></span><span id="pinchip-txt">PIN not set</span></div></div>
     </header>
     <div class="wrap" id="view"></div>
   </div>
+  <nav class="tabbar" id="tabbar"></nav>
 </div>
 
 <div id="modal-root"></div>
