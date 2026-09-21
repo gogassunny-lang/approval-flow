@@ -488,7 +488,7 @@ async function enter(session){
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
     paintPin(); const h=routeFromHash(); go((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id))?h:{name:'dash'},true); subscribe();
-    const incomplete=()=>!ME.role||!ME.dept||DB.departments.indexOf(ME.dept)<0;
+    const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
     if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
         onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(incomplete()) profileDialog(); else if(!pinOK(ME)) pinDialog() }}),300);
     else if(incomplete()) setTimeout(profileDialog,400);
@@ -502,29 +502,35 @@ function createUserDialog(){
   modal({title:'Create an account',
     body:'<div class="grid" style="gap:12px"><div><label for="cu-name">Full name</label><input id="cu-name" type="text" placeholder="Neha Kulkarni"></div>'+
       '<div><label for="cu-email">Work email</label><input id="cu-email" type="email" placeholder="neha@confidencegroup.in"></div>'+
+      '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">System role</div>'+
+      '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-sys" value="user" checked style="width:auto;margin-top:4px"> <span><b>User</b><div class="hint">Raises and approves requests. Can be a manager, and can be given work.</div></span></label>'+
+      (ME.owner?'<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-sys" value="admin" style="width:auto;margin-top:4px"> <span><b>Admin</b><div class="hint">Runs the system: creates accounts, sets access, manages masters, sees every request. Only you can create admins.</div></span></label>'
+        :'<div class="hint">Only the system owner can create administrators.</div>')+
+      '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">In the process flow</div>'+
       '<div class="grid g2"><div><label for="cu-role">Designation</label><input id="cu-role" type="text" list="dl-role" placeholder="Accounts Executive"></div>'+
-      '<div><label for="cu-dept">Department</label><select id="cu-dept">'+deptOptions('')+'</select></div></div>'+
+      '<div><label for="cu-dept">Department <span class="hint" id="cu-dept-opt"></span></label><select id="cu-dept">'+deptOptions('')+'</select></div></div>'+
       '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('')+'</select><div class="hint">Set here, the manager does not need to confirm.</div></div>'+
-      '<div class="sep" style="margin:2px 0"></div>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
-      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b></span></label>'+
-      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-adm" style="width:auto"> <span><b>Administrator</b></span></label>'+
-      '<div class="sep" style="margin:2px 0"></div>'+
+      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
+      '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">Shown to you once; pass it on. They must choose their own at first sign-in.</div></span></label>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="invite" style="width:auto;margin-top:4px"> <span><b>Email them an invite link</b><div class="hint">They set their own password from the link. Needs the email setup in the README.</div></span></label>'+
       '</div>'+lists()+'<div id="cu-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="cu-go">Create account</button>',
     onOpen:(v,close)=>{
       $('#cu-name',v).focus();
+      const sysRole=()=>($('input[name="cu-sys"]:checked',v)||{}).value||'user';
+      const syncDept=()=>{ const opt=$('#cu-dept-opt',v); if(opt) opt.textContent=sysRole()==='admin'?'(optional for admins)':''; };
+      $$('input[name="cu-sys"]',v).forEach(r=>r.onchange=syncDept); syncDept();
       $('#cu-go',v).onclick=async()=>{
         const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
-          manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:$('#cu-adm',v).checked,
+          manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:sysRole()==='admin',
           mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password'};
         const err=$('#cu-err',v);
         if(body.name.length<3) return err.textContent='Enter the full name.';
         if(!/^\S+@\S+\.\S+$/.test(body.email)) return err.textContent='Enter a valid work email.';
         if(body.role.length<2) return err.textContent='Enter a designation.';
-        if(!body.dept) return err.textContent='Choose a department.';
+        if(!body.dept&&!body.is_admin) return err.textContent='Choose a department.';
         $('#cu-go',v).disabled=true; err.textContent='';
         const {data,error}=await SB.functions.invoke('admin-create-user',{body});
         if(error||!data||data.error){ $('#cu-go',v).disabled=false;
@@ -1421,7 +1427,7 @@ function profileDialog(){
       '<div style="margin-top:13px"><label for="q-m">Reports to</label><select id="q-m">'+mgrOptions(ME.managerId)+'</select><div class="hint">Your manager confirms this before they can assign you work.</div></div><div id="q-e" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:'<button class="btn" data-x>Later</button><button class="btn primary" id="q-g">Save and continue</button>',
     onOpen:(v,c)=>{$('#q-g',v).onclick=async()=>{const r=$('#q-r',v).value.trim(),d=$('#q-d',v).value,m=$('#q-m',v).value||null;
-      if(r.length<2) return $('#q-e',v).textContent='Enter your designation.'; if(!d) return $('#q-e',v).textContent='Choose your department.';
+      if(r.length<2) return $('#q-e',v).textContent='Enter your designation.'; if(!d&&!ME.admin) return $('#q-e',v).textContent='Choose your department.';
       try{ await rpc('update_my_profile',{p_role:r,p_dept:d,p_manager:m}); await load(); c(); $('#me-role').textContent=ME.role; render(); paintNav(); toast('Directory entry updated.','ok'); if(!pinOK(ME))setTimeout(pinDialog,350) }
       catch(e){ $('#q-e',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
 }
@@ -1431,9 +1437,9 @@ function viewPeople(){
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
     '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
-   DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">System owner</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
+   DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
-     '<td class="hint meta">'+esc(u.dept||'')+'</td><td class="hint meta">'+(mgr?'reports to '+esc(mgr.name)+(u.managerConfirmed?'':' <span class="tag t-hold">unconfirmed</span>'):'')+'</td><td class="meta">'+(badges||'')+'</td><td class="meta">'+(pinOK(u)?'<span class="tag t-ok">PIN set</span>':'<span class="tag t-wait">No PIN today</span>')+'</td>'+
+     '<td class="hint meta">'+esc(u.dept||(u.admin?'no department':''))+'</td><td class="hint meta">'+(mgr?'reports to '+esc(mgr.name)+(u.managerConfirmed?'':' <span class="tag t-hold">unconfirmed</span>'):'')+'</td><td class="meta">'+(badges||'')+'</td><td class="meta">'+(pinOK(u)?'<span class="tag t-ok">PIN set</span>':'<span class="tag t-wait">No PIN today</span>')+'</td>'+
      '<td class="acts" style="text-align:right;white-space:nowrap">'+(ME.admin&&(!u.owner||u.id===ME.id)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+
      (ME.owner&&!u.owner?' <button class="btn sm" data-rmu="'+u.id+'" style="color:var(--stop)">Remove</button>':'')+'</td></tr>'}).join('')+'</tbody></table></div>'+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Departments</h3><p class="hint" style="margin-top:5px">A request shows a handover whenever it crosses from one of these to another, so keep the list tight.</p><div class="row" style="flex-wrap:wrap;gap:7px;margin-top:12px">'+
@@ -1460,11 +1466,12 @@ function wirePeople(v){
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
-        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':'Sees everything, edits people and masters, reassigns stuck requests.')+'</div></span></label>'+
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label></div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
-      onOpen:(mv,cl)=>{$('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; if(!d) return $('#e-err',mv).textContent='Choose a department.';
-        try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:u.id===ME.id?true:$('#e-adm',mv).checked,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
+      onOpen:(mv,cl)=>{$('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
+        if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
+        try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
     const {error}=await SB.from('departments').insert({name:n}); if(error) return fail(error); await load(); render(); toast('Added.','ok')};
