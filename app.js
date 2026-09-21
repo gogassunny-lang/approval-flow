@@ -35,7 +35,7 @@ const numOf=s=>{const m=String(s||'').replace(/,/g,'').match(/-?\d+(\.\d+)?/);re
 const tidy=s=>String(s||'').replace(/,\s*,/g,', ').replace(/\s*,\s*/g,', ').replace(/,\s*$/,'').replace(/\s+/g,' ').trim();
 
 /* ---------- state ---------- */
-let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[]};
+let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[]};
 let STATIONS=[], ME=null, ROUTE={name:'dash'};
 const byCode=new Map(), byName=new Map();
 function indexStations(){ byCode.clear(); byName.clear();
@@ -78,11 +78,12 @@ async function load(){
     SB.from('departments').select('name').order('name'),
     SB.from('projects').select('name').order('name'),
     SB.from('stations').select('*').order('name'),
-    SB.from('usage_daily').select('*')
+    SB.from('usage_daily').select('*'),
+    SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60)
   ];
   const r=await Promise.all(q);
   const bad=r.find(x=>x.error); if(bad) throw bad.error;
-  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage]=r.map(x=>x.data||[]);
+  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,active:p.active,
@@ -114,6 +115,7 @@ async function load(){
   DB.departments=dept.map(d=>d.name);
   DB.projects=proj.map(p=>p.name);
   STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
+  DB.notifs=notif.map(x=>({id:x.id,requestId:x.request_id,kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at}));
 
   const me=DB.users.find(u=>u.id===(ME&&ME.id));
   if(me) ME=me;
@@ -477,12 +479,49 @@ async function enter(session){
     await SB.rpc('record_login');
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
+    pushRegister();
     paintPin(); const h=routeFromHash(); go((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id))?h:{name:'dash'},true); subscribe();
     if(!ME.role||!ME.dept) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
   }catch(e){ fail(e) } finally { busy(false) }
 }
-function leave(){ ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
+function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
+
+/* ---------- notifications ---------- */
+const unread=()=>(DB.notifs||[]).filter(x=>!x.read);
+const KIND_ICON={landed:'➜',reply:'↩',task:'✎',task_closed:'✓',info:'?',approved:'✓',rejected:'✕',reassigned:'⇄'};
+function viewInbox(){
+  head('Notifications','Everything that landed on your desk');
+  const l=DB.notifs||[];
+  if(!l.length) return '<div class="card"><div class="empty"><h3>Nothing yet</h3><p class="hint">When a request reaches you, a task is handed to you, or something you raised moves, it appears here — and on your phone and by email once those are switched on.</p></div></div>';
+  const un=unread().length;
+  return '<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><span class="hint">'+(un?un+' unread':'All read')+'</span>'+
+    (un?'<button class="btn sm" id="nb-all" style="margin-left:auto">Mark all read</button>':'')+'</div>'+
+    l.map(x=>'<div class="filerow" data-n="'+x.id+'" style="border:0;border-bottom:1px solid var(--line);border-radius:0;cursor:pointer;align-items:flex-start;'+(x.read?'':'background:var(--indigo-soft)')+'">'+
+      '<span class="av sm" style="'+(x.read?'':'background:var(--indigo);color:#fff;border-color:var(--indigo)')+'">'+(KIND_ICON[x.kind]||'•')+'</span>'+
+      '<div style="min-width:0;flex:1"><div style="font-size:14px;'+(x.read?'':'font-weight:700')+'">'+esc(x.title)+'</div>'+
+      (x.body?'<div class="hint" style="white-space:pre-line;margin-top:2px">'+esc(x.body)+'</div>':'')+
+      '<div class="hint" style="margin-top:3px">'+esc(fmtDT(x.ts))+'</div></div></div>').join('')+'</div>';
+}
+function wireInbox(v){
+  $$('[data-n]',v).forEach(el=>el.onclick=async()=>{const x=DB.notifs.find(y=>y.id===+el.dataset.n); if(!x) return;
+    if(!x.read){ x.read=true; SB.rpc('mark_read',{p_ids:[x.id]}).then(()=>paintNav()) }
+    if(x.requestId&&DB.requests.some(r=>r.id===x.requestId)) go({name:'detail',id:x.requestId}); else render()});
+  if($('#nb-all',v)) $('#nb-all',v).onclick=async()=>{ await SB.rpc('mark_all_read'); DB.notifs.forEach(x=>x.read=true); paintNav(); render() };
+}
+/* opening a request settles everything about it */
+function readForRequest(id){ const mine=(DB.notifs||[]).filter(x=>x.requestId===id&&!x.read); if(!mine.length) return;
+  mine.forEach(x=>x.read=true); SB.rpc('mark_request_read',{p_request:id}).then(()=>paintNav()) }
+/* the Median app: tell OneSignal who this is, so pushes reach the right phone */
+function pushRegister(){
+  try{
+    const m=window.median||window.gonative; if(!m||!m.onesignal||!ME) return;
+    if(m.onesignal.login) m.onesignal.login({externalId:ME.id});
+    else if(m.onesignal.externalUserId&&m.onesignal.externalUserId.set) m.onesignal.externalUserId.set({externalId:ME.id});
+    if(m.onesignal.register) m.onesignal.register();
+  }catch(e){}
+}
+function pushForget(){ try{ const m=window.median||window.gonative; if(m&&m.onesignal&&m.onesignal.logout) m.onesignal.logout() }catch(e){} }
 
 /* ---------- password reset ---------- */
 function forgotDialog(){
@@ -540,7 +579,15 @@ function subscribe(){
     .on('postgres_changes',{event:'*',schema:'public',table:'requests'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'steps'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},reloadSoon)
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+ME.id},p=>{
+      const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok'); reloadSoon();
+      if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
+        try{ const nn=new Notification(x.title||'SETU',{body:(x.body||'').split('\n')[0],icon:'icon-192.png',tag:'setu-'+x.id});
+          nn.onclick=()=>{window.focus(); if(x.request_id) go({name:'detail',id:x.request_id}); nn.close()} }catch(e){}
+      }})
     .subscribe();
+  /* on the web, ask once for browser notifications so a background tab can still be tapped on the shoulder */
+  if('Notification' in window&&Notification.permission==='default'&&!(window.median||window.gonative)) setTimeout(()=>{try{Notification.requestPermission()}catch(e){}},4000);
 }
 function unsubscribe(){ if(channel){ SB.removeChannel(channel); channel=null } }
 
@@ -601,6 +648,7 @@ function confirmPin(label,then){
    ============================================================ */
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
+  {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length},
   {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
@@ -645,6 +693,7 @@ function render(){
   const v=$('#view');
   switch(ROUTE.name){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
+    case 'inbox': v.innerHTML=viewInbox(); wireInbox(v); break;
     case 'new': v.innerHTML=viewNew(); wireNew(v); break;
     case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.'); wireList(v); break;
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
@@ -986,6 +1035,7 @@ function wireDetail(v){
   $('#d-back',v).onclick=()=>go({name:'all'});
   let allFiles=r.files.slice(); r.chain.forEach(s=>{allFiles=allFiles.concat(s.files||[]);tasksOf(s).forEach(t=>{allFiles=allFiles.concat(t.files||[])})});
   bindFiles(v,allFiles);
+  readForRequest(r.id);
   if(needsMyInfo(r)){const n=$('#step-'+r.infoStep,v);if(n){n.classList.add('flash');setTimeout(()=>n.scrollIntoView({behavior:'smooth',block:'center'}),120)}}
   const after=async(msg)=>{await load();toast(msg,'ok');go({name:'detail',id:r.id})};
 
