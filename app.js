@@ -5,7 +5,10 @@
    that enforces the rules itself.
    ============================================================ */
 
-const SB = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+/* implicit flow: a password-reset link must work in whatever browser opens it, which on a
+   phone is usually not the one that asked for it (the SETU app asks, the email app opens Chrome) */
+const SB = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, {auth:{flowType:'implicit',detectSessionInUrl:true,persistSession:true}});
+const APP_URL = location.origin + location.pathname;   // where reset links come back to
 
 /* ---------- utilities ---------- */
 const $=(s,r=document)=>r.querySelector(s);
@@ -435,8 +438,10 @@ async function paintSignIn(){
      '<div><label for="f-pass">Password</label><input id="f-pass" type="password" placeholder="At least 8 characters"></div>'+
      '<div class="hint">You can pick your manager once you are in, from your directory entry.</div></div>'
     :'<div class="grid" style="gap:12px"><div><label for="f-email">Work email</label><input id="f-email" type="email" autocomplete="username"></div>'+
-     '<div><label for="f-pass">Password</label><input id="f-pass" type="password" autocomplete="current-password"></div></div>';
+     '<div><label for="f-pass">Password</label><input id="f-pass" type="password" autocomplete="current-password"></div>'+
+     '<div style="text-align:right;margin-top:-4px"><button class="btn ghost sm" id="si-forgot" style="padding:0;font-weight:500">Forgot your password?</button></div></div>';
   $$('#si-fields input').forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#si-go').click()}));
+  if($('#si-forgot')) $('#si-forgot').onclick=forgotDialog;
 }
 $('#si-swap').onclick=()=>{signMode=signMode==='signup'?'login':'signup';paintSignIn()};
 $('#si-go').onclick=async()=>{
@@ -478,6 +483,54 @@ async function enter(session){
   }catch(e){ fail(e) } finally { busy(false) }
 }
 function leave(){ ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
+
+/* ---------- password reset ---------- */
+function forgotDialog(){
+  const pre=(($('#f-email')||{}).value||'').trim();
+  modal({title:'Reset your password',
+    body:'<p class="hint" style="margin-top:0">Enter your work email. If it is registered, a link arrives within a minute. Open it on any device — set the new password there, then sign in.</p>'+
+      '<div style="margin-top:14px"><label for="fp-email">Work email</label><input id="fp-email" type="email" value="'+esc(pre)+'" autocomplete="username"></div>'+
+      '<div id="fp-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fp-go">Send the link</button>',
+    onOpen:(v,close)=>{
+      $('#fp-email',v).focus(); $('#fp-email',v).addEventListener('keydown',e=>{if(e.key==='Enter')$('#fp-go',v).click()});
+      $('#fp-go',v).onclick=async()=>{
+        const email=$('#fp-email',v).value.trim().toLowerCase();
+        if(!/^\S+@\S+\.\S+$/.test(email)) return $('#fp-err',v).textContent='Enter a valid work email.';
+        $('#fp-go',v).disabled=true;
+        const {error}=await SB.auth.resetPasswordForEmail(email,{redirectTo:APP_URL});
+        if(error){ $('#fp-go',v).disabled=false; return $('#fp-err',v).textContent=/rate|limit/i.test(error.message)?'Too many reset emails in a short time. Try again in a few minutes.':error.message }
+        close(); toast('If that address is registered, a reset link is on its way.','ok');
+      };
+    }});
+}
+/* shown when someone arrives from a reset link, and also used as "change password" from inside the app */
+function newPasswordDialog(opts){
+  opts=opts||{};
+  const m=modal({title:opts.title||'Set a new password',
+    body:'<p class="hint" style="margin-top:0">'+esc(opts.intro||'Choose a password of at least 8 characters. You stay signed in on this device afterwards.')+'</p>'+
+      '<div class="grid" style="gap:12px;margin-top:14px"><div><label for="np1">New password</label><input id="np1" type="password" autocomplete="new-password"></div>'+
+      '<div><label for="np2">Type it again</label><input id="np2" type="password" autocomplete="new-password"></div></div>'+
+      '<div id="np-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:(opts.cancellable?'<button class="btn" data-x>Cancel</button>':'')+'<button class="btn primary" id="np-go">Save password</button>',
+    onOpen:(v,close)=>{
+      $('#np1',v).focus(); $$('input',v).forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#np-go',v).click()}));
+      $('#np-go',v).onclick=async()=>{
+        const a=$('#np1',v).value,b=$('#np2',v).value,err=$('#np-err',v);
+        if(a.length<8) return err.textContent='At least 8 characters.';
+        if(a!==b) return err.textContent='The two entries do not match.';
+        $('#np-go',v).disabled=true;
+        const {error}=await SB.auth.updateUser({password:a});
+        if(error){ $('#np-go',v).disabled=false; return err.textContent=/same/i.test(error.message)?'That is already your password. Pick a different one.':error.message }
+        close(); toast('Password saved.','ok'); if(opts.onDone) opts.onDone();
+      };
+    }});
+  if(!opts.cancellable){ /* a recovery session must end in a new password: no click-away, no escape */
+    m.el.onclick=e=>{ if(e.target===m.el) e.stopPropagation() };
+    const x=$('[data-x]',m.el); if(x) x.remove();
+  }
+}
+let recovering=false;
 
 /* ---------- realtime: refresh when something visible changes ---------- */
 let channel=null;
@@ -1177,7 +1230,7 @@ function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. New people register themselves from the sign-in screen; an admin then sets their access here.</p></div>'+
-    '<button class="btn" id="p-me" style="margin-left:auto">My directory entry</button></div></div>'+
+    '<div class="row" style="margin-left:auto;gap:8px"><button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">System owner</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td>'+esc(u.role||'')+'</td>'+
@@ -1194,6 +1247,7 @@ function viewPeople(){
 }
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
+  $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
   $$('[data-ed]',v).forEach(b=>b.onclick=()=>{const u=user(b.dataset.ed);
     modal({title:'Edit '+u.name,body:'<div class="grid" style="gap:13px"><div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
@@ -1247,7 +1301,13 @@ document.title=CONFIG.APP_NAME||'SETU';
   try{ const {data}=await SB.from('departments').select('name').order('name'); if(data) DB.departments=data.map(d=>d.name) }catch(e){}
   SB.auth.onAuthStateChange((event,session)=>{
     if(event==='SIGNED_OUT'){ leave(); return }
-    if(session&&!ME) enter(session);
+    if(event==='PASSWORD_RECOVERY'&&session){
+      recovering=true;
+      newPasswordDialog({title:'Set your new password',intro:'You arrived from a reset link. Choose a new password to finish.',
+        onDone:()=>{ recovering=false; if(!ME) enter(session) }});
+      return;
+    }
+    if(session&&!ME&&!recovering) enter(session);
   });
   const {data:{session}}=await SB.auth.getSession();
   if(session) enter(session); else paintSignIn();
