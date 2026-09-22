@@ -93,7 +93,7 @@ async function load(){
   const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
-    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,active:p.active,mustChange:!!p.must_change_password,
+    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   const U={}; DB.users.forEach(u=>U[u.id]=u);
@@ -505,6 +505,16 @@ async function enter(session){
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
+/* a checklist of the optional pages; the always-on work pages are noted but not listable */
+function pagesChecklist(id,selected){
+  const set=selected||DEFAULT_PAGES;
+  return '<div class="hint" style="font-weight:600;color:var(--ink-soft);margin-top:2px">Pages they can open</div>'+
+    '<div id="'+id+'" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin-top:6px">'+
+    OPTIONAL_PAGES.map(pg=>'<label style="display:flex;align-items:center;gap:8px;margin:0;font-size:13.5px"><input type="checkbox" value="'+pg.k+'" style="width:auto" '+(set.indexOf(pg.k)>-1?'checked':'')+'> '+esc(pg.label)+'</label>').join('')+'</div>'+
+    '<div class="hint" style="margin-top:6px">Dashboard, Notifications, Waiting on me, Tasks given to me, Needs my input and My requests are always available — they carry the work. Admins always see every page.</div>';
+}
+const readChecklist=(id,v)=>$$('#'+id+' input:checked',v).map(c=>c.value);
+
 /* ---------- an administrator creates an account directly ---------- */
 function createUserDialog(){
   modal({title:'Create an account',
@@ -520,7 +530,7 @@ function createUserDialog(){
       '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('',null)+'</select><div class="hint">A manager, an admin, or you. Set here, no confirmation needed — they are on that person\'s team from the start.</div></div>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
-      '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
+      '<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('cu-pages',DEFAULT_PAGES)+'<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">They must choose their own at first sign-in.</div></span></label>'+
       '<div id="cu-pw-wrap" style="padding-left:24px"><label for="cu-pw">Temporary password <span class="hint">optional</span></label><input id="cu-pw" type="text" autocomplete="off" placeholder="Leave blank and one is generated for you"><div class="hint">At least 8 characters if you set one. Shown to you once after the account is created.</div></div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="invite" style="width:auto;margin-top:4px"> <span><b>Email them an invite link</b><div class="hint">They set their own password from the link. Needs the email setup in the README.</div></span></label>'+
@@ -536,7 +546,7 @@ function createUserDialog(){
       $('#cu-go',v).onclick=async()=>{
         const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
           manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:sysRole()==='admin',
-          mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password',password:($('#cu-pw',v)||{}).value||''};
+          mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password',password:($('#cu-pw',v)||{}).value||'',pages:readChecklist('cu-pages',v)};
         const err=$('#cu-err',v);
         if(body.name.length<3) return err.textContent='Enter the full name.';
         if(!/^\S+@\S+\.\S+$/.test(body.email)) return err.textContent='Enter a valid work email.';
@@ -771,6 +781,23 @@ function confirmPin(label,then){
 /* ============================================================
    Navigation
    ============================================================ */
+/* pages that can be turned off per person; the rest are always shown when the person has work there */
+const OPTIONAL_PAGES=[
+  {k:'new',label:'Raise a request'},
+  {k:'tpl',label:'Saved hierarchies'},
+  {k:'team',label:'My team (managers only)'},
+  {k:'all',label:'Requests I can see'},
+  {k:'report',label:'Reports'},
+  {k:'people',label:'People & masters'},
+  {k:'usage',label:'Usage'}
+];
+const DEFAULT_PAGES=['new','tpl','team','all','report'];   // a plain user's standard set
+function allowedPages(u){
+  if(u.admin||u.owner) return OPTIONAL_PAGES.map(p=>p.k);   // admins run the system: every page
+  if(Array.isArray(u.pages)) return u.pages;                // explicitly set
+  return DEFAULT_PAGES;                                     // role default
+}
+const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
@@ -789,7 +816,7 @@ const PAGES=[
 function paintNav(){
   if(!ME) return;
   let h='',g='';
-  PAGES.filter(p=>!p.when||p.when()).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
+  PAGES.filter(p=>!p.when||p.when()).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k)).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
     const n=p.badge?p.badge():0;
     h+='<button data-k="'+p.k+'" class="'+(ROUTE.name===p.k?'on':'')+'">'+esc(p.label)+(n?'<span class="pill">'+n+'</span>':'')+'</button>'});
   $('#nav').innerHTML=h;
@@ -818,7 +845,7 @@ function paintTabbar(){
   $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
 }
 function moreSheet(){
-  const items=PAGES.filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k));
+  const items=PAGES.filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k)).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k));
   modal({title:'More',
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
@@ -851,6 +878,7 @@ function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
 function render(){
   if(!ME) return;
+  if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   const v=$('#view');
   switch(ROUTE.name){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
@@ -1480,11 +1508,13 @@ function wirePeople(v){
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
-        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label></div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
+        (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
       onOpen:(mv,cl)=>{$('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
+          if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
     const {error}=await SB.from('departments').insert({name:n}); if(error) return fail(error); await load(); render(); toast('Added.','ok')};
