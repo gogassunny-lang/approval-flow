@@ -521,7 +521,8 @@ function createUserDialog(){
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
       '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
-      '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">Shown to you once; pass it on. They must choose their own at first sign-in.</div></span></label>'+
+      '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">They must choose their own at first sign-in.</div></span></label>'+
+      '<div id="cu-pw-wrap" style="padding-left:24px"><label for="cu-pw">Temporary password <span class="hint">optional</span></label><input id="cu-pw" type="text" autocomplete="off" placeholder="Leave blank and one is generated for you"><div class="hint">At least 8 characters if you set one. Shown to you once after the account is created.</div></div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="invite" style="width:auto;margin-top:4px"> <span><b>Email them an invite link</b><div class="hint">They set their own password from the link. Needs the email setup in the README.</div></span></label>'+
       '</div>'+lists()+'<div id="cu-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="cu-go">Create account</button>',
@@ -530,20 +531,24 @@ function createUserDialog(){
       const sysRole=()=>($('input[name="cu-sys"]:checked',v)||{}).value||'user';
       const syncDept=()=>{ const opt=$('#cu-dept-opt',v); if(opt) opt.textContent=sysRole()==='admin'?'(optional for admins)':''; };
       $$('input[name="cu-sys"]',v).forEach(r=>r.onchange=syncDept); syncDept();
+      const syncMode=()=>{const w=$('#cu-pw-wrap',v); if(w) w.classList.toggle('hide',(($('input[name="cu-mode"]:checked',v)||{}).value||'password')!=='password')};
+      $$('input[name="cu-mode"]',v).forEach(r=>r.onchange=syncMode); syncMode();
       $('#cu-go',v).onclick=async()=>{
         const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
           manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:sysRole()==='admin',
-          mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password'};
+          mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password',password:($('#cu-pw',v)||{}).value||''};
         const err=$('#cu-err',v);
         if(body.name.length<3) return err.textContent='Enter the full name.';
         if(!/^\S+@\S+\.\S+$/.test(body.email)) return err.textContent='Enter a valid work email.';
         if(body.role.length<2) return err.textContent='Enter a designation.';
         if(!body.dept&&!body.is_admin) return err.textContent='Choose a department.';
+        if(body.mode==='password'&&body.password&&body.password.trim().length<8) return err.textContent='A temporary password needs at least 8 characters, or leave it blank.';
         $('#cu-go',v).disabled=true; err.textContent='';
         const {data,error}=await SB.functions.invoke('admin-create-user',{body});
         if(error||!data||data.error){ $('#cu-go',v).disabled=false;
           let msg=(data&&data.error)||(error&&error.message)||'Could not create the account.';
           try{ if(error&&error.context){ const j=await error.context.json(); if(j&&j.error) msg=j.error } }catch(e){}
+          if(/failed to send|fetch/i.test(msg)) msg='The browser could not reach the admin-create-user function. In Supabase → Edge Functions, check it is deployed under exactly that name and that Verify JWT is off; the Logs tab shows the reason.';
           return err.textContent=/not found|404/i.test(msg)?'The admin-create-user function is not deployed yet — see the README.':msg }
         close(); await load(); render();
         if(data.tempPassword) tempPasswordDialog(body.name,body.email,data.tempPassword);
