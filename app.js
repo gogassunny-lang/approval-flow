@@ -138,10 +138,10 @@ function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
   const s=r.chain[r.current]; return s?user(s.userId):null }
 const isMyTurn=r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;
 const needsMyInfo=r=>r.status==='Info Requested'&&r.requesterId===ME.id;
-const isManager=u=>!!(u&&u.manager);
+const isManager=u=>!!(u&&(u.manager||u.admin||u.owner));
 const teamOf=id=>DB.users.filter(u=>u.active&&u.managerId===id&&u.managerConfirmed);
 const pendingTeam=id=>DB.users.filter(u=>u.active&&u.managerId===id&&!u.managerConfirmed);
-const managers=()=>DB.users.filter(u=>u.active&&u.manager);
+const managers=()=>DB.users.filter(u=>u.active&&(u.manager||u.admin||u.owner));
 const tasksOf=s=>(s&&s.tasks)||[];
 const openTasks=s=>tasksOf(s).filter(t=>t.status==='open');
 const stepBlocked=s=>openTasks(s).length>0;
@@ -421,8 +421,15 @@ let signMode='login', firstAccount=false;
 const uniqOf=k=>Array.from(new Set(DB.users.map(u=>(u[k]||'').trim()).filter(Boolean))).sort();
 const lists=()=>'<datalist id="dl-role">'+uniqOf('role').map(d=>'<option value="'+esc(d)+'">').join('')+'</datalist>';
 const deptOptions=sel=>'<option value="">Choose a department</option>'+DB.departments.map(d=>'<option '+(sel===d?'selected':'')+'>'+esc(d)+'</option>').join('');
-const mgrOptions=sel=>'<option value="">Nobody — I am not under a manager here</option>'+
-  managers().filter(m=>!ME||m.id!==ME.id).map(m=>'<option value="'+m.id+'" '+(sel===m.id?'selected':'')+'>'+esc(m.name)+' — '+esc(m.dept||'')+'</option>').join('');
+const mgrOptions=(sel,excludeId)=>{
+  const ex=excludeId||(ME&&ME.id);
+  const pool=managers().filter(m=>m.id!==ex);
+  const grp=(label,list)=>list.length?'<optgroup label="'+label+'">'+list.map(m=>'<option value="'+m.id+'" '+(sel===m.id?'selected':'')+'>'+esc(m.name)+(m.role?' — '+esc(m.role):'')+(m.dept?', '+esc(m.dept):'')+'</option>').join('')+'</optgroup>':'';
+  return '<option value="">Nobody — not under anyone</option>'+
+    grp('Super admin',pool.filter(m=>m.owner))+
+    grp('Admins',pool.filter(m=>m.admin&&!m.owner))+
+    grp('Managers',pool.filter(m=>m.manager&&!m.admin&&!m.owner));
+};
 const siErr=m=>{const e=$('#si-err');e.textContent=m;e.classList.remove('hide')};
 
 async function paintSignIn(){
@@ -509,7 +516,7 @@ function createUserDialog(){
       '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">In the process flow</div>'+
       '<div class="grid g2"><div><label for="cu-role">Designation</label><input id="cu-role" type="text" list="dl-role" placeholder="Accounts Executive"></div>'+
       '<div><label for="cu-dept">Department <span class="hint" id="cu-dept-opt"></span></label><select id="cu-dept">'+deptOptions('')+'</select></div></div>'+
-      '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('')+'</select><div class="hint">Set here, the manager does not need to confirm.</div></div>'+
+      '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('',null)+'</select><div class="hint">A manager, an admin, or you. Set here, no confirmation needed — they are on that person\'s team from the start.</div></div>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
       '<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
@@ -1312,7 +1319,7 @@ function wireTpl(v){
    Team
    ============================================================ */
 function viewTeam(){
-  head('My team','Confirm who reports to you, then you can assign them work inside a request');
+  head('My team',(ME.owner?'As super admin':ME.admin?'As an admin':'As a manager')+' you can hand work to anyone who reports to you');
   const team=teamOf(ME.id), pend=pendingTeam(ME.id);
   const load2=u=>DB.requests.reduce((n,r)=>n+r.chain.reduce((m,s)=>m+tasksOf(s).filter(t=>t.userId===u.id&&t.status==='open').length,0),0);
   return (pend.length?'<div class="card pad" style="margin-bottom:16px;border-color:var(--hold)"><h3>Waiting for you to confirm</h3><p class="hint" style="margin-top:5px">These people picked you as their manager. Confirm only the ones who really report to you — an unconfirmed person cannot be assigned work.</p><div style="margin-top:12px">'+
@@ -1463,7 +1470,7 @@ function wirePeople(v){
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
   $$('[data-ed]',v).forEach(b=>b.onclick=()=>{const u=user(b.dataset.ed);
     modal({title:'Edit '+u.name,body:'<div class="grid" style="gap:13px"><div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
-        '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
+        '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
