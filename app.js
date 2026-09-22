@@ -421,9 +421,10 @@ let signMode='login', firstAccount=false;
 const uniqOf=k=>Array.from(new Set(DB.users.map(u=>(u[k]||'').trim()).filter(Boolean))).sort();
 const lists=()=>'<datalist id="dl-role">'+uniqOf('role').map(d=>'<option value="'+esc(d)+'">').join('')+'</datalist>';
 const deptOptions=sel=>'<option value="">Choose a department</option>'+DB.departments.map(d=>'<option '+(sel===d?'selected':'')+'>'+esc(d)+'</option>').join('');
+/* excludeId is the person whose entry is being edited — they cannot report to themselves.
+   When creating someone new there is nobody to exclude, so every leader, including you, is offered. */
 const mgrOptions=(sel,excludeId)=>{
-  const ex=excludeId||(ME&&ME.id);
-  const pool=managers().filter(m=>m.id!==ex);
+  const pool=managers().filter(m=>!excludeId||m.id!==excludeId);
   const grp=(label,list)=>list.length?'<optgroup label="'+label+'">'+list.map(m=>'<option value="'+m.id+'" '+(sel===m.id?'selected':'')+'>'+esc(m.name)+(m.role?' — '+esc(m.role):'')+(m.dept?', '+esc(m.dept):'')+'</option>').join('')+'</optgroup>':'';
   return '<option value="">Nobody — not under anyone</option>'+
     grp('Super admin',pool.filter(m=>m.owner))+
@@ -1431,7 +1432,7 @@ function wireUsage(v){
 function profileDialog(){
   modal({title:'Complete your directory entry',body:'<p style="margin-top:0">Department decides where a request hands over from one team to the next, so it has to come from the official list.</p>'+
       '<div class="grid g2" style="gap:13px;margin-top:16px"><div><label for="q-r">Designation</label><input id="q-r" type="text" list="dl-role" value="'+esc(ME.role||'')+'"></div><div><label for="q-d">Department</label><select id="q-d">'+deptOptions(ME.dept)+'</select></div></div>'+lists()+
-      '<div style="margin-top:13px"><label for="q-m">Reports to</label><select id="q-m">'+mgrOptions(ME.managerId)+'</select><div class="hint">Your manager confirms this before they can assign you work.</div></div><div id="q-e" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+      '<div style="margin-top:13px"><label for="q-m">Reports to</label><select id="q-m">'+mgrOptions(ME.managerId,ME.id)+'</select><div class="hint">Your manager confirms this before they can assign you work.</div></div><div id="q-e" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:'<button class="btn" data-x>Later</button><button class="btn primary" id="q-g">Save and continue</button>',
     onOpen:(v,c)=>{$('#q-g',v).onclick=async()=>{const r=$('#q-r',v).value.trim(),d=$('#q-d',v).value,m=$('#q-m',v).value||null;
       if(r.length<2) return $('#q-e',v).textContent='Enter your designation.'; if(!d&&!ME.admin) return $('#q-e',v).textContent='Choose your department.';
