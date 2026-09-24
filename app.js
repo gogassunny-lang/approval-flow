@@ -505,6 +505,28 @@ async function enter(session){
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
+/* an admin resets someone's password: type one or generate, shown once, they must change it at next sign-in */
+function resetPasswordDialog(u){
+  modal({title:'Reset password for '+u.name,
+    body:'<p class="hint" style="margin-top:0">Use this when '+esc(u.name.split(' ')[0])+' is locked out and cannot use the email link. Leave blank to generate one.</p>'+
+      '<div style="margin-top:14px"><label for="rp-pw">New temporary password</label><input id="rp-pw" type="text" autocomplete="off" placeholder="At least 8 characters, or blank to generate"></div>'+
+      '<div class="hint" style="margin-top:8px">Shown to you once. They must choose their own at their next sign-in.</div>'+
+      '<div id="rp-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rp-go">Reset password</button>',
+    onOpen:(v,close)=>{ $('#rp-pw',v).focus();
+      $('#rp-go',v).onclick=async()=>{
+        const pw=$('#rp-pw',v).value.trim();
+        if(pw&&pw.length<8) return $('#rp-err',v).textContent='At least 8 characters, or leave blank.';
+        $('#rp-go',v).disabled=true;
+        const {data,error}=await SB.functions.invoke('admin-create-user',{body:{action:'reset_password',user_id:u.id,password:pw}});
+        if(error||!data||data.error){ $('#rp-go',v).disabled=false;
+          let msg=(data&&data.error)||(error&&error.message)||'Could not reset the password.';
+          try{ if(error&&error.context){const j=await error.context.json(); if(j&&j.error) msg=j.error} }catch(e){}
+          return $('#rp-err',v).textContent=msg }
+        close(); tempPasswordDialog(data.name,u.email,data.tempPassword);
+      };
+    }});
+}
 /* a checklist of the optional pages; the always-on work pages are noted but not listable */
 function pagesChecklist(id,selected){
   const set=selected||DEFAULT_PAGES;
@@ -1510,8 +1532,10 @@ function wirePeople(v){
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
         (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
-      footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
-      onOpen:(mv,cl)=>{$('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
+      footer:'<button class="btn bad" id="e-reset" style="margin-right:auto">Reset password</button><button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
+      onOpen:(mv,cl)=>{
+        $('#e-reset',mv).onclick=()=>{ cl(); resetPasswordDialog(u) };
+        $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
