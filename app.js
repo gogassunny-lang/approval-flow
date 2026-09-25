@@ -1289,7 +1289,34 @@ function wireDetail(v){
             catch(e){ $('#asg-e',mv).textContent=(e.message||'').replace(/^.*?: /,'') }
           }}});
     };
-    $('#a-ok',v).onclick=()=>act('approve','approve '+docNo(r));
+    $('#a-ok',v).onclick=()=>{
+      const last=r.current+1===r.chain.length;
+      const nxt=last?null:user(r.chain[r.current+1].userId);
+      modal({title:'Before you approve',
+        body:'<p style="margin-top:0">'+(last
+              ? 'You are the last approver. Approving <b>closes '+esc(docNo(r))+'</b>.'
+              : 'After you, '+esc(docNo(r))+' goes to:')+'</p>'+
+          (nxt?'<div class="filerow" style="margin-top:10px"><div class="av sm">'+inits(nxt.name)+'</div><div><b>'+esc(nxt.name)+'</b><div class="hint">'+esc(nxt.role||'')+(nxt.dept?' · '+esc(nxt.dept):'')+'</div></div></div>':'')+
+          '<div id="ins-wrap" style="margin-top:14px"><button class="btn sm" id="ins-add">Add someone before '+(nxt?esc(nxt.name.split(" ")[0]):'closing')+'</button></div>'+
+          '<div id="ins-find-wrap" class="hide" style="margin-top:10px"><label for="ins-find">Who should act next</label><div class="finder"><input id="ins-find" type="text" placeholder="Name, email, designation or department" autocomplete="off"><div id="ins-res"></div></div><div id="ins-picked" class="hint" style="margin-top:6px"></div></div>',
+        footer:'<button class="btn" data-x>Cancel</button><button class="btn ok" id="ins-go">Approve'+(nxt?' and pass on':' and close')+'</button>',
+        onOpen:(mv,close)=>{
+          let chosen=null;
+          $('#ins-add',mv).onclick=()=>{ $('#ins-find-wrap',mv).classList.remove('hide'); $('#ins-wrap',mv).classList.add('hide'); $('#ins-find',mv).focus() };
+          const find=$('#ins-find',mv), res=$('#ins-res',mv);
+          find.oninput=()=>{ const q=find.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
+            const inchain=r.chain.map(s=>s.userId);
+            const hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&inchain.indexOf(u.id)<0&&(u.name+' '+u.email+' '+(u.dept||'')+' '+(u.role||'')).toLowerCase().includes(q)).slice(0,6);
+            res.innerHTML=hits.length?'<div class="results">'+hits.map(u=>'<button data-u="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+' · '+esc(u.dept||'')+'</div></div></button>').join('')+'</div>':'<div class="results"><div style="padding:10px 12px" class="hint">Nobody matches, or they are already in the chain.</div></div>';
+            $$('.results button',res).forEach(b=>b.onclick=()=>{chosen=b.dataset.u;find.value=user(chosen).name;res.innerHTML='';$('#ins-picked',mv).textContent='They will act next; '+(nxt?nxt.name.split(' ')[0]+' comes after':'then it closes')+'.'});
+          };
+          $('#ins-go',mv).onclick=async()=>{
+            $('#ins-go',mv).disabled=true;
+            try{ if(chosen) await rpc('insert_next_approver',{p_request:r.id,p_user:chosen}); close(); act('approve','approve '+docNo(r)); }
+            catch(e){ $('#ins-go',mv).disabled=false; toast((e.message||'').replace(/^.*?: /,''),'bad') }
+          };
+        }});
+    };
     $('#a-cond',v).onclick=()=>modal({title:'Approve with a condition',body:'<p class="hint" style="margin-top:0">The ERP document cannot be changed from here, so record what must happen instead. The condition travels with the request and every later approver sees it.</p><div style="margin-top:14px"><label for="cd">The condition</label><textarea id="cd" placeholder="e.g. Release only after the revised quote is received."></textarea></div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn ok" id="cg">Approve with this condition</button>',
       onOpen:(mv,close)=>{$('#cg',mv).onclick=()=>{const cond=$('#cd',mv).value.trim(); if(cond.length<5) return toast('Write the condition out in full.','bad'); close(); act('conditional','approve '+docNo(r)+' with a condition',{condition:cond})}}});
