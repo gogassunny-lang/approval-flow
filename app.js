@@ -505,6 +505,39 @@ async function enter(session){
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
+/* extend a chain that ran out: append approvers, reopening the request if it had closed */
+function extendChainDialog(r){
+  const draft=[];
+  const inchain=()=>r.chain.map(s=>s.userId).concat(r.requesterId,draft);
+  modal({title:'Add the next approvers',
+    body:'<p style="margin-top:0"><b>'+esc(docTitle(r))+'</b>'+(r.status==='Approved'?' closed after '+r.chain.length+' approver'+(r.chain.length===1?'':'s')+' because no one else was in the chain. Add who should have come next — it will reopen and move to them.':' — add who should act next.')+'</p>'+
+      '<div class="finder" style="margin-top:14px"><label for="ex-find">Add an approver</label><input id="ex-find" type="text" placeholder="Name, email, designation or department" autocomplete="off"><div id="ex-res"></div></div>'+
+      '<div id="ex-list" style="margin-top:8px"></div>'+
+      '<div style="margin-top:12px"><label for="ex-why">Why</label><input id="ex-why" type="text" placeholder="e.g. chain was raised incomplete"></div>'+
+      '<div id="ex-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="ex-go">Add and continue</button>',
+    onOpen:(v,close)=>{
+      const paint=()=>{ const c=$('#ex-list',v);
+        c.innerHTML=draft.length?'<div class="picked">'+draft.map((id,i)=>{const u=user(id);
+          return '<div class="r"><span class="seq">'+(r.chain.length+i+2)+'</span><div class="av sm">'+inits(u.name)+'</div><div class="who" style="min-width:0;flex:1"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div><button class="btn sm" data-rm="'+i+'">Remove</button></div>'}).join('')+'</div>':'';
+        $$('[data-rm]',c).forEach(b=>b.onclick=()=>{draft.splice(+b.dataset.rm,1);paint()}); };
+      paint();
+      const find=$('#ex-find',v), res=$('#ex-res',v);
+      find.oninput=()=>{ const q=find.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
+        const ex=inchain();
+        const hits=DB.users.filter(u=>u.active&&ex.indexOf(u.id)<0&&(u.name+' '+u.email+' '+(u.dept||'')+' '+(u.role||'')).toLowerCase().includes(q)).slice(0,6);
+        res.innerHTML=hits.length?'<div class="results">'+hits.map(u=>'<button data-u="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+' · '+esc(u.dept||'')+'</div></div></button>').join('')+'</div>':'<div class="results"><div style="padding:10px 12px" class="hint">Nobody matches, or they are already in the chain.</div></div>';
+        $$('.results button',res).forEach(b=>b.onclick=()=>{draft.push(b.dataset.u);find.value='';res.innerHTML='';paint();find.focus()});
+      };
+      $('#ex-go',v).onclick=async()=>{ const why=$('#ex-why',v).value.trim();
+        if(!draft.length) return $('#ex-err',v).textContent='Add at least one approver.';
+        if(why.length<4) return $('#ex-err',v).textContent='Say why, in a few words.';
+        $('#ex-go',v).disabled=true;
+        try{ await rpc('extend_chain',{p_request:r.id,p_users:draft,p_why:why}); close(); await load(); toast('Chain extended — now with '+user(draft[0]).name+'.','ok'); go({name:'detail',id:r.id}) }
+        catch(e){ $('#ex-go',v).disabled=false; $('#ex-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }
+      };
+    }});
+}
 /* an admin resets someone's password: type one or generate, shown once, they must change it at next sign-in */
 function resetPasswordDialog(u){
   modal({title:'Reset password for '+u.name,
@@ -1190,7 +1223,10 @@ function viewDetail(id){
   if(!r) return '<div class="card"><div class="empty"><h3>That request is not visible to you</h3><p class="hint">It may have been raised in a chain you are not part of.</p></div></div>';
   head(docTitle(r),typeLabel(r)+' · '+r.ref+' · raised by '+user(r.requesterId).name+' on '+fmtD(r.createdAt));
   const mine=isMyTurn(r), info=needsMyInfo(r), f=r.f, mt=myOpenTask(r);
+  const mayExtend=(r.requesterId===ME.id||ME.admin||ME.owner)&&r.status!=='Rejected';
   let banner='';
+  if(mayExtend&&r.status==='Approved') banner='<div class="banner hold"><div><b>This closed after only '+r.chain.length+' approver'+(r.chain.length>1?'s':'')+'.</b><div class="hint" style="color:var(--hold)">If more people still need to sign, add them — the request reopens and moves to the next one. Reopening is recorded.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-extend">Add approvers</button></div>';
+  else if(mayExtend&&r.status==='In Progress'&&!holder(r)) banner='<div class="banner hold"><div><b>This request has no one left to act on it.</b><div class="hint" style="color:var(--hold)">Add the next approver(s) to keep it moving.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-extend">Add approvers</button></div>';
   if(mt) banner='<div class="banner live"><div><b>You have a task on this request.</b><div class="hint">Close it below and it goes back to '+esc(user(r.chain[mt.stepIndex].userId).name)+'.</div></div></div>';
   else if(mine) banner='<div class="banner live"><div><b>This is with you.</b><div class="hint">Everyone after you is locked out until you act. Open the attached document before signing.</div></div></div>';
   else if(info) banner='<div class="banner hold"><div><b>'+esc(user(r.chain[r.infoStep].userId).name)+' has asked you for more.</b><div class="hint">Reply at step '+(r.infoStep+2)+' below. The chain picks up where it stopped.</div></div></div>';
@@ -1235,6 +1271,7 @@ function viewDetail(id){
   } else {
     const h=holder(r);
     panel='<div class="card pad"><h3>'+(h?'Sitting with '+esc(h.name):'Closed')+'</h3><p class="hint" style="margin-top:6px">'+(h?'Nothing for you to do until it reaches you.':(r.status==='Approved'?'Approved by everyone in the chain on '+esc(fmtD(r.closedAt))+'.':'Closed on '+esc(fmtD(r.closedAt))+'. Raise a fresh request if the document is reissued.'))+'</p>'+
+      ((r.requesterId===ME.id||ME.admin||ME.owner)&&r.status==='Approved'?'<div class="sep"></div><button class="btn sm" id="d-extend2">Add more approvers</button>':'')+
       (inChain(r)||ME.admin?'<div class="sep"></div><label for="nt">Leave a note</label><textarea id="nt" placeholder="A comment for the chain. It does not move the request."></textarea><button class="btn sm" id="ntb" style="margin-top:9px">Post note</button>':'')+'</div>';
   }
   const facts='<div class="card pad" style="margin-bottom:16px">'+(r.type==='workorder'?'<div class="amount num">'+money(f.amountPost)+'</div><div class="hint">'+money(f.amountPre)+' before GST'+(f.amountPre&&f.amountPost?' · GST '+money(f.amountPost-f.amountPre):'')+'</div>':'<div class="amount num">'+esc(docNo(r))+'</div>')+
@@ -1244,6 +1281,7 @@ function viewDetail(id){
        (f.vendorAddress?'<dt>Address</dt><dd>'+esc(f.vendorAddress)+'</dd>':'')+(f.vendorState?'<dt>State</dt><dd>'+esc(f.vendorState)+(f.vendorStateCode?' ('+esc(f.vendorStateCode)+')':'')+'</dd>':'')+
        (f.vendorGstin?'<dt>GSTIN</dt><dd class="num">'+esc(f.vendorGstin)+'</dd>':'')+(f.vendorPan?'<dt>PAN</dt><dd class="num">'+esc(f.vendorPan)+'</dd>':'')+(f.vendorContact?'<dt>Contact</dt><dd>'+esc(f.vendorContact)+'</dd>':'')+(f.billingAddress?'<dt>Billing to</dt><dd>'+esc(f.billingAddress)+'</dd>':''))+
     '<dt>Raised</dt><dd>'+esc(fmtD(r.createdAt))+'</dd><dt>Approvers</dt><dd>'+r.chain.length+' in sequence</dd></dl>'+(f.remarks?'<div class="sep"></div><div class="hint" style="margin-bottom:5px">Remarks</div><div style="white-space:pre-wrap">'+esc(f.remarks)+'</div>':'')+
+    ((r.requesterId===ME.id||ME.admin)&&r.status!=='Rejected'&&r.status!=='Info Requested'&&!isMyTurn(r)?'<div class="sep"></div><button class="btn sm" id="d-extend" style="width:100%">'+(r.status==='Approved'?'Reopen and add the next approver':'Add the next approver')+'</button>':'')+
     (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
   return '<button class="btn ghost sm" id="d-back" style="margin-bottom:12px">Back</button>'+banner+'<div class="detail-grid"><div><div class="card pad"><h3 style="margin-bottom:16px">The chain</h3><div class="rail">'+nodes+'</div></div>'+notes+'</div><div>'+facts+panel+'</div></div>';
 }
@@ -1251,6 +1289,10 @@ function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
   $('#d-back',v).onclick=()=>go({name:'all'});
   if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
+  if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
+  if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
+  if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
+  if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
   let allFiles=r.files.slice(); r.chain.forEach(s=>{allFiles=allFiles.concat(s.files||[]);tasksOf(s).forEach(t=>{allFiles=allFiles.concat(t.files||[])})});
   bindFiles(v,allFiles);
   readForRequest(r.id);
