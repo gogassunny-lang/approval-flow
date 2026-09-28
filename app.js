@@ -172,9 +172,9 @@ const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
 /* ---------- gate pass ---------- */
 const isGateman=u=>!!(u&&(u.gateman||u.admin||u.owner));
 const gpMine=()=>DB.passes.filter(g=>g.requesterId===ME.id);
-const gpToSign=()=>DB.passes.filter(g=>(g.status==='pending_hod'&&g.hodId===ME.id)||(g.status==='pending_hr'&&g.hrId===ME.id));
+const gpMyNext=()=>gpMine().filter(g=>g.status==='pending_hod'||g.status==='pending_hr');   // my passes awaiting a signature I must collect
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()):[];
-const gpBadge=()=>gpToSign().length+gpAtGate().length;
+const gpBadge=()=>gpMyNext().length+gpAtGate().length;
 const gpKindLabel=g=>g.kind==='early'?'Early going':'Official work outpass';
 const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind==='early'&&g.status!=='rejected'&&String(g.passDate).slice(0,7)===m).length};
 const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
@@ -1732,11 +1732,12 @@ function gpTimeline(g){
   const row=(ok,label,who,when,selfie,slabel)=>'<div class="gp-step '+(ok?'done':'')+'"><span class="gp-dot"></span><div style="flex:1;min-width:0"><b>'+esc(label)+'</b>'+
     (who?'<div class="hint">'+esc(who)+(when?' · '+esc(fmtDT(when)):'')+'</div>':'')+'</div>'+
     (selfie!==undefined?'<button class="btn sm" data-selfie="'+esc(selfie||'')+'" data-slabel="'+esc(slabel||'')+'"'+(selfie?'':' disabled')+'>Selfie</button>':'')+'</div>';
-  const hod=user(g.hodId), hr=user(g.hrId), gm=g.gateBy?user(g.gateBy):null, req=user(g.requesterId);
+  const gm=g.gateBy?user(g.gateBy):null, req=user(g.requesterId);
+  const hodLbl=g.hodId?'HOD — '+user(g.hodId).name:'HOD sign', hrLbl=g.hrId?'HR — '+user(g.hrId).name:'HR sign';
   let h='<div class="gp-timeline">';
   h+=row(true,'Raised',req.name,g.createdAt,g.reqSelfie,req.name+' — at creation');
-  h+=row(!!g.hodAt,'HOD — '+hod.name,g.hodAt?'Signed':(g.status==='rejected'&&g.rejectBy===g.hodId?'Declined':'Waiting'),g.hodAt,g.hodSelfie,hod.name+' — HOD');
-  h+=row(!!g.hrAt,'HR — '+hr.name,g.hrAt?'Signed':(g.status==='rejected'&&g.rejectBy===g.hrId?'Declined':'Waiting'),g.hrAt,g.hrSelfie,hr.name+' — HR');
+  h+=row(!!g.hodAt,hodLbl,g.hodAt?'Signed':(g.status==='rejected'&&g.rejectBy===g.hodId?'Declined':'Waiting'),g.hodAt,g.hodSelfie,(g.hodId?user(g.hodId).name:'HOD')+' — HOD');
+  h+=row(!!g.hrAt,hrLbl,g.hrAt?'Signed':(g.status==='rejected'&&g.rejectBy===g.hrId?'Declined':'Waiting'),g.hrAt,g.hrSelfie,(g.hrId?user(g.hrId).name:'HR')+' — HR');
   if(g.kind==='official'){
     h+=row(!!g.outAt,'Out at gate',gm?gm.name:'',g.outAt);
     h+=row(!!g.returnAt,'Returned',g.returnAt?(gpDuration(g.outAt,g.returnAt)+' out'):'Not back yet',g.returnAt);
@@ -1754,14 +1755,55 @@ function gpCard(g,acts){
     '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:8px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
     gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+'</div></div>';
 }
+/* the requester collects one signature: pick whoever is available for this step,
+   hand them the phone, they take a live selfie to approve — or decline */
+function getSignFlow(g){
+  const role=g.status==='pending_hod'?'HOD':'HR';
+  let picked=null;
+  const personRow=u=>'<button data-u="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div style="min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div></button>';
+  const {el,close}=modal({title:'Get '+role+' signature',body:'<div id="gs-body"></div>',
+    onOpen:(mv,cl)=>{ renderPick(mv,cl); }});
+  function renderPick(mv,cl){
+    const b=$('#gs-body',mv);
+    b.innerHTML='<p style="margin-top:0" class="hint">Pick the '+role+' who is signing — whoever is available, not necessarily your own '+role+'.</p>'+
+      '<div class="gp-pick"><input type="text" class="gp-search" placeholder="Search by name, department or email"><div class="gp-res"></div></div>';
+    const inp=$('input',b), res=$('.gp-res',b); inp.focus();
+    inp.oninput=()=>{ const q=inp.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
+      const hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&(g.status!=='pending_hr'||u.id!==g.hodId)&&(u.name+' '+u.email+' '+u.dept+' '+u.role).toLowerCase().includes(q)).slice(0,7);
+      res.innerHTML=hits.length?'<div class="results">'+hits.map(personRow).join('')+'</div>':'<div class="results"><div class="hint" style="padding:12px 14px">Nobody matches that.</div></div>';
+      $$('.results button',res).forEach(x=>x.onclick=()=>{picked=user(x.dataset.u);renderHandoff(mv,cl)});
+    };
+  }
+  function renderHandoff(mv,cl){
+    const b=$('#gs-body',mv);
+    b.innerHTML='<div class="gp-picked"><div class="av sm">'+inits(picked.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(picked.name)+'</b><div class="hint">'+esc(picked.role||'')+(picked.dept?' · '+esc(picked.dept):'')+'</div></div><button class="btn sm" data-change>Change</button></div>'+
+      '<div class="banner live" style="margin-top:12px"><div>Hand the phone to <b>'+esc(picked.name)+'</b>. They approve by taking a live selfie, or decline. The time is recorded automatically.</div></div>'+
+      '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" id="gs-selfie">Take '+role+' selfie</button><button class="btn bad" id="gs-decline">Decline</button></div>'+
+      '<div id="gs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
+    $('[data-change]',b).onclick=()=>{picked=null;renderPick(mv,cl)};
+    $('#gs-selfie',b).onclick=async()=>{ const p=await captureSelfie(picked.name+' — '+role+' approval selfie'); if(!p) return;
+      busy(true); try{ await rpc('gp_sign',{p_id:g.id,p_person:picked.id,p_selfie:p}); await load(); cl(); toast(role+' signed.','ok'); render(); }
+      catch(e){ $('#gs-err',b).textContent=(e.message||'').replace(/^.*?: /,''); }finally{ busy(false); } };
+    $('#gs-decline',b).onclick=()=>renderDecline(mv,cl);
+  }
+  function renderDecline(mv,cl){
+    const b=$('#gs-body',mv);
+    b.innerHTML='<p style="margin-top:0"><b>'+esc(picked.name)+'</b> ('+role+') is declining this pass.</p><div><label for="gs-reason">Reason (optional)</label><textarea id="gs-reason" placeholder="e.g. Not required today."></textarea></div>'+
+      '<div class="row" style="gap:9px;margin-top:12px"><button class="btn" id="gs-back">Back</button><button class="btn bad" id="gs-do">Confirm decline</button></div><div id="gs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
+    $('#gs-back',b).onclick=()=>renderHandoff(mv,cl);
+    $('#gs-do',b).onclick=async()=>{ busy(true);
+      try{ await rpc('gp_reject',{p_id:g.id,p_person:picked.id,p_reason:$('#gs-reason',b).value.trim()}); await load(); cl(); toast('Pass declined.','ok'); render(); }
+      catch(e){ $('#gs-err',b).textContent=(e.message||'').replace(/^.*?: /,''); }finally{ busy(false); } };
+  }
+}
 function viewGate(){
   head('Gate Pass','Take an early-going or official outpass — a live selfie is your signature');
-  const sign=gpToSign(), gate=gpAtGate(), mine=gpMine();
+  const next=gpMyNext(), gate=gpAtGate(), mine=gpMine();
   let h='';
-  if(sign.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--indigo)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>Waiting for your sign-off</h3><span class="tag t-prog" style="margin-left:auto">'+sign.length+'</span></div>'+
-    '<div style="padding:12px 16px" class="hint">The person hands you their phone; you take a selfie to sign. It is stamped with the time it is taken.</div>'+
-    '<div class="gp-list">'+sign.map(g=>gpCard(g,
-      '<button class="btn primary" data-sign="'+g.id+'">Sign with selfie</button><button class="btn bad" data-reject="'+g.id+'">Decline</button>')).join('')+'</div></div>';
+  if(next.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--indigo)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>Collect your signatures</h3><span class="tag t-prog" style="margin-left:auto">'+next.length+'</span></div>'+
+    '<div style="padding:12px 16px" class="hint">Walk up to whichever HOD is free, pick them here and hand over your phone for their selfie. Then do the same with HR.</div>'+
+    '<div class="gp-list">'+next.map(g=>gpCard(g,
+      '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>')).join('')+'</div></div>';
   if(gate.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag t-ok" style="margin-left:auto">'+gate.length+'</span></div>'+
     '<div style="padding:12px 16px" class="hint">Check the two approval selfies, then clear the person.</div>'+
     '<div class="gp-list">'+gate.map(g=>{
@@ -1770,7 +1812,7 @@ function viewGate(){
     }).join('')+'</div></div>';
 
   // create a pass
-  const d=gpDraft||(gpDraft={kind:'early',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null,hod:null,hr:null});
+  const d=gpDraft||(gpDraft={kind:'early',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
   const earlyLeft=Math.max(0,2-gpEarlyUsed());
   h+='<div class="card pad"><h3>Create a pass</h3>'+
     '<div class="seg" id="g-kind" style="margin:12px 0"><button data-k="early" class="'+(d.kind==='early'?'on':'')+'">Early going</button><button data-k="official" class="'+(d.kind==='official'?'on':'')+'">Official work outpass</button></div>'+
@@ -1781,9 +1823,7 @@ function viewGate(){
       '<div><label>Date</label><input type="text" value="'+esc(fmtD(Date.now()))+'" disabled></div></div>'+
     '<div style="margin-top:12px"><label for="g-purpose">Purpose</label><textarea id="g-purpose" placeholder="Where are you going and why?">'+esc(d.purpose)+'</textarea></div>'+
     '<div style="margin-top:14px"><label>Your selfie (signature)</label><div id="g-selfie-wrap" class="gp-selfie-wrap"></div></div>'+
-    '<div class="sep" style="margin:16px 0 12px"></div>'+
-    '<div class="grid g2"><div><label>HOD to sign</label><div id="g-hod" class="gp-pick"></div></div>'+
-      '<div><label>HR to sign</label><div id="g-hr" class="gp-pick"></div></div></div>'+
+    '<div class="hint" style="margin-top:10px">After you create the pass, you take it to whichever HOD, then HR, is available for their selfie.</div>'+
     '<div id="g-err" style="color:var(--stop);font-size:13px;margin-top:12px"></div>'+
     '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" id="g-send">Create pass</button><button class="btn" id="g-clear">Clear</button></div></div>';
 
@@ -1820,49 +1860,21 @@ function wireGate(v){
   const bind=(id,key)=>{const el=$(id,v); if(el) el.oninput=()=>d[key]=el.value; if(el&&el.tagName==='SELECT') el.onchange=()=>d[key]=el.value;};
   bind('#g-emp','employeeId'); bind('#g-name','name'); bind('#g-dept','dept'); bind('#g-purpose','purpose');
   if($('#g-dept',v)) $('#g-dept',v).value=d.dept||'';
-  // HOD / HR pickers
-  const picker=(mount,key)=>{
-    const el=$(mount,v); if(!el) return;
-    const paint=()=>{
-      if(d[key]){ const u=user(d[key]);
-        el.innerHTML='<div class="gp-picked"><div class="av sm">'+inits(u.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.email?' · '+esc(u.email):'')+'</div></div><button class="btn sm" data-x-pick>Change</button></div>';
-        $('[data-x-pick]',el).onclick=()=>{d[key]=null;paint()};
-      } else {
-        el.innerHTML='<input type="text" class="gp-search" placeholder="Search by name, department or email"><div class="gp-res"></div>';
-        const inp=$('input',el), res=$('.gp-res',el);
-        inp.oninput=()=>{const q=inp.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
-          const hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&(u.name+' '+u.email+' '+u.dept+' '+u.role).toLowerCase().includes(q)).slice(0,6);
-          res.innerHTML=hits.length?'<div class="results">'+hits.map(u=>'<button data-u="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div style="min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+' · '+esc(u.dept||'')+'</div></div></button>').join('')+'</div>':'<div class="results"><div class="hint" style="padding:12px 14px">Nobody matches that.</div></div>';
-          $$('.results button',res).forEach(b=>b.onclick=()=>{d[key]=b.dataset.u;paint()});
-        };
-      }
-    };
-    paint();
-  };
-  picker('#g-hod','hod'); picker('#g-hr','hr');
   $('#g-clear',v).onclick=()=>{gpDraft=null;render()};
   $('#g-send',v).onclick=async()=>{
     const err=$('#g-err',v); err.textContent='';
     if(!d.name.trim()) return err.textContent='Enter your name.';
     if(!d.purpose.trim()) return err.textContent='Enter the purpose.';
     if(!d.selfie) return err.textContent='Take your live selfie — it is your signature.';
-    if(!d.hod||!d.hr) return err.textContent='Choose both your HOD and HR.';
-    if(d.hod===d.hr) return err.textContent='HOD and HR must be two different people.';
     if(d.kind==='early'&&gpEarlyUsed()>=2) return err.textContent='You have already used both early-going passes this month.';
     busy(true);
-    try{ await rpc('gp_create',{p_kind:d.kind,p_employee_id:d.employeeId.trim(),p_name:d.name.trim(),p_dept:d.dept,p_purpose:d.purpose.trim(),p_selfie:d.selfie,p_hod:d.hod,p_hr:d.hr});
-      gpDraft=null; await load(); toast('Pass sent to '+user(d.hod===null?'':d.hod).name+' for HOD sign-off.','ok'); render(); }
+    try{ await rpc('gp_create',{p_kind:d.kind,p_employee_id:d.employeeId.trim(),p_name:d.name.trim(),p_dept:d.dept,p_purpose:d.purpose.trim(),p_selfie:d.selfie});
+      gpDraft=null; await load(); toast('Pass created. Now take it to an HOD for their selfie.','ok'); render(); }
     catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
     finally{ busy(false); }
   };
-  // sign / decline / gate actions
-  $$('[data-sign]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.sign); if(!g) return;
-    const p=await captureSelfie('Sign for '+g.name); if(!p) return;
-    busy(true); try{ await rpc('gp_sign',{p_id:g.id,p_selfie:p}); await load(); toast('Signed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
-  $$('[data-reject]',v).forEach(b=>b.onclick=()=>{ const g=DB.passes.find(x=>x.id===b.dataset.reject); if(!g) return;
-    modal({title:'Decline this pass',body:'<p style="margin-top:0">Declining <b>'+esc(g.name)+'</b>’s '+esc(gpKindLabel(g).toLowerCase())+'.</p><div><label for="gr">Reason (optional)</label><textarea id="gr" placeholder="e.g. Not required today."></textarea></div><div id="gr-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
-      footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="grg">Decline</button>',
-      onOpen:(mv,cl)=>{$('#grg',mv).onclick=async()=>{try{ await rpc('gp_reject',{p_id:g.id,p_reason:$('#gr',mv).value.trim()}); await load(); cl(); toast('Declined.','ok'); render(); }catch(e){ $('#gr-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); }}}}); });
+  // collect an HOD / HR signature on my own pass
+  $$('[data-getsign]',v).forEach(b=>b.onclick=()=>{ const g=DB.passes.find(x=>x.id===b.dataset.getsign); if(g) getSignFlow(g); });
   $$('[data-gate]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.gate); if(!g) return;
     busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
   // selfie view buttons inside timelines
