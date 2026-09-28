@@ -132,7 +132,7 @@ async function load(){
   const me=DB.users.find(u=>u.id===(ME&&ME.id));
   if(me) ME=me;
   // wipe gate selfies older than a week (safe for anyone to trigger; touches only week-old gate photos)
-  if(!load._expired){ load._expired=true; SB.rpc('gp_expire_photos').catch(()=>{}); }
+  if(!load._expired){ load._expired=true; Promise.resolve(SB.rpc('gp_expire_photos')).then(()=>{},()=>{}); }
 }
 let reloadT=null;
 async function reload(){ try{ await load(); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
