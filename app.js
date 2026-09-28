@@ -173,6 +173,8 @@ const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
 const isGateman=u=>!!(u&&(u.gateman||u.admin||u.owner));
 const gpMine=()=>DB.passes.filter(g=>g.requesterId===ME.id);
 const gpMyNext=()=>gpMine().filter(g=>g.status==='pending_hod'||g.status==='pending_hr');   // my passes awaiting a signature I must collect
+const gpSignedByMe=()=>DB.passes.filter(g=>(g.hodId===ME.id&&g.hodAt)||(g.hrId===ME.id&&g.hrAt));   // passes I approved as HOD or HR
+const gpMyRole=g=>g.hodId===ME.id?'HOD':(g.hrId===ME.id?'HR':'');
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()):[];
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
 const gpKindLabel=g=>g.kind==='early'?'Early going':'Official work outpass';
@@ -1810,6 +1812,20 @@ function viewGate(){
       const label=g.status==='out'?'Record return & close':(g.kind==='official'?'Sign out (records time)':'Approve &amp; close');
       return gpCard(g,'<button class="btn primary" data-gate="'+g.id+'">'+label+'</button>');
     }).join('')+'</div></div>';
+
+  // passes I approved (as HOD or HR)
+  const signed=gpSignedByMe();
+  if(signed.length){
+    const groups={}; signed.forEach(g=>{const t=g.hodId===ME.id?g.hodAt:g.hrAt; const k=new Date(t||g.createdAt).toISOString().slice(0,7);(groups[k]=groups[k]||[]).push(g)});
+    const months=Object.keys(groups).sort().reverse();
+    h+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>Passes you have approved</h3><span class="tag t-ok" style="margin-left:auto">'+signed.length+' signed</span></div>'+
+      months.map(m=>{const label=new Date(m+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});const list=groups[m];
+        return '<div class="gp-month"><div class="gp-month-h">'+esc(label)+' <span class="hint">· '+list.length+' approved</span></div>'+
+          '<table class="cards"><tbody>'+list.map(g=>{const role=gpMyRole(g),when=g.hodId===ME.id?g.hodAt:g.hrAt,sel=g.hodId===ME.id?g.hodSelfie:g.hrSelfie;
+            return '<tr><td><b>'+esc(g.name||user(g.requesterId).name)+'</b><div class="hint">'+esc(gpKindLabel(g))+' · '+esc(g.ref)+' · signed as '+role+' on '+esc(fmtDT(when))+'</div></td>'+
+              '<td class="meta">'+gpTag(g)+'</td><td class="meta"><button class="btn sm" data-selfie="'+esc(sel||'')+'" data-slabel="'+esc((g.name||'')+' — your '+role+' selfie')+'"'+(sel?'':' disabled')+'>Selfie</button></td></tr>'}).join('')+'</tbody></table></div>'}).join('')+
+      '</div>';
+  }
 
   // create a pass
   const d=gpDraft||(gpDraft={kind:'early',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
