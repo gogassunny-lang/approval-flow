@@ -131,8 +131,16 @@ async function load(){
 
   const me=DB.users.find(u=>u.id===(ME&&ME.id));
   if(me) ME=me;
-  // wipe gate selfies older than a week (safe for anyone to trigger; touches only week-old gate photos)
-  if(!load._expired){ load._expired=true; Promise.resolve(SB.rpc('gp_expire_photos')).then(()=>{},()=>{}); }
+  // wipe gate selfies older than a week: remove my own old selfie files, then drop the references
+  if(!load._expired){ load._expired=true; gpExpireSweep(); }
+}
+async function gpExpireSweep(){
+  try{
+    const cut=Date.now()-7*864e5, paths=[];
+    DB.passes.forEach(g=>{ if(g.requesterId===ME.id&&g.createdAt<cut){ [g.reqSelfie,g.hodSelfie,g.hrSelfie].forEach(p=>{ if(p) paths.push(p) }) } });
+    if(paths.length){ try{ await SB.storage.from('documents').remove(paths) }catch(e){} }
+    await SB.rpc('gp_expire_photos');
+  }catch(e){}
 }
 let reloadT=null;
 async function reload(){ try{ await load(); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
@@ -1902,7 +1910,10 @@ function wireGate(v){
         (signed?', and it disappears from the '+(signed===2?'HOD and HR':'approver')+' page too':'')+'. This cannot be undone.</p>',
       footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="gd-do">Delete</button>',
       onOpen:(mv,cl)=>{$('#gd-do',mv).onclick=async()=>{ busy(true);
-        try{ await rpc('gp_delete',{p_id:g.id}); await load(); cl(); toast('Pass deleted.','ok'); render(); }
+        try{ await rpc('gp_delete',{p_id:g.id});
+          const ps=[g.reqSelfie,g.hodSelfie,g.hrSelfie].filter(Boolean);
+          if(ps.length){ try{ await SB.storage.from('documents').remove(ps) }catch(_){} }   // best-effort; 7-day sweep catches the rest
+          await load(); cl(); toast('Pass deleted.','ok'); render(); }
         catch(e){ busy(false); cl(); fail(e); }finally{ busy(false); } }}}); });
   $$('[data-gate]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.gate); if(!g) return;
     busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
