@@ -175,6 +175,7 @@ const gpMine=()=>DB.passes.filter(g=>g.requesterId===ME.id);
 const gpMyNext=()=>gpMine().filter(g=>g.status==='pending_hod'||g.status==='pending_hr');   // my passes awaiting a signature I must collect
 const gpSignedByMe=()=>DB.passes.filter(g=>(g.hodId===ME.id&&g.hodAt)||(g.hrId===ME.id&&g.hrAt));   // passes I approved as HOD or HR
 const gpMyRole=g=>g.hodId===ME.id?'HOD':(g.hrId===ME.id?'HR':'');
+const gpCanDelete=g=>g.requesterId===ME.id&&['pending_hod','pending_hr','pending_gate'].includes(g.status);   // requester may delete until the gate acts
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()):[];
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
 const gpKindLabel=g=>g.kind==='early'?'Early going':'Official work outpass';
@@ -1805,7 +1806,8 @@ function viewGate(){
   if(next.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--indigo)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>Collect your signatures</h3><span class="tag t-prog" style="margin-left:auto">'+next.length+'</span></div>'+
     '<div style="padding:12px 16px" class="hint">Walk up to whichever HOD is free, pick them here and hand over your phone for their selfie. Then do the same with HR.</div>'+
     '<div class="gp-list">'+next.map(g=>gpCard(g,
-      '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>')).join('')+'</div></div>';
+      '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>'+
+      '<button class="btn bad" data-del="'+g.id+'">Delete</button>')).join('')+'</div></div>';
   if(gate.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag t-ok" style="margin-left:auto">'+gate.length+'</span></div>'+
     '<div style="padding:12px 16px" class="hint">Check the two approval selfies, then clear the person.</div>'+
     '<div class="gp-list">'+gate.map(g=>{
@@ -1852,7 +1854,7 @@ function viewGate(){
   else h+=months.map(m=>{const label=new Date(m+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
     const list=groups[m], early=list.filter(g=>g.kind==='early'&&g.status!=='rejected').length;
     return '<div class="gp-month"><div class="gp-month-h">'+esc(label)+' <span class="hint">· '+list.length+' pass'+(list.length!==1?'es':'')+(early?' · '+early+' early-going':'')+'</span></div>'+
-      '<div class="gp-list" style="padding:0 12px 12px">'+list.map(g=>gpCard(g,null)).join('')+'</div></div>'}).join('');
+      '<div class="gp-list" style="padding:0 12px 12px">'+list.map(g=>gpCard(g,gpCanDelete(g)?'<button class="btn bad" data-del="'+g.id+'">Delete</button>':null)).join('')+'</div></div>'}).join('');
   h+='</div>';
   return h;
 }
@@ -1891,6 +1893,17 @@ function wireGate(v){
   };
   // collect an HOD / HR signature on my own pass
   $$('[data-getsign]',v).forEach(b=>b.onclick=()=>{ const g=DB.passes.find(x=>x.id===b.dataset.getsign); if(g) getSignFlow(g); });
+  // delete my own pass while it has not reached the gate
+  $$('[data-del]',v).forEach(b=>b.onclick=()=>{ const g=DB.passes.find(x=>x.id===b.dataset.del); if(!g) return;
+    const signed=(g.hodAt?1:0)+(g.hrAt?1:0);
+    modal({title:'Delete this pass',
+      body:'<p style="margin-top:0">Delete <b>'+esc(g.ref)+'</b> ('+esc(gpKindLabel(g).toLowerCase())+')?</p>'+
+        '<p class="hint">It is removed completely — it will not count'+(g.kind==='early'?' against your two early-going passes this month':'')+
+        (signed?', and it disappears from the '+(signed===2?'HOD and HR':'approver')+' page too':'')+'. This cannot be undone.</p>',
+      footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="gd-do">Delete</button>',
+      onOpen:(mv,cl)=>{$('#gd-do',mv).onclick=async()=>{ busy(true);
+        try{ await rpc('gp_delete',{p_id:g.id}); await load(); cl(); toast('Pass deleted.','ok'); render(); }
+        catch(e){ busy(false); cl(); fail(e); }finally{ busy(false); } }}}); });
   $$('[data-gate]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.gate); if(!g) return;
     busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
   // selfie view buttons inside timelines
