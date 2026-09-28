@@ -35,7 +35,7 @@ const numOf=s=>{const m=String(s||'').replace(/,/g,'').match(/-?\d+(\.\d+)?/);re
 const tidy=s=>String(s||'').replace(/,\s*,/g,', ').replace(/\s*,\s*/g,', ').replace(/,\s*$/,'').replace(/\s+/g,' ').trim();
 
 /* ---------- state ---------- */
-let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[]};
+let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[],passes:[]};
 let STATIONS=[], ME=null, ROUTE={name:'dash'};
 const byCode=new Map(), byName=new Map();
 function indexStations(){ byCode.clear(); byName.clear();
@@ -86,14 +86,15 @@ async function load(){
     SB.from('projects').select('name').order('name'),
     SB.from('stations').select('*').order('name'),
     SB.from('usage_daily').select('*'),
-    SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60)
+    SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60),
+    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(600)
   ];
   const r=await Promise.all(q);
   const bad=r.find(x=>x.error); if(bad) throw bad.error;
-  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif]=r.map(x=>x.data||[]);
+  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
-    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
+    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   const U={}; DB.users.forEach(u=>U[u.id]=u);
@@ -123,9 +124,15 @@ async function load(){
   DB.projects=proj.map(p=>p.name);
   STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
   DB.notifs=notif.map(x=>({id:x.id,requestId:x.request_id,kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at}));
+  DB.passes=passes.map(g=>({id:g.id,ref:g.ref,kind:g.kind,employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
+    requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
+    hodAt:ts(g.hod_at),hrAt:ts(g.hr_at),rejectBy:g.reject_by,rejectReason:g.reject_reason||'',rejectedAt:ts(g.rejected_at),
+    gateBy:g.gate_by,outAt:ts(g.out_at),returnAt:ts(g.return_at),status:g.status,passDate:g.pass_date,createdAt:ts(g.created_at)}));
 
   const me=DB.users.find(u=>u.id===(ME&&ME.id));
   if(me) ME=me;
+  // wipe gate selfies older than a week (safe for anyone to trigger; touches only week-old gate photos)
+  if(!load._expired){ load._expired=true; SB.rpc('gp_expire_photos').catch(()=>{}); }
 }
 let reloadT=null;
 async function reload(){ try{ await load(); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
@@ -161,6 +168,17 @@ const docTitle=r=>r.type==='indent'
   : docNo(r)+(r.f.vendorName?' · '+r.f.vendorName:'');
 const pinOK=u=>!!(u&&u.pinDate===DAY());
 const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
+
+/* ---------- gate pass ---------- */
+const isGateman=u=>!!(u&&(u.gateman||u.admin||u.owner));
+const gpMine=()=>DB.passes.filter(g=>g.requesterId===ME.id);
+const gpToSign=()=>DB.passes.filter(g=>(g.status==='pending_hod'&&g.hodId===ME.id)||(g.status==='pending_hr'&&g.hrId===ME.id));
+const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()):[];
+const gpBadge=()=>gpToSign().length+gpAtGate().length;
+const gpKindLabel=g=>g.kind==='early'?'Early going':'Official work outpass';
+const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind==='early'&&g.status!=='rejected'&&String(g.passDate).slice(0,7)===m).length};
+const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
+const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span class="tag '+x[0]+'">'+x[1]+'</span>'};
 
 /* ---------- usage ---------- */
 const statsOf=u=>u.stats||(u.stats={lastLogin:null,logins:0,activeMs:0,daily:{}});
@@ -857,6 +875,7 @@ const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
+  {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length},
   {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
   {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length},
@@ -951,6 +970,7 @@ function render(){
     case 'usage': v.innerHTML=viewUsage(); wireUsage(v); break;
     case 'people': v.innerHTML=viewPeople(); wirePeople(v); head('People & masters','Directory, station master and the permanence rule'); break;
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
+    case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
   }
 }
 
@@ -1598,6 +1618,7 @@ function wirePeople(v){
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
         (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
@@ -1607,6 +1628,7 @@ function wirePeople(v){
         $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
+          if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
@@ -1637,6 +1659,214 @@ function localPicker(mount,label,onFile){
   const inp=$('input',mount), drop=$('.drop',mount);
   drop.onclick=()=>inp.click(); drop.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();inp.click()}};
   inp.onchange=async e=>{const f=e.target.files[0]; inp.value=''; if(f) await onFile(f)};
+}
+
+/* ============================================================
+   Gate Pass
+   A live selfie is the signature. There is no upload and no gallery:
+   the camera opens, a frame is taken here and now, and the server
+   stamps the time it arrives. Photos are wiped after 7 days; the
+   record of who signed, and when, is permanent.
+   ============================================================ */
+let gpDraft=null;
+async function selfieUpload(blob){
+  const path=ME.id+'/gate-'+uid()+'.jpg';
+  const {error}=await SB.storage.from('documents').upload(path,blob,{contentType:'image/jpeg',upsert:false});
+  if(error) throw error;
+  return path;
+}
+/* opens the front camera, lets you capture and confirm one frame, uploads it,
+   and resolves to the stored path (or null if the person backed out) */
+function captureSelfie(title){
+  return new Promise(resolve=>{
+    let stream=null, path=null, done=false, previewBlob=null;
+    const finish=v=>{ if(done)return; done=true; if(stream)stream.getTracks().forEach(t=>t.stop()); resolve(v); };
+    modal({title:title||'Take a live selfie',cls:'selfie',
+      body:'<div id="sf-stage" class="selfie-stage"><div class="selfie-hint"><span class="spin"></span> Starting the camera…</div></div>'+
+           '<div id="sf-msg" class="hint" style="margin-top:8px;text-align:center">Look at the camera. The photo is taken live and time-stamped — it cannot be uploaded from your gallery.</div>',
+      footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="sf-retake" style="display:none">Retake</button><button class="btn primary" id="sf-shoot" disabled>Capture</button>',
+      onOpen:(v,cl)=>{
+        const stage=$('#sf-stage',v), msg=$('#sf-msg',v), shoot=$('#sf-shoot',v), retake=$('#sf-retake',v);
+        const obs=new MutationObserver(()=>{ if(!v.isConnected){ obs.disconnect(); finish(path) } });
+        obs.observe(v.parentNode||document.body,{childList:true});
+        const showLive=()=>{ const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
+          video.muted=true; video.className='selfie-video mirror'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
+          shoot.textContent='Capture'; shoot.dataset.mode='cap'; shoot.disabled=false; retake.style.display='none'; };
+        (async()=>{
+          if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+            stage.innerHTML='<div class="selfie-err">This device has no camera the app can use.</div>'; return; }
+          try{ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1080},height:{ideal:1080}},audio:false}); }
+          catch(e){ stage.innerHTML='<div class="selfie-err">The camera could not start.<div class="hint" style="margin-top:6px">Allow camera access for this site, then reopen. A selfie can only be taken live — there is no upload.</div></div>'; return; }
+          showLive();
+        })();
+        shoot.onclick=async()=>{
+          if(shoot.dataset.mode==='use'){
+            shoot.disabled=true; retake.style.display='none'; msg.textContent='Saving…';
+            try{ path=await selfieUpload(previewBlob); cl(); }
+            catch(e){ msg.textContent='Could not save the photo. Try again.'; shoot.disabled=false; retake.style.display=''; }
+            return;
+          }
+          const video=$('.selfie-video',stage); if(!video) return;
+          const w=video.videoWidth||720, h=video.videoHeight||720, edge=1000, scale=Math.min(1,edge/Math.max(w,h));
+          const cv=document.createElement('canvas'); cv.width=Math.round(w*scale); cv.height=Math.round(h*scale);
+          cv.getContext('2d').drawImage(video,0,0,cv.width,cv.height);
+          previewBlob=await new Promise(res=>cv.toBlob(res,'image/jpeg',0.82));
+          stage.innerHTML='<img class="selfie-video" src="'+cv.toDataURL('image/jpeg',0.82)+'" alt="selfie preview">';
+          shoot.textContent='Use this photo'; shoot.dataset.mode='use'; retake.style.display='';
+        };
+        retake.onclick=showLive;
+      }});
+  });
+}
+async function showSelfie(path,label){
+  if(!path){ toast('That photo was kept for 7 days and has since been wiped.','hold'); return; }
+  const {el}=modal({title:label||'Selfie',cls:'selfie',body:'<div id="sv-stage" class="selfie-stage"><span class="spin"></span></div>'+
+    '<div class="hint" style="margin-top:8px;text-align:center">Selfies are removed 7 days after the pass; the approval record stays.</div>'});
+  try{ const blob=await fetchFile({path}); const url=URL.createObjectURL(blob);
+    if($('#sv-stage',el)) $('#sv-stage',el).innerHTML='<img class="selfie-video" src="'+url+'" alt="selfie">'; }
+  catch(e){ if($('#sv-stage',el)) $('#sv-stage',el).innerHTML='<div class="selfie-err">This photo is no longer available.</div>'; }
+}
+const gpDuration=(a,b)=>{ if(!a||!b) return ''; let s=Math.max(0,Math.round((b-a)/1000)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60);
+  return (h?h+'h ':'')+m+'m'; };
+function gpTimeline(g){
+  const row=(ok,label,who,when,selfie,slabel)=>'<div class="gp-step '+(ok?'done':'')+'"><span class="gp-dot"></span><div style="flex:1;min-width:0"><b>'+esc(label)+'</b>'+
+    (who?'<div class="hint">'+esc(who)+(when?' · '+esc(fmtDT(when)):'')+'</div>':'')+'</div>'+
+    (selfie!==undefined?'<button class="btn sm" data-selfie="'+esc(selfie||'')+'" data-slabel="'+esc(slabel||'')+'"'+(selfie?'':' disabled')+'>Selfie</button>':'')+'</div>';
+  const hod=user(g.hodId), hr=user(g.hrId), gm=g.gateBy?user(g.gateBy):null, req=user(g.requesterId);
+  let h='<div class="gp-timeline">';
+  h+=row(true,'Raised',req.name,g.createdAt,g.reqSelfie,req.name+' — at creation');
+  h+=row(!!g.hodAt,'HOD — '+hod.name,g.hodAt?'Signed':(g.status==='rejected'&&g.rejectBy===g.hodId?'Declined':'Waiting'),g.hodAt,g.hodSelfie,hod.name+' — HOD');
+  h+=row(!!g.hrAt,'HR — '+hr.name,g.hrAt?'Signed':(g.status==='rejected'&&g.rejectBy===g.hrId?'Declined':'Waiting'),g.hrAt,g.hrSelfie,hr.name+' — HR');
+  if(g.kind==='official'){
+    h+=row(!!g.outAt,'Out at gate',gm?gm.name:'',g.outAt);
+    h+=row(!!g.returnAt,'Returned',g.returnAt?(gpDuration(g.outAt,g.returnAt)+' out'):'Not back yet',g.returnAt);
+  }else{
+    h+=row(!!g.outAt,'Signed out at gate',gm?gm.name:'',g.outAt);
+  }
+  if(g.status==='rejected') h+='<div class="banner bad" style="margin-top:8px"><div><b>Declined by '+esc(user(g.rejectBy).name)+'</b>'+(g.rejectReason?'<div class="hint" style="color:var(--stop)">'+esc(g.rejectReason)+'</div>':'')+'</div></div>';
+  h+='</div>'; return h;
+}
+function gpCard(g,acts){
+  return '<div class="card gp-card"><div class="row" style="padding:13px 16px;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)">'+
+    '<div style="min-width:0"><b>'+esc(g.name||user(g.requesterId).name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
+    '<div class="hint">'+esc(gpKindLabel(g))+' · '+esc(fmtD(g.createdAt))+(g.dept?' · '+esc(g.dept):'')+'</div></div>'+
+    '<span style="margin-left:auto">'+gpTag(g)+'</span></div>'+
+    '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:8px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
+    gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+'</div></div>';
+}
+function viewGate(){
+  head('Gate Pass','Take an early-going or official outpass — a live selfie is your signature');
+  const sign=gpToSign(), gate=gpAtGate(), mine=gpMine();
+  let h='';
+  if(sign.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--indigo)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>Waiting for your sign-off</h3><span class="tag t-prog" style="margin-left:auto">'+sign.length+'</span></div>'+
+    '<div style="padding:12px 16px" class="hint">The person hands you their phone; you take a selfie to sign. It is stamped with the time it is taken.</div>'+
+    '<div class="gp-list">'+sign.map(g=>gpCard(g,
+      '<button class="btn primary" data-sign="'+g.id+'">Sign with selfie</button><button class="btn bad" data-reject="'+g.id+'">Decline</button>')).join('')+'</div></div>';
+  if(gate.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag t-ok" style="margin-left:auto">'+gate.length+'</span></div>'+
+    '<div style="padding:12px 16px" class="hint">Check the two approval selfies, then clear the person.</div>'+
+    '<div class="gp-list">'+gate.map(g=>{
+      const label=g.status==='out'?'Record return & close':(g.kind==='official'?'Sign out (records time)':'Approve &amp; close');
+      return gpCard(g,'<button class="btn primary" data-gate="'+g.id+'">'+label+'</button>');
+    }).join('')+'</div></div>';
+
+  // create a pass
+  const d=gpDraft||(gpDraft={kind:'early',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null,hod:null,hr:null});
+  const earlyLeft=Math.max(0,2-gpEarlyUsed());
+  h+='<div class="card pad"><h3>Create a pass</h3>'+
+    '<div class="seg" id="g-kind" style="margin:12px 0"><button data-k="early" class="'+(d.kind==='early'?'on':'')+'">Early going</button><button data-k="official" class="'+(d.kind==='official'?'on':'')+'">Official work outpass</button></div>'+
+    '<div class="hint" id="g-kindnote" style="margin:-4px 0 12px">'+(d.kind==='early'?('Early-going passes left this month: <b>'+earlyLeft+' of 2</b>.'):'Official outpasses are not capped. The gateman records your out-time and, when you return, the time back.')+'</div>'+
+    '<div class="grid g2"><div><label for="g-emp">Employee ID</label><input id="g-emp" type="text" value="'+esc(d.employeeId)+'" placeholder="Your employee code"></div>'+
+      '<div><label for="g-name">Name</label><input id="g-name" type="text" value="'+esc(d.name)+'"></div></div>'+
+    '<div class="grid g2" style="margin-top:12px"><div><label for="g-dept">Department</label><select id="g-dept">'+deptOptions(d.dept)+'</select></div>'+
+      '<div><label>Date</label><input type="text" value="'+esc(fmtD(Date.now()))+'" disabled></div></div>'+
+    '<div style="margin-top:12px"><label for="g-purpose">Purpose</label><textarea id="g-purpose" placeholder="Where are you going and why?">'+esc(d.purpose)+'</textarea></div>'+
+    '<div style="margin-top:14px"><label>Your selfie (signature)</label><div id="g-selfie-wrap" class="gp-selfie-wrap"></div></div>'+
+    '<div class="sep" style="margin:16px 0 12px"></div>'+
+    '<div class="grid g2"><div><label>HOD to sign</label><div id="g-hod" class="gp-pick"></div></div>'+
+      '<div><label>HR to sign</label><div id="g-hr" class="gp-pick"></div></div></div>'+
+    '<div id="g-err" style="color:var(--stop);font-size:13px;margin-top:12px"></div>'+
+    '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" id="g-send">Create pass</button><button class="btn" id="g-clear">Clear</button></div></div>';
+
+  // history, month-wise
+  const openMine=mine.filter(g=>['pending_hod','pending_hr','pending_gate','out'].includes(g.status));
+  const groups={}; mine.forEach(g=>{const k=String(g.passDate||'').slice(0,7)||new Date(g.createdAt).toISOString().slice(0,7);(groups[k]=groups[k]||[]).push(g)});
+  const months=Object.keys(groups).sort().reverse();
+  h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>My passes</h3><span class="hint" style="margin-left:auto">'+mine.length+' in all · '+openMine.length+' open</span></div>';
+  if(!mine.length) h+='<div class="empty" style="padding:26px 16px"><h3>No passes yet</h3><p class="hint">Create one above.</p></div>';
+  else h+=months.map(m=>{const label=new Date(m+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+    const list=groups[m], early=list.filter(g=>g.kind==='early'&&g.status!=='rejected').length;
+    return '<div class="gp-month"><div class="gp-month-h">'+esc(label)+' <span class="hint">· '+list.length+' pass'+(list.length!==1?'es':'')+(early?' · '+early+' early-going':'')+'</span></div>'+
+      '<div class="gp-list" style="padding:0 12px 12px">'+list.map(g=>gpCard(g,null)).join('')+'</div></div>'}).join('');
+  h+='</div>';
+  return h;
+}
+function wireGate(v){
+  const d=gpDraft;
+  // selfie
+  const paintSelfie=()=>{ const w=$('#g-selfie-wrap',v); if(!w) return;
+    w.innerHTML=d.selfie
+      ? '<div class="gp-selfie-done"><span class="gp-selfie-ok">✓ Selfie taken</span><button class="btn sm" id="g-selfie-view">View</button><button class="btn sm" id="g-selfie-redo">Retake</button></div>'
+      : '<button class="btn" id="g-selfie-take">📷 Take live selfie</button>';
+    if($('#g-selfie-take',w)) $('#g-selfie-take',w).onclick=async()=>{const p=await captureSelfie('Your selfie'); if(p){d.selfie=p; paintSelfie()}};
+    if($('#g-selfie-redo',w)) $('#g-selfie-redo',w).onclick=async()=>{const p=await captureSelfie('Retake your selfie'); if(p){d.selfie=p; paintSelfie()}};
+    if($('#g-selfie-view',w)) $('#g-selfie-view',w).onclick=()=>showSelfie(d.selfie,'Your selfie');
+  };
+  paintSelfie();
+  // kind toggle
+  $$('#g-kind button',v).forEach(b=>b.onclick=()=>{ d.kind=b.dataset.k;
+    $$('#g-kind button',v).forEach(x=>x.classList.toggle('on',x.dataset.k===d.kind));
+    const left=Math.max(0,2-gpEarlyUsed());
+    $('#g-kindnote',v).innerHTML=d.kind==='early'?('Early-going passes left this month: <b>'+left+' of 2</b>.'):'Official outpasses are not capped. The gateman records your out-time and, when you return, the time back.'; });
+  const bind=(id,key)=>{const el=$(id,v); if(el) el.oninput=()=>d[key]=el.value; if(el&&el.tagName==='SELECT') el.onchange=()=>d[key]=el.value;};
+  bind('#g-emp','employeeId'); bind('#g-name','name'); bind('#g-dept','dept'); bind('#g-purpose','purpose');
+  if($('#g-dept',v)) $('#g-dept',v).value=d.dept||'';
+  // HOD / HR pickers
+  const picker=(mount,key)=>{
+    const el=$(mount,v); if(!el) return;
+    const paint=()=>{
+      if(d[key]){ const u=user(d[key]);
+        el.innerHTML='<div class="gp-picked"><div class="av sm">'+inits(u.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.email?' · '+esc(u.email):'')+'</div></div><button class="btn sm" data-x-pick>Change</button></div>';
+        $('[data-x-pick]',el).onclick=()=>{d[key]=null;paint()};
+      } else {
+        el.innerHTML='<input type="text" class="gp-search" placeholder="Search by name, department or email"><div class="gp-res"></div>';
+        const inp=$('input',el), res=$('.gp-res',el);
+        inp.oninput=()=>{const q=inp.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
+          const hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&(u.name+' '+u.email+' '+u.dept+' '+u.role).toLowerCase().includes(q)).slice(0,6);
+          res.innerHTML=hits.length?'<div class="results">'+hits.map(u=>'<button data-u="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div style="min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+' · '+esc(u.dept||'')+'</div></div></button>').join('')+'</div>':'<div class="results"><div class="hint" style="padding:12px 14px">Nobody matches that.</div></div>';
+          $$('.results button',res).forEach(b=>b.onclick=()=>{d[key]=b.dataset.u;paint()});
+        };
+      }
+    };
+    paint();
+  };
+  picker('#g-hod','hod'); picker('#g-hr','hr');
+  $('#g-clear',v).onclick=()=>{gpDraft=null;render()};
+  $('#g-send',v).onclick=async()=>{
+    const err=$('#g-err',v); err.textContent='';
+    if(!d.name.trim()) return err.textContent='Enter your name.';
+    if(!d.purpose.trim()) return err.textContent='Enter the purpose.';
+    if(!d.selfie) return err.textContent='Take your live selfie — it is your signature.';
+    if(!d.hod||!d.hr) return err.textContent='Choose both your HOD and HR.';
+    if(d.hod===d.hr) return err.textContent='HOD and HR must be two different people.';
+    if(d.kind==='early'&&gpEarlyUsed()>=2) return err.textContent='You have already used both early-going passes this month.';
+    busy(true);
+    try{ await rpc('gp_create',{p_kind:d.kind,p_employee_id:d.employeeId.trim(),p_name:d.name.trim(),p_dept:d.dept,p_purpose:d.purpose.trim(),p_selfie:d.selfie,p_hod:d.hod,p_hr:d.hr});
+      gpDraft=null; await load(); toast('Pass sent to '+user(d.hod===null?'':d.hod).name+' for HOD sign-off.','ok'); render(); }
+    catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
+    finally{ busy(false); }
+  };
+  // sign / decline / gate actions
+  $$('[data-sign]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.sign); if(!g) return;
+    const p=await captureSelfie('Sign for '+g.name); if(!p) return;
+    busy(true); try{ await rpc('gp_sign',{p_id:g.id,p_selfie:p}); await load(); toast('Signed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
+  $$('[data-reject]',v).forEach(b=>b.onclick=()=>{ const g=DB.passes.find(x=>x.id===b.dataset.reject); if(!g) return;
+    modal({title:'Decline this pass',body:'<p style="margin-top:0">Declining <b>'+esc(g.name)+'</b>’s '+esc(gpKindLabel(g).toLowerCase())+'.</p><div><label for="gr">Reason (optional)</label><textarea id="gr" placeholder="e.g. Not required today."></textarea></div><div id="gr-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+      footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="grg">Decline</button>',
+      onOpen:(mv,cl)=>{$('#grg',mv).onclick=async()=>{try{ await rpc('gp_reject',{p_id:g.id,p_reason:$('#gr',mv).value.trim()}); await load(); cl(); toast('Declined.','ok'); render(); }catch(e){ $('#gr-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); }}}}); });
+  $$('[data-gate]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.gate); if(!g) return;
+    busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
+  // selfie view buttons inside timelines
+  $$('[data-selfie]',v).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfie||null,b.dataset.slabel||'Selfie'));
 }
 
 /* ============================================================
