@@ -191,6 +191,27 @@ const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind
 const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
 const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span class="tag '+x[0]+'">'+x[1]+'</span>'};
 
+/* ---------- org structure: departments, their divisions, and the ALDS auto-hierarchies ---------- */
+const DEPT_DIV={
+  'ALDS':['ONM','Project','Retail','Transport'],
+  'PCD':['Project','Operation','Purchase'],
+  'HO':['Admin','HO-CNG'],
+  'CNG':['Maintenance','Logistics','Project','IT Department','Accounts','Operation','Sales & Marketing','Store','Liaison']
+};
+const DEPTS=Object.keys(DEPT_DIV);
+/* the approver chain (after the requester) for an ALDS indent/work order, keyed by who raises it */
+const ORG_HIERARCHY={
+  'manish kamdi':['Sanjay Palod','Chetan Bhoskar','Jatin Vora','Hardik','Jai Singhal','Jinesh Khara','Chetan Bhoskar','Jatin Vora','Jai Singhal','Prachi Khara','Manish Kamdi','Sanjay Palod','Jai Singhal'],
+  'minakshi vyas':['Rakesh Sharma','Chetan Bhoskar','Jatin Vora','Hardik','Jai Singhal','Jinesh Khara','Chetan Bhoskar','Jatin Vora','Jai Singhal','Prachi Khara','Minakshi Vyas','Rakesh Sharma','Jai Singhal']
+};
+function findUserByName(name){
+  const n=String(name||'').trim().toLowerCase(); if(!n) return null;
+  let u=DB.users.find(x=>x.active&&x.name.trim().toLowerCase()===n);
+  if(u) return u;
+  const toks=n.split(/\s+/);
+  return DB.users.find(x=>{const xn=x.name.trim().toLowerCase();return x.active&&toks.every(t=>xn.includes(t))})||null;
+}
+
 /* ---------- usage ---------- */
 const statsOf=u=>u.stats||(u.stats={lastLogin:null,logins:0,activeMs:0,daily:{}});
 const dayKey=off=>{const d=new Date(Date.now()-off*864e5);return d.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'})};
@@ -258,10 +279,23 @@ function resolveSite(raw){
   if(near.length===1) return {code:near[0].code,name:near[0].name,state:near[0].state,how:'near',conf:'mid'};
   return {code:'',name:bare,state:'',how:near.length>1?'ambiguous':'unmatched',conf:'mid'};
 }
+/* map an ERP division label to the SETU Department/Division taxonomy */
+function detectOrg(out,conf,dept,rawDiv){
+  const list=DEPT_DIV[dept]||[]; const key=String(rawDiv||'').toLowerCase().replace(/\s+/g,' ').trim();
+  const alias={'o&m':'ONM','onm':'ONM','o and m':'ONM','retail':'Retail','project':'Project','transport':'Transport'};
+  let div=list.find(x=>x.toLowerCase()===key)||alias[key]||list.find(x=>key.indexOf(x.toLowerCase())>-1);
+  if(div&&list.indexOf(div)>-1){ out.department=dept; out.division=div; conf.department='hi'; conf.division='hi'; }
+}
 function parseIndent(doc){
   const L=doc.all, out={}, conf={};
   const no=grab(L,/Indent\s*No\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i); if(no){out.indentNo=no;conf.indentNo='hi'}
   const dt=grab(L,/Indent\s*Date\s*:?\s*(\d{2}-\d{2}-\d{4})/i); if(dt){out.indentDate=toISO(dt);conf.indentDate='hi'}
+  // the ERP preparation stamp — date AND time (e.g. "Created Date : 05-JUN-2026 04:29 PM")
+  const cr=grab(L,/Created\s*Date\s*:?\s*(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{1,2}:\d{2}\s*[AP]\.?M\.?)/i);
+  if(cr){out.erpCreated=cr.replace(/\s+/g,' ').replace(/\.?M\.?$/i,'M').toUpperCase();conf.erpCreated='hi'}
+  // Department / Division off the ERP "Division : ALDS - <X> Division" line
+  const dv=grab(L,/Division\s*:?\s*ALDS\s*-\s*([A-Za-z&/ ]+?)\s+Division/i);
+  if(dv){ detectOrg(out,conf,'ALDS',dv.trim()); }
   let rm=grabUntilGap(L,/^\s*Remark\s*:/i,/^Remark$/i);
   if(!rm){const rl=findLine(L,/^\s*Remark\s*:/i); if(rl){const m=rl.text.match(/Remark\s*:\s*(.+?)(?=\s+[\d][\d.,]*\s|\s+Total\b|$)/i); if(m) rm=m[1].trim()}}
   if(rm){out.remarks=rm;conf.remarks='hi'}
@@ -278,6 +312,10 @@ function parseWorkOrder(doc){
   const no=grab(R.concat(A),/Order\s*No\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i); if(no){out.orderNo=no;conf.orderNo='hi'}
   const ordLine=findLine(R,/Order\s*No\.?/i)||findLine(A,/Order\s*No\.?/i);
   if(ordLine){const d=(ordLine.text.match(/Date\s*:?\s*(\d{2}-\d{2}-\d{4})/i)||[])[1]; if(d){out.woDate=toISO(d);conf.woDate='hi'}}
+  const wcr=grab(A,/Created\s*Date\s*:?\s*(\d{1,2}-[A-Za-z]{3}-\d{4}\s+\d{1,2}:\d{2}\s*[AP]\.?M\.?)/i);
+  if(wcr){out.erpCreated=wcr.replace(/\s+/g,' ').replace(/\.?M\.?$/i,'M').toUpperCase();conf.erpCreated='hi'}
+  const wdv=grab(A,/Division\s*:?\s*ALDS\s*-\s*([A-Za-z&/ ]+?)\s+Division/i);
+  if(wdv){ detectOrg(out,conf,'ALDS',wdv.trim()); }
   const fp=cutRight(grab(R.concat(A),/File\/Project\s*:?\s*(.+)$/i));
   if(fp){ out._siteRaw=fp; const site=resolveSite(fp);
     if(site){out.siteCode=site.code;out.siteName=site.name;out.siteState=site.state;conf.site=site.conf;out._siteHow=site.how} }
@@ -530,7 +568,25 @@ async function enter(session){
         onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(incomplete()) profileDialog(); else if(!pinOK(ME)) pinDialog() }}),300);
     else if(incomplete()) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
+    else setTimeout(pendingPopup,500);
   }catch(e){ fail(e) } finally { busy(false) }
+}
+/* a nudge on sign-in listing whatever is actually waiting on this person */
+function pendingPopup(){
+  if($('.veil')) return;                                  // don't stack on another dialog
+  const q=myQueue(), tk=myTasks(), st=myStuck();
+  const rows=[];
+  if(q.length)  rows.push(['queue','Waiting for your approval',q.length]);
+  if(tk.length) rows.push(['tasks','Tasks assigned to you',tk.length]);
+  if(st.length) rows.push(['stuck','A query / more input needed on your request',st.length]);
+  if(!rows.length) return;
+  const total=q.length+tk.length+st.length;
+  modal({title:'You have '+total+' item'+(total>1?'s':'')+' waiting',
+    body:'<div class="sheet-list">'+rows.map(([k,label,n])=>
+        '<button data-go="'+k+'" style="display:flex;align-items:center;gap:10px"><span>'+esc(label)+'</span><span class="pill" style="margin-left:auto">'+n+'</span></button>').join('')+'</div>'+
+      '<div class="hint" style="margin-top:10px">These are also under Notifications and on your dashboard'+(unread().length?' — '+unread().length+' unread alert'+(unread().length>1?'s':''):'')+'.</div>',
+    footer:'<button class="btn primary" data-x>Got it</button>',
+    onOpen:(v,close)=>{ $$('[data-go]',v).forEach(b=>b.onclick=()=>{close();go({name:b.dataset.go})}); }});
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
@@ -1051,6 +1107,16 @@ const txt=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="
   '<input id="'+id+'" type="text" value="'+esc(val||'')+'"'+(ph?' placeholder="'+esc(ph)+'"':'')+'></div>';
 const area=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="'+id+'">'+esc(label)+(conf?'<span class="flag '+conf+'">from PDF</span>':'')+'</label>'+
   '<textarea id="'+id+'"'+(ph?' placeholder="'+esc(ph)+'"':'')+'>'+esc(val||'')+'</textarea></div>';
+/* Department and Division — mandatory, Division cascades from Department */
+function orgFields(){
+  const f=draft.f, divs=f.department?(DEPT_DIV[f.department]||[]):[];
+  const req='<span style="color:var(--stop)">*</span>';
+  return '<div class="grid g2">'+
+    '<div><label for="o-dept">Department '+req+'</label><select id="o-dept"><option value="">Choose…</option>'+
+      DEPTS.map(d=>'<option '+(f.department===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
+    '<div><label for="o-div">Division '+req+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?'Choose…':'Pick a department first')+'</option>'+
+      divs.map(x=>'<option '+(f.division===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select></div></div>';
+}
 const uploadCard=()=>'<div class="card pad"><h3>The ERP document</h3><p class="hint" style="margin-top:5px">The indent or work order PDF the ERP generated. The fields below fill in from it — every one of them stays editable.</p><div id="n-files" style="margin-top:14px"></div></div>'+
   '<div class="card pad" id="n-supp-card"><h3>Supporting documents <span class="hint" style="font-weight:400">optional</span></h3>'+
   '<p class="hint" style="margin-top:5px">Quotations, comparison sheets, photos of the site or the equipment, a signed note — anything an approver would want alongside the ERP document. Photos are shrunk before upload, so send them straight from the phone.</p>'+
@@ -1068,18 +1134,22 @@ function indentForm(){
   const f=draft.f,c=draft.conf;
   return '<div class="detail-grid"><div class="grid" style="gap:16px">'+uploadCard()+
    '<div class="card pad"><h3>Indent details</h3><div class="grid" style="gap:14px;margin-top:14px">'+
+     orgFields()+
      '<div class="grid g2">'+txt('i-no','Indent number',f.indentNo,c.indentNo,'IH26605-007')+
        '<div><label for="i-cat">Category</label><select id="i-cat">'+['O&M','Project'].map(x=>'<option '+(f.category===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div></div>'+
      '<div id="i-sitewrap"></div>'+
-     '<div class="grid g2"><div class="auto '+(c.indentDate||'')+'"><label for="i-date">Date of indent'+(c.indentDate?'<span class="flag hi">from PDF</span>':'')+'</label><input id="i-date" type="date" value="'+esc(f.indentDate||'')+'"></div><div></div></div>'+
+     '<div class="grid g2"><div class="auto '+(c.indentDate||'')+'"><label for="i-date">Date of indent'+(c.indentDate?'<span class="flag hi">from PDF</span>':'')+'</label><input id="i-date" type="date" value="'+esc(f.indentDate||'')+'"></div>'+
+       txt('i-erp','ERP prepared on (date & time)',f.erpCreated,c.erpCreated,'e.g. 05-JUN-2026 04:29 PM')+'</div>'+
      area('i-rem','Remarks',f.remarks,c.remarks,'What this indent is for.')+'</div></div></div><div>'+chainCard()+'</div></div>';
 }
 function woForm(){
   const f=draft.f,c=draft.conf;
   return '<div class="detail-grid"><div class="grid" style="gap:16px">'+uploadCard()+
    '<div class="card pad"><h3>Work order details</h3><div class="grid" style="gap:14px;margin-top:14px">'+
+     orgFields()+
      '<div class="grid g2">'+txt('w-no','Work order number',f.orderNo,c.orderNo,'WW25121-001')+
        '<div class="auto '+(c.woDate||'')+'"><label for="w-date">Work order date'+(c.woDate?'<span class="flag hi">from PDF</span>':'')+'</label><input id="w-date" type="date" value="'+esc(f.woDate||'')+'"></div></div>'+
+     txt('w-erp','ERP prepared on (date & time)',f.erpCreated,c.erpCreated,'e.g. 05-JUN-2026 04:29 PM')+
      '<div id="w-sitewrap"></div><div class="sep"></div><h4 style="font-size:12.5px;color:var(--steel);font-weight:600">VENDOR</h4>'+
      txt('w-vn','Vendor name',f.vendorName,c.vendorName)+area('w-va','Vendor address',f.vendorAddress,c.vendorAddress)+
      '<div class="grid g3">'+txt('w-vs','State',f.vendorState,c.vendorState)+txt('w-vsc','State code',f.vendorStateCode,c.vendorStateCode)+txt('w-vp','PAN',f.vendorPan,c.vendorPan)+'</div>'+
@@ -1140,8 +1210,29 @@ function wireNew(v){
   const bind=(id,key,num)=>{const el=$(id,body);if(el)el.oninput=()=>{f[key]=num?(el.value===''?'':Number(el.value)):el.value}};
   bind('#i-no','indentNo');bind('#i-date','indentDate');bind('#i-rem','remarks');bind('#w-no','orderNo');bind('#w-date','woDate');bind('#w-vn','vendorName');bind('#w-va','vendorAddress');
   bind('#w-vs','vendorState');bind('#w-vsc','vendorStateCode');bind('#w-vp','vendorPan');bind('#w-vg','vendorGstin');bind('#w-vc','vendorContact');bind('#w-ba','billingAddress');bind('#w-rem','remarks');
-  bind('#w-ap','amountPre',1);bind('#w-aq','amountPost',1);
+  bind('#w-ap','amountPre',1);bind('#w-aq','amountPost',1);bind('#i-erp','erpCreated');bind('#w-erp','erpCreated');
   const cat=$('#i-cat',body); if(cat) cat.onchange=()=>{f.category=cat.value;paintSite($('#i-sitewrap',body))};
+  // preload the ALDS hierarchy for this requester (editable), at most once per draft
+  const tryAutoHierarchy=()=>{
+    if(f.department!=='ALDS'||draft._autoApplied) return;
+    const spec=ORG_HIERARCHY[(ME.name||'').trim().toLowerCase()]; if(!spec) return;
+    const ids=[], missing=[];
+    spec.forEach(nm=>{ const u=findUserByName(nm); if(u) ids.push(u.id); else missing.push(nm); });
+    if(!ids.length) return;
+    draft.chain=ids; draft._autoApplied=true; paintChain();
+    toast(missing.length
+      ? 'Loaded your ALDS hierarchy. Not registered yet: '+missing.join(', ')+' — add them once their account exists.'
+      : 'Loaded your ALDS hierarchy — edit if this one differs.', missing.length?'':'ok');
+  };
+  // Department → Division cascade
+  const odept=$('#o-dept',body), odiv=$('#o-div',body);
+  if(odiv) odiv.onchange=()=>{ f.division=odiv.value };
+  if(odept) odept.onchange=()=>{
+    f.department=odept.value; f.division='';
+    if(odiv){ const list=DEPT_DIV[f.department]||[]; odiv.disabled=!f.department;
+      odiv.innerHTML='<option value="">'+(f.department?'Choose…':'Pick a department first')+'</option>'+list.map(x=>'<option>'+esc(x)+'</option>').join(''); }
+    tryAutoHierarchy();
+  };
   const gst=()=>{const g=$('#w-gst',body); if(!g) return; const a=Number(f.amountPre)||0,b=Number(f.amountPost)||0; g.value=(a&&b)?money(b-a):'—';
     const w=$('#w-gstwarn',body); w.textContent=(a&&b&&b<a)?'The after-GST amount is lower than the before-GST amount. Check both figures.':''; w.style.color=(a&&b&&b<a)?'var(--stop)':''};
   ['#w-ap','#w-aq'].forEach(s=>{const e=$(s,body);if(e)e.addEventListener('input',gst)}); gst();
@@ -1159,6 +1250,7 @@ function wireNew(v){
     $$('[data-rm]',c).forEach(b=>b.onclick=()=>{draft.chain.splice(+b.dataset.rm,1);paintChain()});
   };
   paintChain();
+  tryAutoHierarchy();   // if the PDF (or a kept draft) already set department = ALDS, preload the chain
   const tplSel=$('#n-tpl',body);
   if(tplSel) tplSel.onchange=()=>{const t=DB.templates.find(x=>x.id===tplSel.value); if(t){applyTemplate(t);paintChain();toast('Applied “'+t.name+'”. Adjust it if this one is different.','ok')}};
   if($('#n-tpl-go',body)) $('#n-tpl-go',body).onclick=()=>go({name:'tpl'});
@@ -1176,6 +1268,8 @@ function wireNew(v){
 }
 async function submit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
+  if(!f.department) return note.textContent='Choose a department.';
+  if(!f.division) return note.textContent='Choose a division.';
   if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; if(!f.indentDate) return note.textContent='Date of indent is needed.';
     if(f.category==='Project'){ if(!f.projectName) f.projectName='ALDS Project' } else if(!f.siteName) return note.textContent='Site name is needed.'; }
   else { if(!f.orderNo) return note.textContent='Work order number is needed.'; if(!f.woDate) return note.textContent='Work order date is needed.';
@@ -1306,7 +1400,7 @@ function viewDetail(id){
       (inChain(r)||ME.admin?'<div class="sep"></div><label for="nt">Leave a note</label><textarea id="nt" placeholder="A comment for the chain. It does not move the request."></textarea><button class="btn sm" id="ntb" style="margin-top:9px">Post note</button>':'')+'</div>';
   }
   const facts='<div class="card pad" style="margin-bottom:16px">'+(r.type==='workorder'?'<div class="amount num">'+money(f.amountPost)+'</div><div class="hint">'+money(f.amountPre)+' before GST'+(f.amountPre&&f.amountPost?' · GST '+money(f.amountPost-f.amountPre):'')+'</div>':'<div class="amount num">'+esc(docNo(r))+'</div>')+
-    '<div style="margin:8px 0 14px">'+tagFor(r)+'</div><dl class="kv"><dt>Reference</dt><dd class="num">'+esc(r.ref)+'</dd><dt>Type</dt><dd>'+esc(typeLabel(r))+'</dd>'+
+    '<div style="margin:8px 0 14px">'+tagFor(r)+'</div><dl class="kv"><dt>Reference</dt><dd class="num">'+esc(r.ref)+'</dd><dt>Type</dt><dd>'+esc(typeLabel(r))+'</dd>'+(f.department?'<dt>Department</dt><dd>'+esc(f.department)+'</dd>':'')+(f.division?'<dt>Division</dt><dd>'+esc(f.division)+'</dd>':'')+(f.erpCreated?'<dt>ERP prepared</dt><dd>'+esc(f.erpCreated)+'</dd>':'')+
     (r.type==='indent'?'<dt>Category</dt><dd>'+esc(f.category||'—')+'</dd><dt>'+(f.category==='Project'?'Project':'Site')+'</dt><dd>'+esc(f.category==='Project'?(f.projectName||'—'):(f.siteName||'—'))+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Indent date</dt><dd>'+esc(fmtD(f.indentDate))+'</dd>'
       :'<dt>Order date</dt><dd>'+esc(fmtD(f.woDate))+'</dd><dt>Site</dt><dd>'+esc(f.siteName||'—')+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Vendor</dt><dd>'+esc(f.vendorName||'—')+'</dd>'+
        (f.vendorAddress?'<dt>Address</dt><dd>'+esc(f.vendorAddress)+'</dd>':'')+(f.vendorState?'<dt>State</dt><dd>'+esc(f.vendorState)+(f.vendorStateCode?' ('+esc(f.vendorStateCode)+')':'')+'</dd>':'')+
