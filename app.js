@@ -186,7 +186,11 @@ const gpMyRole=g=>g.hodId===ME.id?'HOD':(g.hrId===ME.id?'HR':'');
 const gpCanDelete=g=>g.requesterId===ME.id&&['pending_hod','pending_hr','pending_gate'].includes(g.status);   // requester may delete until the gate acts
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()):[];
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
-const gpKindLabel=g=>g.kind==='early'?'Early going':'Official work outpass';
+const GP_KINDS=[['early','Early going'],['halfday','Half day leave'],['official','Official work outpass']];
+const gpKindNote=k=>k==='early'?('Early-going passes left this month: <b>'+Math.max(0,2-gpEarlyUsed())+' of 2</b>. The gateman signs you out — you are not returning.')
+  :k==='halfday'?'Half day leave — the gateman signs you out; you are not expected back today.'
+  :'Official work outpass — the gateman records your out-time and, when you return, the time back. Not capped.';
+const gpKindLabel=g=>{const k=(typeof g==='string')?g:g.kind;const m=GP_KINDS.find(x=>x[0]===k);return m?m[1]:k;};
 const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind==='early'&&g.status!=='rejected'&&String(g.passDate).slice(0,7)===m).length};
 const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
 const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span class="tag '+x[0]+'">'+x[1]+'</span>'};
@@ -1798,10 +1802,29 @@ function captureSelfie(title){
           video.muted=true; video.className='selfie-video mirror'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
           shoot.textContent='Capture'; shoot.dataset.mode='cap'; shoot.disabled=false; retake.style.display='none'; };
         (async()=>{
-          if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
-            stage.innerHTML='<div class="selfie-err">This device has no camera the app can use.</div>'; return; }
-          try{ stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:1080},height:{ideal:1080}},audio:false}); }
-          catch(e){ stage.innerHTML='<div class="selfie-err">The camera could not start.<div class="hint" style="margin-top:6px">Allow camera access for this site, then reopen. A selfie can only be taken live — there is no upload.</div></div>'; return; }
+          const md=navigator.mediaDevices;
+          if(!md||!md.getUserMedia){
+            const secure=window.isSecureContext!==false && location.protocol==='https:';
+            stage.innerHTML='<div class="selfie-err">The camera isn’t available to the app.'+
+              '<div class="hint" style="margin-top:6px">'+(secure
+                ? 'On the mobile app this usually means the app has not been given camera permission. Open your phone’s Settings → Apps → SETU → Permissions and allow the Camera, then reopen SETU.'
+                : 'The page must be opened over a secure (https) connection for the camera to work.')+'</div></div>';
+            return;
+          }
+          // try the front camera; fall back to any camera if the WebView rejects the constraints
+          const tries=[{video:{facingMode:{ideal:'user'}},audio:false},{video:{facingMode:'user'},audio:false},{video:true,audio:false}];
+          let err=null;
+          for(const c of tries){ try{ stream=await md.getUserMedia(c); err=null; break; }catch(e){ err=e; } }
+          if(!stream){
+            const name=(err&&(err.name||err.message))||'unknown';
+            const why=/NotAllowed|Security|Permission/i.test(name)
+                ? 'Camera permission was blocked. On the mobile app: phone Settings → Apps → SETU → Permissions → allow Camera, then reopen. In a browser: tap the address bar’s site settings and allow the camera.'
+              : /NotFound|Overconstrained/i.test(name) ? 'No usable camera was found on this device.'
+              : /NotReadable|InUse|Track/i.test(name) ? 'The camera is busy in another app. Close other camera apps and try again.'
+              : 'The camera could not start ('+esc(String(name))+').';
+            stage.innerHTML='<div class="selfie-err">Camera didn’t open.<div class="hint" style="margin-top:6px">'+why+'</div></div>';
+            return;
+          }
           showLive();
         })();
         shoot.onclick=async()=>{
@@ -1933,10 +1956,10 @@ function viewGate(){
 
   // create a pass
   const d=gpDraft||(gpDraft={kind:'early',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
-  const earlyLeft=Math.max(0,2-gpEarlyUsed());
   h+='<div class="card pad"><h3>Create a pass</h3>'+
-    '<div class="seg" id="g-kind" style="margin:12px 0"><button data-k="early" class="'+(d.kind==='early'?'on':'')+'">Early going</button><button data-k="official" class="'+(d.kind==='official'?'on':'')+'">Official work outpass</button></div>'+
-    '<div class="hint" id="g-kindnote" style="margin:-4px 0 12px">'+(d.kind==='early'?('Early-going passes left this month: <b>'+earlyLeft+' of 2</b>.'):'Official outpasses are not capped. The gateman records your out-time and, when you return, the time back.')+'</div>'+
+    '<div style="margin:12px 0"><label for="g-kind">Type of pass</label><select id="g-kind">'+
+      GP_KINDS.map(k=>'<option value="'+k[0]+'" '+(d.kind===k[0]?'selected':'')+'>'+esc(k[1])+'</option>').join('')+'</select></div>'+
+    '<div class="hint" id="g-kindnote" style="margin:-4px 0 12px">'+gpKindNote(d.kind)+'</div>'+
     '<div class="grid g2"><div><label for="g-emp">Employee ID</label><input id="g-emp" type="text" value="'+esc(d.employeeId)+'" placeholder="Your employee code"></div>'+
       '<div><label for="g-name">Name</label><input id="g-name" type="text" value="'+esc(d.name)+'"></div></div>'+
     '<div class="grid g2" style="margin-top:12px"><div><label for="g-dept">Department</label><select id="g-dept">'+deptOptions(d.dept)+'</select></div>'+
@@ -1972,11 +1995,8 @@ function wireGate(v){
     if($('#g-selfie-view',w)) $('#g-selfie-view',w).onclick=()=>showSelfie(d.selfie,'Your selfie');
   };
   paintSelfie();
-  // kind toggle
-  $$('#g-kind button',v).forEach(b=>b.onclick=()=>{ d.kind=b.dataset.k;
-    $$('#g-kind button',v).forEach(x=>x.classList.toggle('on',x.dataset.k===d.kind));
-    const left=Math.max(0,2-gpEarlyUsed());
-    $('#g-kindnote',v).innerHTML=d.kind==='early'?('Early-going passes left this month: <b>'+left+' of 2</b>.'):'Official outpasses are not capped. The gateman records your out-time and, when you return, the time back.'; });
+  // kind dropdown
+  const gk=$('#g-kind',v); if(gk) gk.onchange=()=>{ d.kind=gk.value; $('#g-kindnote',v).innerHTML=gpKindNote(d.kind); };
   const bind=(id,key)=>{const el=$(id,v); if(el) el.oninput=()=>d[key]=el.value; if(el&&el.tagName==='SELECT') el.onchange=()=>d[key]=el.value;};
   bind('#g-emp','employeeId'); bind('#g-name','name'); bind('#g-dept','dept'); bind('#g-purpose','purpose');
   if($('#g-dept',v)) $('#g-dept',v).value=d.dept||'';
