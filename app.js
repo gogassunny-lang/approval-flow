@@ -184,7 +184,7 @@ const gpMyNext=()=>gpMine().filter(g=>g.status==='pending_hod'||g.status==='pend
 const gpSignedByMe=()=>DB.passes.filter(g=>(g.hodId===ME.id&&g.hodAt)||(g.hrId===ME.id&&g.hrAt));   // passes I approved as HOD or HR
 const gpMyRole=g=>g.hodId===ME.id?'HOD':(g.hrId===ME.id?'HR':'');
 const gpCanDelete=g=>g.requesterId===ME.id&&['pending_hod','pending_hr','pending_gate'].includes(g.status);   // requester may delete until the gate acts
-const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()):[];
+const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()&&g.requesterId!==ME.id):[];   // a gateman clears others, never their own pass
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
 const GP_KINDS=[['early','Early going'],['halfday','Half day leave'],['official','Official work outpass']];
 const gpKindNote=k=>k==='early'?('Early-going passes left this month: <b>'+Math.max(0,2-gpEarlyUsed())+' of 2</b>. The gateman signs you out — you are not returning.')
