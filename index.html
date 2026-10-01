@@ -334,6 +334,8 @@ tbody tr:last-child td{border-bottom:0}
 .gp-pick{position:relative}
 .gp-search{width:100%}
 .gp-res{position:relative}
+/* inside a dialog the results sit in normal flow (and the dialog scrolls) so they are never clipped */
+.results.inline{position:static;margin-top:8px;max-height:46vh;box-shadow:none;border-radius:var(--r)}
 .gp-picked{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface-2)}
 .gp-selfie-wrap{margin-top:6px}
 .gp-selfie-done{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
