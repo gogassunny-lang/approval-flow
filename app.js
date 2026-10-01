@@ -94,7 +94,7 @@ async function load(){
   const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
-    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
+    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   const U={}; DB.users.forEach(u=>U[u.id]=u);
@@ -566,10 +566,14 @@ async function enter(session){
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
-    paintPin(); const h=routeFromHash(); go((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id))?h:{name:'dash'},true); subscribe();
+    paintPin(); const h=routeFromHash();
+    const home=GATE_ONLY()?{name:'gate'}:(((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id)))?h:{name:'dash'});
+    go(home,true); subscribe();
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
+    // gate-only accounts don't approve anything: no PIN, no directory-completion nag, no pending-work popup
     if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
-        onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(incomplete()) profileDialog(); else if(!pinOK(ME)) pinDialog() }}),300);
+        onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(!GATE_ONLY()&&incomplete()) profileDialog(); else if(!GATE_ONLY()&&!pinOK(ME)) pinDialog() }}),300);
+    else if(GATE_ONLY()) {}
     else if(incomplete()) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
     else setTimeout(pendingPopup,500);
@@ -674,6 +678,7 @@ function createUserDialog(){
       '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('',null)+'</select><div class="hint">A manager, an admin, or you. Set here, no confirmation needed — they are on that person\'s team from the start.</div></div>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
+      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-gateonly" style="width:auto"> <span><b>Gate Pass only</b><div class="hint">Signs in to the Gate Pass page and nothing else.</div></span></label>'+
       '<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('cu-pages',DEFAULT_PAGES)+'<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">They must choose their own at first sign-in.</div></span></label>'+
       '<div id="cu-pw-wrap" style="padding-left:24px"><label for="cu-pw">Temporary password <span class="hint">optional</span></label><input id="cu-pw" type="text" autocomplete="off" placeholder="Leave blank and one is generated for you"><div class="hint">At least 8 characters if you set one. Shown to you once after the account is created.</div></div>'+
@@ -704,6 +709,7 @@ function createUserDialog(){
           try{ if(error&&error.context){ const j=await error.context.json(); if(j&&j.error) msg=j.error } }catch(e){}
           if(/failed to send|fetch/i.test(msg)) msg='The browser could not reach the admin-create-user function. In Supabase → Edge Functions, check it is deployed under exactly that name and that Verify JWT is off; the Logs tab shows the reason.';
           return err.textContent=/not found|404/i.test(msg)?'The admin-create-user function is not deployed yet — see the README.':msg }
+        if(data.id&&$('#cu-gateonly',v)&&$('#cu-gateonly',v).checked){ try{ await rpc('set_gate_only',{p_user:data.id,p_on:true}) }catch(e){} }
         close(); await load(); render();
         if(data.tempPassword) tempPasswordDialog(body.name,body.email,data.tempPassword);
         else toast('Invite sent to '+body.email+'.','ok');
@@ -942,6 +948,7 @@ function allowedPages(u){
   return DEFAULT_PAGES;                                     // role default
 }
 const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
+const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only accounts see only the Gate Pass page
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
@@ -961,7 +968,7 @@ const PAGES=[
 function paintNav(){
   if(!ME) return;
   let h='',g='';
-  PAGES.filter(p=>!p.when||p.when()).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k)).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
+  PAGES.filter(p=>!GATE_ONLY()||p.k==='gate').filter(p=>!p.when||p.when()).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k)).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
     const n=p.badge?p.badge():0;
     h+='<button data-k="'+p.k+'" class="'+(ROUTE.name===p.k?'on':'')+'">'+esc(p.label)+(n?'<span class="pill">'+n+'</span>':'')+'</button>'});
   $('#nav').innerHTML=h;
@@ -977,8 +984,14 @@ const ICON={
   more:'<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>'};
 function paintTabbar(){
   const bar=$('#tabbar'); if(!bar||!ME) return;
-  const desk=myQueue().length+myTasks().length+myStuck().length, un=unread().length;
   const on=k=>ROUTE.name===k?'on':'';
+  if(GATE_ONLY()){
+    bar.innerHTML='<button data-k="gate" class="raise '+on('gate')+'">'+ICON.plus+'Gate Pass'+(gpBadge()?'<span class="pill">'+gpBadge()+'</span>':'')+'</button>'+
+      '<button data-k="more" class="'+(ROUTE.name!=='gate'?'on':'')+'">'+ICON.more+'More</button>';
+    $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
+    return;
+  }
+  const desk=myQueue().length+myTasks().length+myStuck().length, un=unread().length;
   const inDesk=['queue','tasks','stuck'].includes(ROUTE.name);
   const inMore=!['dash','queue','tasks','stuck','new','inbox'].includes(ROUTE.name);
   bar.innerHTML=
@@ -990,7 +1003,7 @@ function paintTabbar(){
   $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
 }
 function moreSheet(){
-  const items=PAGES.filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k)).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k));
+  const items=PAGES.filter(p=>!GATE_ONLY()||p.k==='gate').filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k)).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k));
   modal({title:'More',
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
@@ -1023,6 +1036,7 @@ function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
 function render(){
   if(!ME) return;
+  if(GATE_ONLY()&&ROUTE.name!=='gate') ROUTE={name:'gate'};   // gate-only accounts never leave the Gate Pass page
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   const v=$('#view');
   switch(ROUTE.name){
@@ -1728,6 +1742,7 @@ function wirePeople(v){
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
         (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
@@ -1738,6 +1753,7 @@ function wirePeople(v){
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
+          if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
