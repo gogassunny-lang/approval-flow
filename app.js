@@ -1945,7 +1945,7 @@ function getSignFlow(g){
     const inp=$('input',b), res=$('.gp-res',b); inp.focus();
     inp.oninput=()=>{ const q=inp.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
       const hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&(g.status!=='pending_hr'||u.id!==g.hodId)&&(u.name+' '+u.email+' '+u.dept+' '+u.role).toLowerCase().includes(q)).slice(0,7);
-      res.innerHTML=hits.length?'<div class="results">'+hits.map(personRow).join('')+'</div>':'<div class="results"><div class="hint" style="padding:12px 14px">Nobody matches that.</div></div>';
+      res.innerHTML=hits.length?'<div class="results inline">'+hits.map(personRow).join('')+'</div>':'<div class="results inline"><div class="hint" style="padding:12px 14px">Nobody matches that.</div></div>';
       $$('.results button',res).forEach(x=>x.onclick=()=>{picked=user(x.dataset.u);renderHandoff(mv,cl)});
     };
   }
