@@ -17,6 +17,7 @@ const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=n=>(n===''||n==null||isNaN(n))?'—':'₹'+Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDT=t=>t?new Date(t).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
+const fmtT=t=>t?new Date(t).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}):'—';
 const fmtD=t=>t?new Date(t).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'—';
 const inits=n=>String(n||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const DAY=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});   // matches ist_today() in the database
@@ -87,14 +88,14 @@ async function load(){
     SB.from('stations').select('*').order('name'),
     SB.from('usage_daily').select('*'),
     SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60),
-    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(600)
+    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(3000)
   ];
   const r=await Promise.all(q);
   const bad=r.find(x=>x.error); if(bad) throw bad.error;
   const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
-    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
+    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   const U={}; DB.users.forEach(u=>U[u.id]=u);
@@ -184,6 +185,12 @@ const gpMyNext=()=>gpMine().filter(g=>g.status==='pending_hod'||g.status==='pend
 const gpSignedByMe=()=>DB.passes.filter(g=>(g.hodId===ME.id&&g.hodAt)||(g.hrId===ME.id&&g.hrAt));   // passes I approved as HOD or HR
 const gpMyRole=g=>g.hodId===ME.id?'HOD':(g.hrId===ME.id?'HR':'');
 const gpCanDelete=g=>g.requesterId===ME.id&&['pending_hod','pending_hr','pending_gate'].includes(g.status);   // requester may delete until the gate acts
+/* roles for the gate console / reports */
+const HR_HEAD=()=>!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
+const canSeeReports=()=>!!(ME&&(ME.owner||ME.admin||ME.gateman||ME.hrHead));
+const gateViewer=()=>!!(ME&&(isGateman(ME)||ME.hrHead||ME.admin||ME.owner));   // may see every entry (gateman clears, HR head/owner view)
+const gpClearedToday=()=>DB.passes.filter(g=>g.gateBy===ME.id&&g.passDate===DAY());   // what this gateman has cleared today
+const gpAllToday=()=>DB.passes.filter(g=>g.passDate===DAY());
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()&&g.requesterId!==ME.id):[];   // a gateman clears others, never their own pass
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
 const GP_KINDS=[['early','Early going'],['halfday','Half day leave'],['official','Official work outpass']];
@@ -567,13 +574,13 @@ async function enter(session){
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
     paintPin(); const h=routeFromHash();
-    const home=GATE_ONLY()?{name:'gate'}:(((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id)))?h:{name:'dash'});
+    const home=(GATE_ONLY()||HR_HEAD())?{name:'gate'}:(((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id)))?h:{name:'dash'});
     go(home,true); subscribe();
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
     // gate-only accounts don't approve anything: no PIN, no directory-completion nag, no pending-work popup
     if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
-        onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(!GATE_ONLY()&&incomplete()) profileDialog(); else if(!GATE_ONLY()&&!pinOK(ME)) pinDialog() }}),300);
-    else if(GATE_ONLY()) {}
+        onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(!restrictedAcct()&&incomplete()) profileDialog(); else if(!restrictedAcct()&&!pinOK(ME)) pinDialog() }}),300);
+    else if(restrictedAcct()) {}
     else if(incomplete()) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
     else setTimeout(pendingPopup,500);
@@ -679,6 +686,7 @@ function createUserDialog(){
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-gateonly" style="width:auto"> <span><b>Gate Pass only</b><div class="hint">Signs in to the Gate Pass page and nothing else.</div></span></label>'+
+      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-hrhead" style="width:auto"> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Views every gate pass + the Reports page. Restricted to those.</div></span></label>'+
       '<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('cu-pages',DEFAULT_PAGES)+'<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">They must choose their own at first sign-in.</div></span></label>'+
       '<div id="cu-pw-wrap" style="padding-left:24px"><label for="cu-pw">Temporary password <span class="hint">optional</span></label><input id="cu-pw" type="text" autocomplete="off" placeholder="Leave blank and one is generated for you"><div class="hint">At least 8 characters if you set one. Shown to you once after the account is created.</div></div>'+
@@ -710,6 +718,7 @@ function createUserDialog(){
           if(/failed to send|fetch/i.test(msg)) msg='The browser could not reach the admin-create-user function. In Supabase → Edge Functions, check it is deployed under exactly that name and that Verify JWT is off; the Logs tab shows the reason.';
           return err.textContent=/not found|404/i.test(msg)?'The admin-create-user function is not deployed yet — see the README.':msg }
         if(data.id&&$('#cu-gateonly',v)&&$('#cu-gateonly',v).checked){ try{ await rpc('set_gate_only',{p_user:data.id,p_on:true}) }catch(e){} }
+        if(data.id&&$('#cu-hrhead',v)&&$('#cu-hrhead',v).checked){ try{ await rpc('set_hr_head',{p_user:data.id,p_on:true}) }catch(e){} }
         close(); await load(); render();
         if(data.tempPassword) tempPasswordDialog(body.name,body.email,data.tempPassword);
         else toast('Invite sent to '+body.email+'.','ok');
@@ -950,11 +959,15 @@ function allowedPages(u){
 }
 const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
 const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only accounts see only the Gate Pass page
+// restricted accounts (gate-only or HR head) are limited to the Gate Pass page and, if allowed, the Reports page
+const restrictedAcct=()=>GATE_ONLY()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
+const restrictedPage=k=>!restrictedAcct()||k==='gate'||k==='gpreport';
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
+  {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length},
   {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
   {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length},
@@ -969,7 +982,7 @@ const PAGES=[
 function paintNav(){
   if(!ME) return;
   let h='',g='';
-  PAGES.filter(p=>!GATE_ONLY()||p.k==='gate').filter(p=>!p.when||p.when()).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k)).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
+  PAGES.filter(p=>restrictedPage(p.k)).filter(p=>!p.when||p.when()).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k)).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
     const n=p.badge?p.badge():0;
     h+='<button data-k="'+p.k+'" class="'+(ROUTE.name===p.k?'on':'')+'">'+esc(p.label)+(n?'<span class="pill">'+n+'</span>':'')+'</button>'});
   $('#nav').innerHTML=h;
@@ -986,9 +999,10 @@ const ICON={
 function paintTabbar(){
   const bar=$('#tabbar'); if(!bar||!ME) return;
   const on=k=>ROUTE.name===k?'on':'';
-  if(GATE_ONLY()){
+  if(restrictedAcct()){
     bar.innerHTML='<button data-k="gate" class="raise '+on('gate')+'">'+ICON.plus+'Gate Pass'+(gpBadge()?'<span class="pill">'+gpBadge()+'</span>':'')+'</button>'+
-      '<button data-k="more" class="'+(ROUTE.name!=='gate'?'on':'')+'">'+ICON.more+'More</button>';
+      (canSeeReports()?'<button data-k="gpreport" class="'+on('gpreport')+'">'+ICON.desk+'Reports</button>':'')+
+      '<button data-k="more" class="'+(!['gate','gpreport'].includes(ROUTE.name)?'on':'')+'">'+ICON.more+'More</button>';
     $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
     return;
   }
@@ -1004,7 +1018,7 @@ function paintTabbar(){
   $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
 }
 function moreSheet(){
-  const items=PAGES.filter(p=>!GATE_ONLY()||p.k==='gate').filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k)).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k));
+  const items=PAGES.filter(p=>restrictedPage(p.k)).filter(p=>!p.when||p.when()).filter(p=>!['dash','new','inbox'].includes(p.k)).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k));
   modal({title:'More',
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
@@ -1037,7 +1051,8 @@ function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
 function render(){
   if(!ME) return;
-  if(GATE_ONLY()&&ROUTE.name!=='gate') ROUTE={name:'gate'};   // gate-only accounts never leave the Gate Pass page
+  if(restrictedAcct()&&!restrictedPage(ROUTE.name)) ROUTE={name:'gate'};   // restricted accounts stay within Gate Pass / Reports
+  if(ROUTE.name==='gpreport'&&!canSeeReports()) ROUTE={name:GATE_ONLY()||HR_HEAD()?'gate':'dash'};
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   const v=$('#view');
   switch(ROUTE.name){
@@ -1057,6 +1072,7 @@ function render(){
     case 'people': v.innerHTML=viewPeople(); wirePeople(v); head('People & masters','Directory, station master and the permanence rule'); break;
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
+    case 'gpreport': v.innerHTML=viewGpReport(); wireGpReport(v); break;
   }
 }
 
@@ -1744,6 +1760,7 @@ function wirePeople(v){
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
         (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
@@ -1755,6 +1772,7 @@ function wirePeople(v){
         try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
+          if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
@@ -1794,7 +1812,7 @@ function localPicker(mount,label,onFile){
    stamps the time it arrives. Photos are wiped after 7 days; the
    record of who signed, and when, is permanent.
    ============================================================ */
-let gpDraft=null;
+let gpDraft=null, gateTab='desk';
 async function selfieUpload(blob){
   const path=ME.id+'/gate-'+uid()+'.jpg';
   const {error}=await SB.storage.from('documents').upload(path,blob,{contentType:'image/jpeg',upsert:false});
@@ -1971,20 +1989,55 @@ function getSignFlow(g){
       catch(e){ $('#gs-err',b).textContent=(e.message||'').replace(/^.*?: /,''); }finally{ busy(false); } };
   }
 }
-function viewGate(){
-  head('Gate Pass','Take an early-going or official outpass — a live selfie is your signature');
-  const next=gpMyNext(), gate=gpAtGate(), mine=gpMine();
+/* ---- compact console row (used for 100s of entries) ---- */
+function gpGateBtnLabel(g){ return g.status==='out'?'Return &amp; close':(g.kind==='official'?'Sign out':'Approve &amp; close'); }
+function gpRow(g,opts){
+  opts=opts||{};
+  const names=['Requester','HOD','HR'], sels=[g.reqSelfie,g.hodSelfie,g.hrSelfie];
+  const th=sels.map((p,i)=>'<span class="gp-mini" data-selfiethumb="'+esc(p||'')+'" data-slabel="'+names[i]+' — '+esc(g.name||'')+'">'+(p?'':'<span class="gp-mini-x">·</span>')+'</span>').join('');
+  const hodN=g.hodId?user(g.hodId).name:'', hrN=g.hrId?user(g.hrId).name:'';
+  const appr=(hodN||hrN)?('HOD '+esc(hodN||'—')+' · HR '+esc(hrN||'—')):'';
+  const timeline=g.outAt?(g.returnAt?('out '+fmtT(g.outAt)+' → '+fmtT(g.returnAt)+' ('+gpDuration(g.outAt,g.returnAt)+')'):('out '+fmtT(g.outAt))):'';
+  return '<tr data-gp="'+g.id+'"><td class="gp-rth">'+th+'</td>'+
+    '<td style="min-width:0"><b>'+esc(g.name||user(g.requesterId).name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
+      '<div class="hint">'+esc(gpKindLabel(g))+(g.dept?' · '+esc(g.dept):'')+' · '+esc(fmtDT(g.createdAt))+'</div>'+
+      (appr?'<div class="hint">'+appr+'</div>':'')+(timeline?'<div class="hint">'+esc(timeline)+'</div>':'')+'</td>'+
+    '<td class="meta">'+gpTag(g)+'</td>'+
+    (opts.action?'<td class="meta">'+opts.action+'</td>':'')+'</tr>';
+}
+const gpSection=(title,count,inner)=>'<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(title)+'</h3><span class="tag '+(count?'t-ok':'t-wait')+'" style="margin-left:auto">'+count+'</span></div>'+inner+'</div>';
+/* the gateman/HR-head console: dense rows, newest live at the top */
+function gateConsole(){
+  const gm=isGateman(ME);
   let h='';
+  if(gm){
+    const needs=gpAtGate();
+    h+=gpSection('At the gate',needs.length,
+      needs.length
+        ? '<div style="padding:10px 16px 0" class="hint">Tap a photo to enlarge. New passes arrive here live.</div><table class="cards gp-dense"><tbody>'+needs.map(g=>gpRow(g,{action:'<button class="btn primary sm" data-gate="'+g.id+'">'+gpGateBtnLabel(g)+'</button>'})).join('')+'</tbody></table>'
+        : '<div class="empty" style="padding:24px 16px"><h3>No one at the gate right now</h3><p class="hint">Cleared passes land here the moment HR signs — live.</p></div>');
+    const done=gpClearedToday();
+    h+=gpSection('Cleared today',done.length,
+      done.length ? '<table class="cards gp-dense"><tbody>'+done.map(g=>gpRow(g,{})).join('')+'</tbody></table>'
+        : '<div class="empty" style="padding:18px 16px"><p class="hint">Nothing cleared yet today.</p></div>');
+  } else {
+    const all=gpAllToday();
+    h+='<div class="hint" style="margin:-2px 0 12px">Live, read-only view of every gate pass today. Full history and graphs are under Reports.</div>'+
+      gpSection("Today's gate passes",all.length,
+      all.length ? '<table class="cards gp-dense"><tbody>'+all.map(g=>gpRow(g,{})).join('')+'</tbody></table>'
+        : '<div class="empty" style="padding:22px 16px"><p class="hint">No passes today yet.</p></div>');
+  }
+  return h;
+}
+/* the create form + the signer's own passes (second tab for gatemen/HR heads) */
+function gateCreateAndMine(){
+  const mine=gpMine(); let h='';
+  const next=gpMyNext();
   if(next.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--indigo)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>Collect your signatures</h3><span class="tag t-prog" style="margin-left:auto">'+next.length+'</span></div>'+
     '<div style="padding:12px 16px" class="hint">Walk up to whichever HOD is free, pick them here and hand over your phone for their selfie. Then do the same with HR.</div>'+
     '<div class="gp-list">'+next.map(g=>gpCard(g,
       '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>'+
       '<button class="btn bad" data-del="'+g.id+'">Delete</button>')).join('')+'</div></div>';
-  if(isGateman(ME)) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag '+(gate.length?'t-ok':'t-wait')+'" style="margin-left:auto">'+gate.length+'</span></div>'+
-    (gate.length
-      ? '<div style="padding:12px 16px" class="hint">The HOD and HR approval selfies are shown side by side. New passes appear here live as HR clears them.</div><div class="gp-list">'+gate.map(gpGateCard).join('')+'</div>'
-      : '<div class="empty" style="padding:26px 16px"><h3>No one at the gate right now</h3><p class="hint">Passes appear here the moment HR clears them — live, with the HOD and HR selfies side by side. You can then sign the person out.</p></div>')+
-    '</div>';
 
   // passes I approved (as HOD or HR)
   const signed=gpSignedByMe();
@@ -2029,7 +2082,22 @@ function viewGate(){
   h+='</div>';
   return h;
 }
+function viewGate(){
+  if(gateViewer()){
+    head('Gate Pass',isGateman(ME)?'Clear people at the gate — photos side by side, updating live':'Live view of every gate pass');
+    const tab=gateTab||'desk';
+    return '<div class="tabs"><button data-gt="desk" class="'+(tab==='desk'?'on':'')+'">'+(isGateman(ME)?'At the gate':'All entries')+'</button>'+
+      '<button data-gt="new" class="'+(tab==='new'?'on':'')+'">New pass</button></div>'+
+      '<div id="gate-body">'+(tab==='desk'?gateConsole():gateCreateAndMine())+'</div>';
+  }
+  head('Gate Pass','Take an early-going or official outpass — a live selfie is your signature');
+  return gateCreateAndMine();
+}
 function wireGate(v){
+  // console tabs (gateman / HR head)
+  $$('[data-gt]',v).forEach(b=>b.onclick=()=>{ gateTab=b.dataset.gt; render(); });
+  // whole console/history row → open the pass's photos & timeline
+  if($('#g-send',v)){
   const d=gpDraft;
   // selfie
   const paintSelfie=()=>{ const w=$('#g-selfie-wrap',v); if(!w) return;
@@ -2059,6 +2127,7 @@ function wireGate(v){
     catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
     finally{ busy(false); }
   };
+  } // end create-form wiring
   // collect an HOD / HR signature on my own pass
   $$('[data-getsign]',v).forEach(b=>b.onclick=()=>{ const g=DB.passes.find(x=>x.id===b.dataset.getsign); if(g) getSignFlow(g); });
   // delete my own pass while it has not reached the gate
@@ -2080,6 +2149,83 @@ function wireGate(v){
   // selfie view buttons inside timelines
   $$('[data-selfie]',v).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfie||null,b.dataset.slabel||'Selfie'));
   loadSelfieThumbs(v);   // gateman console: load the side-by-side approval selfies
+}
+
+/* ============================================================
+   Gate Pass Reports — interactive graphs + downloads
+   ============================================================ */
+let gpRepFilter=null;
+function gpRepDefaults(){ const to=DAY(); const d=new Date(); d.setDate(d.getDate()-29);
+  return {from:d.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),to:to,type:'all',dept:'all'}; }
+function gpRepData(){ const f=gpRepFilter;
+  return DB.passes.filter(g=>{ const d=String(g.passDate||'').slice(0,10);
+    if(f.from&&d<f.from) return false; if(f.to&&d>f.to) return false;
+    if(f.type!=='all'&&g.kind!==f.type) return false;
+    if(f.dept!=='all'&&(g.dept||'')!==f.dept) return false; return true; }); }
+const gpAgg=(rows,keyFn)=>{ const m={}; rows.forEach(g=>{const k=keyFn(g)||'—'; m[k]=(m[k]||0)+1}); return Object.entries(m).map(([label,value])=>({label,value})); };
+function gpBar(title,rows,color){
+  const max=Math.max(1,...rows.map(r=>r.value));
+  const body=rows.length?rows.map(r=>'<div class="gpr-bar"><div class="gpr-bar-l" title="'+esc(r.label)+'">'+esc(r.label)+'</div>'+
+      '<div class="gpr-bar-t"><i style="width:'+Math.round(r.value/max*100)+'%'+(color?';background:'+color:'')+'"></i></div>'+
+      '<div class="gpr-bar-v num">'+r.value+'</div></div>').join('')
+    :'<div class="hint" style="padding:12px 2px">No data in this range.</div>';
+  return '<div class="card pad"><h3>'+esc(title)+'</h3><div style="margin-top:12px">'+body+'</div></div>';
+}
+function gpRepBody(){
+  const rows=gpRepData(), byType=k=>rows.filter(g=>g.kind===k).length;
+  const kpis='<div class="grid g4" style="margin:14px 0">'+
+    stat('Total passes',rows.length,'In the selected range','var(--indigo)')+
+    stat('Early / Half / Official',byType('early')+' / '+byType('halfday')+' / '+byType('official'),'By type','var(--cyan)')+
+    stat('Currently out',rows.filter(g=>g.status==='out').length,'Official, not back yet',rows.some(g=>g.status==='out')?'var(--hold)':'var(--seal)')+
+    stat('Rejected',rows.filter(g=>g.status==='rejected').length,'Declined by HOD or HR','var(--stop)')+'</div>';
+  const deptAgg=gpAgg(rows,g=>g.dept).sort((a,b)=>b.value-a.value);
+  const typeAgg=GP_KINDS.map(k=>({label:k[1],value:byType(k[0])}));
+  const statusAgg=[['With HOD','pending_hod'],['With HR','pending_hr'],['At gate','pending_gate'],['Out','out'],['Closed','closed'],['Rejected','rejected']].map(([lbl,st])=>({label:lbl,value:rows.filter(g=>g.status===st).length}));
+  const m={}; rows.forEach(g=>{const k=String(g.passDate||'').slice(0,10); m[k]=(m[k]||0)+1}); const dayAgg=Object.keys(m).sort().map(k=>({label:k.slice(5),value:m[k]}));
+  const personAgg=gpAgg(rows,g=>g.name||user(g.requesterId).name).sort((a,b)=>b.value-a.value).slice(0,10);
+  const multi=personAgg.filter(p=>p.value>1).length;
+  return kpis+
+    '<div class="grid g2" style="gap:14px;align-items:start">'+
+      gpBar('Passes by department',deptAgg,'var(--indigo)')+
+      gpBar('Passes by type',typeAgg,'var(--cyan)')+
+      gpBar('Passes by day',dayAgg,'var(--seal)')+
+      gpBar('By status',statusAgg,'var(--hold)')+
+    '</div>'+
+    gpBar('People with the most passes'+(multi?' · '+multi+' took more than one':''),personAgg,'var(--indigo-deep)');
+}
+function viewGpReport(){
+  head('Gate Pass Reports','Live analytics across every gate pass — filter, then download');
+  if(!gpRepFilter) gpRepFilter=gpRepDefaults();
+  const f=gpRepFilter, depts=Array.from(new Set(DB.passes.map(g=>g.dept).filter(Boolean))).sort();
+  const filters='<div class="card pad"><div class="grid g4" style="gap:12px">'+
+    '<div><label for="gr-from">From</label><input type="date" id="gr-from" value="'+esc(f.from)+'"></div>'+
+    '<div><label for="gr-to">To</label><input type="date" id="gr-to" value="'+esc(f.to)+'"></div>'+
+    '<div><label for="gr-type">Type</label><select id="gr-type"><option value="all">All types</option>'+GP_KINDS.map(k=>'<option value="'+k[0]+'" '+(f.type===k[0]?'selected':'')+'>'+esc(k[1])+'</option>').join('')+'</select></div>'+
+    '<div><label for="gr-dept">Department</label><select id="gr-dept"><option value="all">All departments</option>'+depts.map(d=>'<option '+(f.dept===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
+    '</div><div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="gr-reset">Reset to last 30 days</button><button class="btn primary" id="gr-xlsx">Download Excel</button><button class="btn" id="gr-csv">Download CSV</button></div></div>';
+  return filters+'<div id="gpr-body">'+gpRepBody()+'</div>';
+}
+function gpRepRows(){ return gpRepData().map(g=>({
+  Ref:g.ref, Type:gpKindLabel(g), Name:g.name||user(g.requesterId).name, 'Employee ID':g.employeeId||'',
+  Department:g.dept||'', Purpose:g.purpose||'', Status:(GP_STATUS[g.status]||['',g.status])[1],
+  HOD:g.hodId?user(g.hodId).name:'', HR:g.hrId?user(g.hrId).name:'', 'Cleared by':g.gateBy?user(g.gateBy).name:'',
+  Created:fmtDT(g.createdAt),'HOD signed':fmtDT(g.hodAt),'HR signed':fmtDT(g.hrAt),'Out':fmtDT(g.outAt),'Return':fmtDT(g.returnAt),'Pass date':g.passDate })); }
+function gpRepDownload(fmt){
+  const rows=gpRepRows(); if(!rows.length) return toast('No entries in this range.','bad');
+  const name='gate-passes_'+gpRepFilter.from+'_to_'+gpRepFilter.to;
+  if(fmt==='xlsx'&&window.XLSX){ const ws=XLSX.utils.json_to_sheet(rows), wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Gate passes'); XLSX.writeFile(wb,name+'.xlsx'); return; }
+  const cols=Object.keys(rows[0]);
+  const csv=[cols.join(',')].concat(rows.map(r=>cols.map(c=>'"'+String(r[c]==null?'':r[c]).replace(/"/g,'""')+'"').join(','))).join('\n');
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=name+'.csv'; a.click(); URL.revokeObjectURL(a.href);
+}
+function wireGpReport(v){
+  const f=gpRepFilter, upd=()=>{ $('#gpr-body',v).innerHTML=gpRepBody(); };
+  const set=(id,key)=>{const el=$(id,v); if(el) el.onchange=()=>{ f[key]=el.value; upd(); };};
+  set('#gr-from','from'); set('#gr-to','to'); set('#gr-type','type'); set('#gr-dept','dept');
+  if($('#gr-reset',v)) $('#gr-reset',v).onclick=()=>{ gpRepFilter=gpRepDefaults(); render(); };
+  if($('#gr-xlsx',v)) $('#gr-xlsx',v).onclick=()=>gpRepDownload('xlsx');
+  if($('#gr-csv',v)) $('#gr-csv',v).onclick=()=>gpRepDownload('csv');
 }
 
 /* ============================================================
