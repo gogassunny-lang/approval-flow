@@ -860,6 +860,7 @@ function subscribe(){
     .on('postgres_changes',{event:'*',schema:'public',table:'requests'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'steps'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},reloadSoon)
+    .on('postgres_changes',{event:'*',schema:'public',table:'gate_passes'},reloadSoon)
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+ME.id},p=>{
       const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok'); reloadSoon();
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
@@ -1899,6 +1900,36 @@ function gpCard(g,acts){
     '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:8px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
     gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+'</div></div>';
 }
+/* gateman console card — the two approval selfies shown side by side, live */
+function gpGateCard(g){
+  const req=user(g.requesterId), hod=g.hodId?user(g.hodId):null, hr=g.hrId?user(g.hrId):null;
+  const label=g.status==='out'?'Record return &amp; close':(g.kind==='official'?'Sign out (records time)':'Approve &amp; close');
+  const thumb=(path,cap,sub)=>'<div class="gp-th"><div class="gp-th-img" data-selfiethumb="'+esc(path||'')+'" data-slabel="'+esc(cap)+'">'+
+      (path?'<span class="spin"></span>':'<span class="gp-th-none">no photo</span>')+'</div>'+
+      '<div class="gp-th-cap"><b>'+esc(cap)+'</b>'+(sub?'<div class="hint">'+esc(sub)+'</div>':'')+'</div></div>';
+  return '<div class="card gp-card"><div class="row" style="padding:13px 16px;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)">'+
+    '<div style="min-width:0"><b>'+esc(g.name||req.name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
+    '<div class="hint">'+esc(gpKindLabel(g))+(g.dept?' · '+esc(g.dept):'')+' · '+esc(fmtDT(g.createdAt))+'</div></div>'+
+    '<span style="margin-left:auto">'+gpTag(g)+'</span></div>'+
+    '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:10px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
+    '<div class="gp-thumbs">'+
+      thumb(g.reqSelfie,'Requester',req.name)+
+      thumb(g.hodSelfie,'HOD approved',hod?hod.name+' · '+fmtDT(g.hodAt):'')+
+      thumb(g.hrSelfie,'HR approved',hr?hr.name+' · '+fmtDT(g.hrAt):'')+
+    '</div>'+
+    '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" data-gate="'+g.id+'">'+label+'</button></div>'+
+    (g.status==='out'?'<div class="hint" style="margin-top:7px">Out since '+esc(fmtDT(g.outAt))+'</div>':'')+
+    '</div></div>';
+}
+async function loadSelfieThumbs(v){
+  for(const el of $$('[data-selfiethumb]',v)){
+    const path=el.dataset.selfiethumb; if(!path){ continue; }
+    try{ const blob=await fetchFile({path}); const url=URL.createObjectURL(blob);
+      el.innerHTML='<img src="'+url+'" alt="selfie">'; el.classList.add('has');
+      el.onclick=()=>showSelfie(path,el.dataset.slabel||'Selfie'); }
+    catch(e){ el.innerHTML='<span class="gp-th-none">expired</span>'; }
+  }
+}
 /* the requester collects one signature: pick whoever is available for this step,
    hand them the phone, they take a live selfie to approve — or decline */
 function getSignFlow(g){
@@ -1950,11 +1981,8 @@ function viewGate(){
       '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>'+
       '<button class="btn bad" data-del="'+g.id+'">Delete</button>')).join('')+'</div></div>';
   if(gate.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag t-ok" style="margin-left:auto">'+gate.length+'</span></div>'+
-    '<div style="padding:12px 16px" class="hint">Check the two approval selfies, then clear the person.</div>'+
-    '<div class="gp-list">'+gate.map(g=>{
-      const label=g.status==='out'?'Record return & close':(g.kind==='official'?'Sign out (records time)':'Approve &amp; close');
-      return gpCard(g,'<button class="btn primary" data-gate="'+g.id+'">'+label+'</button>');
-    }).join('')+'</div></div>';
+    '<div style="padding:12px 16px" class="hint">The HOD and HR approval selfies are shown side by side. New passes appear here live as HR clears them.</div>'+
+    '<div class="gp-list">'+gate.map(gpGateCard).join('')+'</div></div>';
 
   // passes I approved (as HOD or HR)
   const signed=gpSignedByMe();
@@ -2049,6 +2077,7 @@ function wireGate(v){
     busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
   // selfie view buttons inside timelines
   $$('[data-selfie]',v).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfie||null,b.dataset.slabel||'Selfie'));
+  loadSelfieThumbs(v);   // gateman console: load the side-by-side approval selfies
 }
 
 /* ============================================================
