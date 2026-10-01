@@ -1980,9 +1980,11 @@ function viewGate(){
     '<div class="gp-list">'+next.map(g=>gpCard(g,
       '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>'+
       '<button class="btn bad" data-del="'+g.id+'">Delete</button>')).join('')+'</div></div>';
-  if(gate.length) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag t-ok" style="margin-left:auto">'+gate.length+'</span></div>'+
-    '<div style="padding:12px 16px" class="hint">The HOD and HR approval selfies are shown side by side. New passes appear here live as HR clears them.</div>'+
-    '<div class="gp-list">'+gate.map(gpGateCard).join('')+'</div></div>';
+  if(isGateman(ME)) h+='<div class="card" style="margin-bottom:14px;border-color:var(--seal)"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>At the gate</h3><span class="tag '+(gate.length?'t-ok':'t-wait')+'" style="margin-left:auto">'+gate.length+'</span></div>'+
+    (gate.length
+      ? '<div style="padding:12px 16px" class="hint">The HOD and HR approval selfies are shown side by side. New passes appear here live as HR clears them.</div><div class="gp-list">'+gate.map(gpGateCard).join('')+'</div>'
+      : '<div class="empty" style="padding:26px 16px"><h3>No one at the gate right now</h3><p class="hint">Passes appear here the moment HR clears them — live, with the HOD and HR selfies side by side. You can then sign the person out.</p></div>')+
+    '</div>';
 
   // passes I approved (as HOD or HR)
   const signed=gpSignedByMe();
