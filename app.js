@@ -36,7 +36,7 @@ const numOf=s=>{const m=String(s||'').replace(/,/g,'').match(/-?\d+(\.\d+)?/);re
 const tidy=s=>String(s||'').replace(/,\s*,/g,', ').replace(/\s*,\s*/g,', ').replace(/,\s*$/,'').replace(/\s+/g,' ').trim();
 
 /* ---------- state ---------- */
-let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[],passes:[]};
+let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[],passes:[],flows:[]};
 let STATIONS=[], ME=null, ROUTE={name:'dash'};
 const byCode=new Map(), byName=new Map();
 function indexStations(){ byCode.clear(); byName.clear();
@@ -88,11 +88,16 @@ async function load(){
     SB.from('stations').select('*').order('name'),
     SB.from('usage_daily').select('*'),
     SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60),
-    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(3000)
+    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(3000),
+    SB.from('flow_requests').select('*').order('created_at',{ascending:false}).limit(2000),
+    SB.from('flow_steps').select('*').order('pos'),
+    SB.from('flow_step_actors').select('*'),
+    SB.from('flow_files').select('*').order('created_at'),
+    SB.from('flow_audit').select('*').order('created_at',{ascending:false}).limit(1500)
   ];
   const r=await Promise.all(q);
   const bad=r.find(x=>x.error); if(bad) throw bad.error;
-  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes]=r.map(x=>x.data||[]);
+  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes,freq,fsteps,factors,ffiles,faudit]=r.map(x=>x.data||[]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
@@ -129,6 +134,23 @@ async function load(){
     requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
     hodAt:ts(g.hod_at),hrAt:ts(g.hr_at),rejectBy:g.reject_by,rejectReason:g.reject_reason||'',rejectedAt:ts(g.rejected_at),
     gateBy:g.gate_by,outAt:ts(g.out_at),returnAt:ts(g.return_at),status:g.status,passDate:g.pass_date,createdAt:ts(g.created_at)}));
+
+  // ALDS PO/WO flows
+  const FR={};
+  DB.flows=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,requesterId:x.requester_id,
+    title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    steps:[],audit:[]});
+  const FS={};
+  fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
+    f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
+      teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
+      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,actors:[],files:[]}});
+  factors.forEach(a=>{const s=FS[a.step_id]; if(s) s.actors.push(a.user_id)});
+  ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by};
+    if(s) s.files.push(rec); else if(FR[f.request_id]) FR[f.request_id]._files=(FR[f.request_id]._files||[]).concat(rec)});
+  faudit.forEach(a=>{const f=FR[a.request_id]; if(f) f.audit.push({ts:ts(a.created_at),actorName:a.actor_name,action:a.action,detail:a.detail||''})});
+  DB.flows.forEach(f=>f.steps=f.steps.filter(Boolean));
 
   const me=DB.users.find(u=>u.id===(ME&&ME.id));
   if(me) ME=me;
@@ -870,6 +892,8 @@ function subscribe(){
     .on('postgres_changes',{event:'*',schema:'public',table:'steps'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'gate_passes'},reloadSoon)
+    .on('postgres_changes',{event:'*',schema:'public',table:'flow_requests'},reloadSoon)
+    .on('postgres_changes',{event:'*',schema:'public',table:'flow_steps'},reloadSoon)
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+ME.id},p=>{
       const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok'); reloadSoon();
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
@@ -966,6 +990,7 @@ const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
+  {k:'flow',label:'ALDS PO / WO',grp:'Overview',badge:()=>flowMyTurn().length},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
   {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length},
@@ -1073,6 +1098,8 @@ function render(){
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
     case 'gpreport': v.innerHTML=viewGpReport(); wireGpReport(v); break;
+    case 'flow': v.innerHTML=viewFlows(); wireFlows(v); break;
+    case 'flowdetail': v.innerHTML=viewFlowDetail(ROUTE.id); wireFlowDetail(v); break;
   }
 }
 
@@ -1727,7 +1754,7 @@ function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
-    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
+    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+(ME.admin?'<button class="btn" id="p-seed">Create ALDS people</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
@@ -1750,6 +1777,7 @@ function viewPeople(){
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
   if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
+  if($('#p-seed',v)) $('#p-seed',v).onclick=seedAldsPeopleDialog;
   if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
@@ -1827,7 +1855,7 @@ function captureSelfie(title){
     const finish=v=>{ if(done)return; done=true; if(stream)stream.getTracks().forEach(t=>t.stop()); resolve(v); };
     modal({title:title||'Take a live selfie',cls:'selfie',
       body:'<div id="sf-stage" class="selfie-stage"><div class="selfie-hint"><span class="spin"></span> Starting the camera…</div></div>'+
-           '<div id="sf-msg" class="hint" style="margin-top:8px;text-align:center">Look at the camera. The photo is taken live and time-stamped — it cannot be uploaded from your gallery.</div>',
+           '<div id="sf-msg" class="hint" style="margin-top:8px;text-align:center">Fit your face inside the circle and look at the camera. The photo is live and time-stamped — it cannot be uploaded, and a held-up photograph will not line up in the ring.</div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="sf-retake" style="display:none">Retake</button><button class="btn primary" id="sf-shoot" disabled>Capture</button>',
       onOpen:(v,cl)=>{
         const stage=$('#sf-stage',v), msg=$('#sf-msg',v), shoot=$('#sf-shoot',v), retake=$('#sf-retake',v);
@@ -1835,6 +1863,7 @@ function captureSelfie(title){
         obs.observe(v.parentNode||document.body,{childList:true});
         const showLive=()=>{ const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
           video.muted=true; video.className='selfie-video mirror'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
+          const ring=document.createElement('div'); ring.className='selfie-ring'; stage.appendChild(ring);   // face guide: a real face fills the oval, a held-up photo won't line up
           shoot.textContent='Capture'; shoot.dataset.mode='cap'; shoot.disabled=false; retake.style.display='none'; };
         (async()=>{
           const md=navigator.mediaDevices;
@@ -2226,6 +2255,226 @@ function wireGpReport(v){
   if($('#gr-reset',v)) $('#gr-reset',v).onclick=()=>{ gpRepFilter=gpRepDefaults(); render(); };
   if($('#gr-xlsx',v)) $('#gr-xlsx',v).onclick=()=>gpRepDownload('xlsx');
   if($('#gr-csv',v)) $('#gr-csv',v).onclick=()=>gpRepDownload('csv');
+}
+
+/* ============================================================
+   Seed the named ALDS flow accounts (admin) — placeholder emails,
+   each gets a temporary password the owner can distribute and edit later.
+   ============================================================ */
+const ALDS_PEOPLE=[
+  ['Sanjay Palod','Approver'],['Rakesh Sharma','Approver'],['T Rao','Approver'],['Jatin Vora','Purchase Head'],
+  ['Jagdish Thawre','Approver'],['Rajiv Shah','Approver'],['Hardik Khara','Approver'],['Jai Singhal','Approver'],
+  ['Jinesh Khara','Approver'],['Prachi Khara','Approver'],['CMD','CMD Desk'],['Nishant Bhandari','Escalation'],
+  ['Narendra Meshram','Accounts'],['Shilpa Shelare','Accounts'],['Akshay Ingole','Accounts'],
+  ['Pritam Varade','Accounts (Retail)'],['Akash Meshram','Accounts (Retail)'],['Prashant Bhoyar','Accounts (Retail)']
+];
+const aldsEmail=n=>n.toLowerCase().replace(/[^a-z0-9]+/g,'.').replace(/^\.|\.$/g,'')+(n.toUpperCase()==='CMD'?'.desk':'')+'@confidencegroup.in';
+function seedAldsPeopleDialog(){
+  const existing=new Set(DB.users.map(u=>flowNorm(u.name)));
+  const todo=ALDS_PEOPLE.filter(p=>!existing.has(flowNorm(p[0])));
+  modal({title:'Create ALDS flow accounts',
+    body:'<p style="margin-top:0">This creates the named people used by the ALDS PO/WO flows, each with a placeholder email and a temporary password you can hand out and edit later.</p>'+
+      '<div class="hint">'+(todo.length?('To create ('+todo.length+'): '+todo.map(p=>esc(p[0])).join(', ')):'All of them already exist — nothing to create.')+'</div>'+
+      '<div class="hint" style="margin-top:8px">Afterwards, map the <b>Purchase team</b> members under <b>Jatin Vora</b> (edit each purchase person → Reports to: Jatin Vora).</div>'+
+      '<div id="seed-out" style="margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Close</button>'+(todo.length?'<button class="btn primary" id="seed-go">Create '+todo.length+' accounts</button>':''),
+    onOpen:(v,cl)=>{ if(!$('#seed-go',v)) return;
+      $('#seed-go',v).onclick=async()=>{ $('#seed-go',v).disabled=true; const out=$('#seed-out',v); const made=[];
+        for(const [name,role] of todo){ out.innerHTML='Creating <b>'+esc(name)+'</b>…';
+          try{ const {data,error}=await SB.functions.invoke('admin-create-user',{body:{name,email:aldsEmail(name),role,dept:'ALDS',mode:'password',password:''}});
+            if(error||!data||data.error){ made.push([name,aldsEmail(name),'(exists / error)']); }
+            else made.push([name,data.email,data.tempPassword||'—']); }
+          catch(e){ made.push([name,aldsEmail(name),'(error)']); }
+        }
+        await load();
+        out.innerHTML='<div class="hint" style="margin-bottom:6px">Done. Temporary passwords (copy and keep safe):</div>'+
+          '<table class="cards"><tbody>'+made.map(m=>'<tr><td><b>'+esc(m[0])+'</b><div class="hint">'+esc(m[1])+'</div></td><td class="meta num">'+esc(m[2])+'</td></tr>').join('')+'</tbody></table>';
+        render();
+      };
+    }});
+}
+
+/* ============================================================
+   ALDS PO / WO fixed flows (Stage 2 UI)
+   ============================================================ */
+const FLOW_DIVS=['O&M','Project','Retail'];
+const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':'ALDS WO (Work order)';
+const flowNorm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+const ACCT_NAMES=['narendra meshram','shilpa shelare','akshay ingole','pritam varade','akash meshram','prashant bhoyar'];
+const inAccountsTeam=()=>{const n=flowNorm(ME&&ME.name); return ACCT_NAMES.some(x=>n.indexOf(x)>-1)||!!(ME&&(ME.admin||ME.owner))};
+const flowLive=f=>f.steps.find(s=>s.status==='pending');
+const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
+const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&inAccountsTeam())};
+const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)));
+const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
+const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
+const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const s=flowLive(f); return s?(s.stage+' · '+s.label):'—'; };
+const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed</span>':f.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">In progress</span>';
+
+let flowTab='mine', flowDraft=null;
+function flowRow(f){
+  const s=flowLive(f), withWho=s?s.actors.map(id=>user(id).name).slice(0,3).join(', ')+(s.actors.length>3?' +'+(s.actors.length-3):''):'';
+  return '<tr data-flow="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
+    '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
+    '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
+    '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':'')+'</td></tr>';
+}
+function flowList(list,empty){
+  if(!list.length) return '<div class="empty" style="padding:26px 16px"><h3>Nothing here</h3><p class="hint">'+esc(empty||'')+'</p></div>';
+  return '<table class="cards"><tbody>'+list.map(flowRow).join('')+'</tbody></table>';
+}
+function viewFlows(){
+  head('ALDS PO / WO','Fixed purchase & work-order flows — everyone can watch the chain; you act only at your point');
+  const t=flowTab;
+  const tabs='<div class="tabs"><button data-ft="turn" class="'+(t==='turn'?'on':'')+'">Waiting on me'+(flowMyTurn().length?' ('+flowMyTurn().length+')':'')+'</button>'+
+    '<button data-ft="mine" class="'+(t==='mine'?'on':'')+'">My flows</button>'+
+    '<button data-ft="all" class="'+(t==='all'?'on':'')+'">All flows</button>'+
+    '<button data-ft="raise" class="'+(t==='raise'?'on':'')+'">Raise new</button></div>';
+  let body='';
+  if(t==='turn') body=flowList(flowMyTurn(),'No flow is waiting on you.');
+  else if(t==='mine') body=flowList(flowMine(),'You have not raised any flow yet.');
+  else if(t==='all') body=flowList(DB.flows.slice(),'No flows yet.');
+  else { const d=flowDraft||(flowDraft={head:'PO',division:'O&M',title:''});
+    body='<div class="card pad" style="max-width:560px"><h3>Raise an ALDS flow</h3>'+
+      '<div style="margin-top:12px"><label for="fl-head">Type</label><select id="fl-head"><option value="PO" '+(d.head==='PO'?'selected':'')+'>ALDS PO (Indent)</option><option value="WO" '+(d.head==='WO'?'selected':'')+'>ALDS WO (Work order)</option></select></div>'+
+      '<div style="margin-top:12px"><label for="fl-div">Division</label><select id="fl-div">'+FLOW_DIVS.map(x=>'<option '+(d.division===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'+
+      '<div style="margin-top:12px"><label for="fl-title">Indent / Work order number</label><input id="fl-title" type="text" value="'+esc(d.title)+'" placeholder="e.g. IH26605-007"></div>'+
+      '<div class="hint" style="margin-top:10px">The fixed hierarchy is applied automatically. After you create it, you upload the document at step 1 and sign with your PIN.</div>'+
+      '<div id="fl-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
+      '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" id="fl-create">Create flow</button></div></div>';
+  }
+  return tabs+'<div style="margin-top:14px">'+body+'</div>';
+}
+function wireFlows(v){
+  $$('[data-ft]',v).forEach(b=>b.onclick=()=>{flowTab=b.dataset.ft;render()});
+  $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow}));
+  const d=flowDraft;
+  if($('#fl-head',v)) $('#fl-head',v).onchange=e=>d.head=e.target.value;
+  if($('#fl-div',v)) $('#fl-div',v).onchange=e=>d.division=e.target.value;
+  if($('#fl-title',v)) $('#fl-title',v).oninput=e=>d.title=e.target.value;
+  if($('#fl-create',v)) $('#fl-create',v).onclick=async()=>{
+    const err=$('#fl-err',v); err.textContent='';
+    if(!d.title.trim()) return err.textContent='Enter the indent / work order number.';
+    busy(true);
+    try{ const id=await rpc('flow_create',{p_head:d.head,p_div:d.division,p_title:d.title.trim(),p_fields:{}});
+      flowDraft=null; await load(); toast('Flow created. Upload the document at step 1.','ok'); go({name:'flowdetail',id}); }
+    catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
+    finally{ busy(false); }
+  };
+}
+/* ---- detail: the stage → sub-step chain, visible to all, act only at your point ---- */
+const FLOW_ST={waiting:['t-wait','Waiting'],pending:['t-prog','Now here'],done:['t-ok','Done'],skipped:['t-hold','Skipped']};
+function flowStepRow(f,s){
+  const st=FLOW_ST[s.status]||['t-wait',s.status];
+  const actors=s.actors.map(id=>user(id).name).join(', ')||'—';
+  let meta='';
+  if(s.status==='done'){ meta='<div class="hint">'+(s.actedBy?esc(user(s.actedBy).name):'—')+' · '+esc(fmtDT(s.actedAt))+(s.remark?' · '+esc(s.remark):'')+'</div>'; }
+  if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
+  if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
+  if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
+  const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
+  const mine=s.status==='pending'&&s.actors.indexOf(ME.id)>-1;
+  const canEsc=s.status==='pending'&&s.escalatable&&inAccountsTeam();
+  let act='';
+  if(mine){ act='<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn primary sm" data-fact="'+s.id+'">'+flowActLabel(s)+'</button>'+
+    (s.canReject?'<button class="btn bad sm" data-freject="'+s.id+'">Reject</button>':'')+'</div>'; }
+  else if(canEsc){ act='<div class="row" style="gap:8px;margin-top:8px"><button class="btn hold sm" data-fesc="'+s.id+'">Escalate past CMD</button></div>'; }
+  return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
+    '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span></div>'+
+    '<div class="hint">'+esc(actors)+'</div>'+meta+files+act+'</div></div>';
+}
+const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:'Approve',confirm:'Confirm',data:'Enter details & sign',payment:'Initiate advice'})[s.action]||'Submit';
+function viewFlowDetail(id){
+  const f=DB.flows.find(x=>x.id===id);
+  if(!f){ head('Flow','Not found'); return '<div class="card pad">This flow could not be found.</div>'; }
+  head(f.ref,flowHeadLabel(f.head)+' · '+f.division+(f.title?' · '+f.title:''));
+  let h='<div class="row" style="margin-bottom:12px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span></div>';
+  flowStageList(f).forEach(stage=>{
+    const steps=f.steps.filter(s=>s.stage===stage);
+    const anyLive=steps.some(s=>s.status==='pending');
+    h+='<div class="card" style="margin-bottom:12px'+(anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(stage)+'</h3></div>'+
+      '<div style="padding:10px 16px">'+steps.map(s=>flowStepRow(f,s)).join('')+'</div></div>';
+  });
+  if(f.audit.length) h+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
+    f.audit.slice().reverse().map(a=>'<div class="hint" style="padding:3px 0"><b>'+esc(a.actorName||'')+'</b> — '+esc(a.action)+(a.detail?' · '+esc(a.detail):'')+' · '+esc(fmtDT(a.ts))+'</div>').join('')+'</div></div>';
+  return h;
+}
+function wireFlowDetail(v){
+  if($('#fl-back',v)) $('#fl-back',v).onclick=()=>go({name:'flow'});
+  $$('[data-ffile]',v).forEach(b=>b.onclick=()=>{ const id=b.dataset.ffile;
+    let rec=null; DB.flows.forEach(f=>f.steps.forEach(s=>s.files.forEach(fl=>{if(fl.id===id)rec=fl}))); if(rec) openViewer(rec); });
+  $$('[data-freject]',v).forEach(b=>b.onclick=()=>flowReject(b.dataset.freject));
+  $$('[data-fesc]',v).forEach(b=>b.onclick=()=>flowEscalate(b.dataset.fesc));
+  $$('[data-fact]',v).forEach(b=>b.onclick=()=>flowAct(b.dataset.fact));
+}
+function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
+async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
+  busy(true);
+  try{ await rpc('flow_act',{p_step:stepId,p_kind:kind,p_remark:remark||'',p_pin:flowCall._pin,p_files:files||null,p_datetime:datetime||null,p_data:data||null});
+    await load(); toast(okMsg||'Done.','ok'); render(); }
+  catch(e){ fail(e); }
+  finally{ busy(false); }
+}
+function flowPinThen(run){
+  if(!pinOK(ME)) return modal({title:'Set your PIN first',body:'<p style="margin-top:0">Every action is signed with your daily PIN. You have not set one for '+esc(fmtD(Date.now()))+'.</p>',
+    footer:'<button class="btn" data-x>Not now</button><button class="btn primary" id="g">Set PIN</button>',onOpen:(v,c)=>{$('#g',v).onclick=()=>{c();pinDialog()}}});
+  modal({title:'Confirm with your PIN',body:'<p style="margin-top:0">Enter today\'s PIN to sign.</p>'+pinBoxes('fpb')+'<div id="fpe" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fpg">Sign</button>',
+    onOpen:(v,close)=>{ const code=wirePinBoxes(v,'fpb',()=>$('#fpg',v).click());
+      $('#fpg',v).onclick=()=>{ flowCall._pin=code(); close(); run(); }; }});
+}
+function flowReject(stepId){
+  const x=flowFindStep(stepId); if(!x) return;
+  modal({title:'Send back for changes',body:'<p style="margin-top:0">Rejecting <b>'+esc(x.s.label)+'</b>.</p><div><label for="frr">Reason</label><textarea id="frr" placeholder="What needs to change"></textarea></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="frg">Reject</button>',
+    onOpen:(mv,cl)=>{$('#frg',mv).onclick=()=>{const reason=$('#frr',mv).value.trim(); if(reason.length<3) return toast('Add a reason.','bad'); cl();
+      flowPinThen(()=>flowCall(stepId,'reject',reason,null,null,null,'Sent back for changes.')); }}});
+}
+function flowEscalate(stepId){
+  const x=flowFindStep(stepId); if(!x) return;
+  modal({title:'Escalate past CMD',body:'<p style="margin-top:0">This skips the CMD desk and sends it straight to <b>Nishant Bhandari</b> for approval, to speed up payment.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="feg">Escalate</button>',
+    onOpen:(mv,cl)=>{$('#feg',mv).onclick=()=>{cl(); flowPinThen(()=>flowCall(stepId,'escalate','',null,null,null,'Escalated to Nishant.')); }}});
+}
+function flowAct(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s;
+  const local={files:[],support:[]};   // uploaded file records
+  let dt=''; const dataFields={}; let payMode='full'; const advices=[{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null}];
+  let body='<p style="margin-top:0">'+esc(s.label)+'</p>';
+  if(s.action==='payment'){
+    body+='<div class="seg" id="fp-mode" style="margin:8px 0"><button data-m="full" class="on">Full advice</button><button data-m="partial">Partial advice</button></div>'+
+      '<div id="fp-partial" class="hide"><div class="hint">Add up to 4 advices, each with its percentage and PDF.</div><div id="fp-adv"></div></div>'+
+      '<div style="margin-top:10px"><label>Advice document</label><div id="fa-files"></div></div>';
+  } else if(s.action==='data'){
+    body+=s.fieldsSpec.map((lbl,i)=>'<div style="margin-top:8px"><label>'+esc(lbl)+'</label><input type="text" data-df="'+i+'"></div>').join('')+
+      (s.needsFile?'<div style="margin-top:10px"><label>Attach copy</label><div id="fa-files"></div></div>':'');
+  } else {
+    if(s.needsFile) body+='<div style="margin-top:10px"><label>Upload document</label><div id="fa-files"></div></div>';
+  }
+  if(s.needsDatetime) body+='<div style="margin-top:10px"><label for="fa-dt">Confirmation date & time</label><input type="datetime-local" id="fa-dt"></div>';
+  body+='<div style="margin-top:10px"><label for="fa-rem">Remark <span class="hint">optional</span></label><input type="text" id="fa-rem"></div><div id="fa-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
+  modal({title:flowActLabel(s),body:body,footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Continue</button>',
+    onOpen:(mv,cl)=>{
+      if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,{mode:'support',single:(s.action!=='payment'),label:'Tap to upload (PDF, image, Excel, Word)'});
+      if($('#fp-adv',mv)){ const paint=()=>{ $('#fp-adv',mv).innerHTML=advices.map((a,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center"><input type="number" min="0" max="100" placeholder="%" data-pct="'+i+'" value="'+esc(a.pct)+'" style="width:80px"><div style="flex:1" id="adv-f-'+i+'"></div></div>').join('');
+        advices.forEach((a,i)=>{ $('[data-pct="'+i+'"]',mv).oninput=e=>a.pct=e.target.value; a._list=a._list||[]; uploader($('#adv-f-'+i,mv),a._list,{mode:'support',single:true,label:'Advice '+(i+1)+' PDF'}); }); };
+        paint(); }
+      $$('#fp-mode button',mv).forEach(b=>b.onclick=()=>{payMode=b.dataset.m; $$('#fp-mode button',mv).forEach(x=>x.classList.toggle('on',x.dataset.m===payMode)); $('#fp-partial',mv).classList.toggle('hide',payMode!=='partial'); });
+      $('#fa-go',mv).onclick=()=>{
+        const err=$('#fa-err',mv); err.textContent='';
+        let files=filesPayload(local.files), data=null;
+        if(s.needsFile && !files.length && s.action!=='payment') return err.textContent='Upload the document first.';
+        if(s.needsDatetime){ dt=$('#fa-dt',mv).value; if(!dt) return err.textContent='Select the date & time.'; }
+        if(s.action==='data'){ let miss=false; s.fieldsSpec.forEach((lbl,i)=>{const val=$('[data-df="'+i+'"]',mv).value.trim(); if(!val)miss=true; dataFields[lbl]=val;}); if(miss) return err.textContent='Fill all the fields.'; data=dataFields; }
+        if(s.action==='payment'){ data={mode:payMode};
+          if(payMode==='partial'){ const adv=[]; advices.forEach((a,i)=>{ if(a.pct&&a._list&&a._list.length){ adv.push({pct:Number(a.pct),name:a._list[0].name,path:a._list[0].path}); files=files.concat(filesPayload(a._list)); } });
+            if(!adv.length) return err.textContent='Add at least one advice with a % and PDF.'; data.advices=adv; }
+          else if(!files.length) return err.textContent='Upload the advice document.';
+        }
+        const remark=$('#fa-rem',mv).value.trim();
+        cl(); flowPinThen(()=>flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,'Signed.'));
+      };
+    }});
 }
 
 /* ============================================================
