@@ -990,10 +990,9 @@ const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
-  {k:'flow',label:'ALDS PO / WO',grp:'Overview',badge:()=>flowMyTurn().length},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
   {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
-  {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length},
+  {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length+flowMyTurn().length},
   {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
   {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length},
   {k:'mine',label:'My requests',grp:'My work'},
@@ -1031,7 +1030,7 @@ function paintTabbar(){
     $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
     return;
   }
-  const desk=myQueue().length+myTasks().length+myStuck().length, un=unread().length;
+  const desk=myQueue().length+myTasks().length+myStuck().length+flowMyTurn().length, un=unread().length;
   const inDesk=['queue','tasks','stuck'].includes(ROUTE.name);
   const inMore=!['dash','queue','tasks','stuck','new','inbox'].includes(ROUTE.name);
   bar.innerHTML=
@@ -1084,13 +1083,13 @@ function render(){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
     case 'inbox': v.innerHTML=viewInbox(); wireInbox(v); break;
     case 'new': v.innerHTML=viewNew(); wireNew(v); break;
-    case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.'); wireList(v); break;
+    case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.')+flowSection('turn'); wireList(v); wireFlowRows(v); break;
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
     case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you for more before they will sign.','No one has asked you for anything','If an approver needs a clarification, it comes back here.'); wireList(v); break;
-    case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.'); wireList(v); break;
+    case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.')+flowSection('mine'); wireList(v); wireFlowRows(v); break;
     case 'tpl': v.innerHTML=viewTpl(); wireTpl(v); break;
     case 'team': v.innerHTML=viewTeam(); wireTeam(v); break;
-    case 'all': v.innerHTML=viewAll(); wireList(v);
+    case 'all': v.innerHTML=viewAll()+flowSection('all'); wireList(v); wireFlowRows(v);
       head(ME.admin||ME.seeAll?'All requests':'Requests I can see',ME.admin||ME.seeAll?'You can see every chain in the system':'Only chains you raised, approve, or were given a task in'); break;
     case 'report': v.innerHTML=viewReport(); wireReport(v); head('Reports','Filter the record and download it'); break;
     case 'usage': v.innerHTML=viewUsage(); wireUsage(v); break;
@@ -1098,7 +1097,6 @@ function render(){
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
     case 'gpreport': v.innerHTML=viewGpReport(); wireGpReport(v); break;
-    case 'flow': v.innerHTML=viewFlows(); wireFlows(v); break;
     case 'flowdetail': v.innerHTML=viewFlowDetail(ROUTE.id); wireFlowDetail(v); break;
   }
 }
@@ -1156,8 +1154,15 @@ function wireDash(v){
    Raise a request
    ============================================================ */
 let draft=null, formTab='indent';
+/* ALDS fixed-flow routing: when an ALDS request's division maps to a flow division
+   (O&M / Project / Retail), the request is a fixed PO/WO flow — no approver chain is
+   picked; the company hierarchy is applied automatically. ALDS Transport and every
+   other department stay on the free-form chain. */
+const FLOW_DIV_MAP={'ONM':'O&M','O&M':'O&M','Project':'Project','Retail':'Retail'};
+const flowDivOf=d=>FLOW_DIV_MAP[d]||null;
+const isFlowDraft=()=>!!(draft&&draft.f&&draft.f.department==='ALDS'&&flowDivOf(draft.f.division));
 function viewNew(){
-  head('Raise a request','Attach the ERP document, check what was read from it, then set the chain');
+  head('Raise a request','Attach the ERP document, check what was read from it, then set the chain. ALDS O&M / Project / Retail follow their fixed flow automatically.');
   if(!draft||draft.type!==formTab) draft={type:formTab,files:[],support:[],chain:[],f:{category:'O&M'},conf:{},meta:{}};
   return '<div class="tabs"><button data-t="indent" class="'+(formTab==='indent'?'on':'')+'">Indent</button>'+
     '<button data-t="workorder" class="'+(formTab==='workorder'?'on':'')+'">Work order</button></div>'+
@@ -1192,6 +1197,17 @@ function chainCard(){
   '<div class="finder" style="margin-top:14px"><label for="n-find">Add an approver</label><input id="n-find" type="text" placeholder="Name, email, designation or department" autocomplete="off"><div id="n-res"></div></div>'+
   '<div id="n-chain"></div><div id="n-tplsave" class="hide" style="margin-top:12px"><button class="btn sm" id="n-save-tpl">Save this chain as a hierarchy</button></div></div>';
 }
+/* the right column: the approver chain for a normal request, or — for an ALDS
+   PO/WO flow — a note explaining the fixed hierarchy (no chain to build). */
+function rightCol(){
+  if(isFlowDraft()){
+    const hd=formTab==='indent'?'ALDS PO':'ALDS WO', div=flowDivOf(draft.f.division);
+    return '<div class="card pad"><h3>Fixed approval flow</h3>'+
+      '<p class="hint" style="margin-top:5px">This is an <b>'+esc(hd)+'</b> request in the <b>'+esc(div)+'</b> division, so it follows the company\'s fixed '+esc(hd)+' hierarchy. You do not pick approvers here.</p>'+
+      '<div class="hint" style="margin-top:10px">When you send it, the whole chain is built automatically and step 1 is signed with your daily PIN. Everyone can watch its progress; each person acts only at their own point.</div></div>';
+  }
+  return chainCard();
+}
 function indentForm(){
   const f=draft.f,c=draft.conf;
   return '<div class="detail-grid"><div class="grid" style="gap:16px">'+uploadCard()+
@@ -1202,7 +1218,7 @@ function indentForm(){
      '<div id="i-sitewrap"></div>'+
      '<div class="grid g2"><div class="auto '+(c.indentDate||'')+'"><label for="i-date">Date of indent'+(c.indentDate?'<span class="flag hi">from PDF</span>':'')+'</label><input id="i-date" type="date" value="'+esc(f.indentDate||'')+'"></div>'+
        txt('i-erp','ERP prepared on (date & time)',f.erpCreated,c.erpCreated,'e.g. 05-JUN-2026 04:29 PM')+'</div>'+
-     area('i-rem','Remarks',f.remarks,c.remarks,'What this indent is for.')+'</div></div></div><div>'+chainCard()+'</div></div>';
+     area('i-rem','Remarks',f.remarks,c.remarks,'What this indent is for.')+'</div></div></div><div>'+rightCol()+'</div></div>';
 }
 function woForm(){
   const f=draft.f,c=draft.conf;
@@ -1221,7 +1237,7 @@ function woForm(){
        '<div class="auto '+(c.amountPost||'')+'"><label for="w-aq">Amount after GST'+(c.amountPost?'<span class="flag hi">from PDF</span>':'')+'</label><input id="w-aq" type="number" step="0.01" value="'+esc(f.amountPost)+'"></div>'+
        '<div><label>GST (derived)</label><input type="text" id="w-gst" readonly style="background:var(--surface-2)"></div></div><div id="w-gstwarn" class="hint"></div>'+
      '<div><label for="w-rem">Remarks</label><textarea id="w-rem" placeholder="Why this work order needs approval.">'+esc(f.remarks||'')+'</textarea><div class="hint">Work orders carry no remark field, so this one is yours to write.</div></div>'+
-   '</div></div></div><div>'+chainCard()+'</div></div>';
+   '</div></div></div><div>'+rightCol()+'</div></div>';
 }
 function paintSite(mount){
   if(!mount) return;
@@ -1276,7 +1292,7 @@ function wireNew(v){
   const cat=$('#i-cat',body); if(cat) cat.onchange=()=>{f.category=cat.value;paintSite($('#i-sitewrap',body))};
   // preload the ALDS hierarchy for this requester (editable), at most once per draft
   const tryAutoHierarchy=()=>{
-    if(f.department!=='ALDS'||draft._autoApplied) return;
+    if(f.department!=='ALDS'||draft._autoApplied||isFlowDraft()) return;
     const spec=ORG_HIERARCHY[(ME.name||'').trim().toLowerCase()]; if(!spec) return;
     const ids=[], missing=[];
     spec.forEach(nm=>{ const u=findUserByName(nm); if(u) ids.push(u.id); else missing.push(nm); });
@@ -1288,13 +1304,10 @@ function wireNew(v){
   };
   // Department → Division cascade
   const odept=$('#o-dept',body), odiv=$('#o-div',body);
-  if(odiv) odiv.onchange=()=>{ f.division=odiv.value };
-  if(odept) odept.onchange=()=>{
-    f.department=odept.value; f.division='';
-    if(odiv){ const list=DEPT_DIV[f.department]||[]; odiv.disabled=!f.department;
-      odiv.innerHTML='<option value="">'+(f.department?'Choose…':'Pick a department first')+'</option>'+list.map(x=>'<option>'+esc(x)+'</option>').join(''); }
-    tryAutoHierarchy();
-  };
+  // re-render on change so the right column switches between the chain builder and the
+  // fixed-flow note the moment an ALDS flow division is chosen (or cleared).
+  if(odiv) odiv.onchange=()=>{ f.division=odiv.value; render(); };
+  if(odept) odept.onchange=()=>{ f.department=odept.value; f.division=''; render(); };
   const gst=()=>{const g=$('#w-gst',body); if(!g) return; const a=Number(f.amountPre)||0,b=Number(f.amountPost)||0; g.value=(a&&b)?money(b-a):'—';
     const w=$('#w-gstwarn',body); w.textContent=(a&&b&&b<a)?'The after-GST amount is lower than the before-GST amount. Check both figures.':''; w.style.color=(a&&b&&b<a)?'var(--stop)':''};
   ['#w-ap','#w-aq'].forEach(s=>{const e=$(s,body);if(e)e.addEventListener('input',gst)}); gst();
@@ -1332,6 +1345,7 @@ async function submit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
   if(!f.department) return note.textContent='Choose a department.';
   if(!f.division) return note.textContent='Choose a division.';
+  if(isFlowDraft()) return flowRaiseSubmit(note);
   if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; if(!f.indentDate) return note.textContent='Date of indent is needed.';
     if(f.category==='Project'){ if(!f.projectName) f.projectName='ALDS Project' } else if(!f.siteName) return note.textContent='Site name is needed.'; }
   else { if(!f.orderNo) return note.textContent='Work order number is needed.'; if(!f.woDate) return note.textContent='Work order date is needed.';
@@ -1354,6 +1368,30 @@ async function submit(note){
     footer:'<button class="btn" data-x>Go back</button><button class="btn primary" id="dg">Raise it anyway</button>',
     onOpen:(v,c)=>{$('#dg',v).onclick=()=>{c();send()}}});
   send();
+}
+/* Raise an ALDS PO/WO fixed flow from the Raise-a-request form: same uploaded ERP
+   document and read fields, but it creates the flow and signs step 1 (with the PIN)
+   instead of building a chain. */
+async function flowRaiseSubmit(note){
+  const f=draft.f, t=draft.type; note.style.color='var(--stop)';
+  const head=t==='indent'?'PO':'WO', div=flowDivOf(f.division);
+  const title=(t==='indent'?f.indentNo:f.orderNo)||'';
+  if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; }
+  else { if(!f.orderNo) return note.textContent='Work order number is needed.'; }
+  if(!draft.files.length) return note.textContent='Attach the ERP document before sending.';
+  note.textContent='';
+  const files=filesPayload(draft.files).concat(filesPayload(draft.support));
+  const run=async()=>{
+    busy(true);
+    try{
+      const id=await rpc('flow_create',{p_head:head,p_div:div,p_title:title.trim(),p_fields:f});
+      await load();
+      const flow=DB.flows.find(x=>x.id===id), step1=flow&&flow.steps.find(s=>s.status==='pending');
+      if(step1){ await rpc('flow_act',{p_step:step1.id,p_kind:'act',p_remark:'',p_pin:flowCall._pin,p_files:files,p_datetime:null,p_data:null}); await load(); }
+      draft=null; toast('ALDS '+head+' flow created and signed at step 1.','ok'); go({name:'flowdetail',id});
+    }catch(e){ fail(e) } finally{ busy(false) }
+  };
+  flowPinThen(run);
 }
 
 /* ============================================================
@@ -2297,7 +2335,6 @@ function seedAldsPeopleDialog(){
 /* ============================================================
    ALDS PO / WO fixed flows (Stage 2 UI)
    ============================================================ */
-const FLOW_DIVS=['O&M','Project','Retail'];
 const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':'ALDS WO (Work order)';
 const flowNorm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const ACCT_NAMES=['narendra meshram','shilpa shelare','akshay ingole','pritam varade','akash meshram','prashant bhoyar'];
@@ -2311,7 +2348,6 @@ const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.s
 const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const s=flowLive(f); return s?(s.stage+' · '+s.label):'—'; };
 const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed</span>':f.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">In progress</span>';
 
-let flowTab='mine', flowDraft=null;
 function flowRow(f){
   const s=flowLive(f), withWho=s?s.actors.map(id=>user(id).name).slice(0,3).join(', ')+(s.actors.length>3?' +'+(s.actors.length-3):''):'';
   return '<tr data-flow="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
@@ -2319,49 +2355,20 @@ function flowRow(f){
     '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
     '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':'')+'</td></tr>';
 }
-function flowList(list,empty){
-  if(!list.length) return '<div class="empty" style="padding:26px 16px"><h3>Nothing here</h3><p class="hint">'+esc(empty||'')+'</p></div>';
-  return '<table class="cards"><tbody>'+list.map(flowRow).join('')+'</tbody></table>';
+/* ALDS flows surfaced inside the normal lists (Waiting on me / My requests / All).
+   They are raised from the Raise-a-request page, so there is no separate raise tab. */
+function flowSection(ctx){
+  let list;
+  if(ctx==='turn') list=flowMyTurn();
+  else if(ctx==='mine') list=flowMine();
+  else list=DB.flows.slice();
+  if(!list.length) return '';
+  list.sort((a,b)=>b.createdAt-a.createdAt);
+  const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
+  return '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>'+label+'</h3><span class="tag t-prog" style="margin-left:auto">'+list.length+'</span></div>'+
+    '<table class="cards"><tbody>'+list.map(flowRow).join('')+'</tbody></table></div>';
 }
-function viewFlows(){
-  head('ALDS PO / WO','Fixed purchase & work-order flows — everyone can watch the chain; you act only at your point');
-  const t=flowTab;
-  const tabs='<div class="tabs"><button data-ft="turn" class="'+(t==='turn'?'on':'')+'">Waiting on me'+(flowMyTurn().length?' ('+flowMyTurn().length+')':'')+'</button>'+
-    '<button data-ft="mine" class="'+(t==='mine'?'on':'')+'">My flows</button>'+
-    '<button data-ft="all" class="'+(t==='all'?'on':'')+'">All flows</button>'+
-    '<button data-ft="raise" class="'+(t==='raise'?'on':'')+'">Raise new</button></div>';
-  let body='';
-  if(t==='turn') body=flowList(flowMyTurn(),'No flow is waiting on you.');
-  else if(t==='mine') body=flowList(flowMine(),'You have not raised any flow yet.');
-  else if(t==='all') body=flowList(DB.flows.slice(),'No flows yet.');
-  else { const d=flowDraft||(flowDraft={head:'PO',division:'O&M',title:''});
-    body='<div class="card pad" style="max-width:560px"><h3>Raise an ALDS flow</h3>'+
-      '<div style="margin-top:12px"><label for="fl-head">Type</label><select id="fl-head"><option value="PO" '+(d.head==='PO'?'selected':'')+'>ALDS PO (Indent)</option><option value="WO" '+(d.head==='WO'?'selected':'')+'>ALDS WO (Work order)</option></select></div>'+
-      '<div style="margin-top:12px"><label for="fl-div">Division</label><select id="fl-div">'+FLOW_DIVS.map(x=>'<option '+(d.division===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div>'+
-      '<div style="margin-top:12px"><label for="fl-title">Indent / Work order number</label><input id="fl-title" type="text" value="'+esc(d.title)+'" placeholder="e.g. IH26605-007"></div>'+
-      '<div class="hint" style="margin-top:10px">The fixed hierarchy is applied automatically. After you create it, you upload the document at step 1 and sign with your PIN.</div>'+
-      '<div id="fl-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
-      '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" id="fl-create">Create flow</button></div></div>';
-  }
-  return tabs+'<div style="margin-top:14px">'+body+'</div>';
-}
-function wireFlows(v){
-  $$('[data-ft]',v).forEach(b=>b.onclick=()=>{flowTab=b.dataset.ft;render()});
-  $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow}));
-  const d=flowDraft;
-  if($('#fl-head',v)) $('#fl-head',v).onchange=e=>d.head=e.target.value;
-  if($('#fl-div',v)) $('#fl-div',v).onchange=e=>d.division=e.target.value;
-  if($('#fl-title',v)) $('#fl-title',v).oninput=e=>d.title=e.target.value;
-  if($('#fl-create',v)) $('#fl-create',v).onclick=async()=>{
-    const err=$('#fl-err',v); err.textContent='';
-    if(!d.title.trim()) return err.textContent='Enter the indent / work order number.';
-    busy(true);
-    try{ const id=await rpc('flow_create',{p_head:d.head,p_div:d.division,p_title:d.title.trim(),p_fields:{}});
-      flowDraft=null; await load(); toast('Flow created. Upload the document at step 1.','ok'); go({name:'flowdetail',id}); }
-    catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
-    finally{ busy(false); }
-  };
-}
+function wireFlowRows(v){ $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow})); }
 /* ---- detail: the stage → sub-step chain, visible to all, act only at your point ---- */
 const FLOW_ST={waiting:['t-wait','Waiting'],pending:['t-prog','Now here'],done:['t-ok','Done'],skipped:['t-hold','Skipped']};
 function flowStepRow(f,s){
@@ -2400,7 +2407,7 @@ function viewFlowDetail(id){
   return h;
 }
 function wireFlowDetail(v){
-  if($('#fl-back',v)) $('#fl-back',v).onclick=()=>go({name:'flow'});
+  if($('#fl-back',v)) $('#fl-back',v).onclick=()=>history.back();
   $$('[data-ffile]',v).forEach(b=>b.onclick=()=>{ const id=b.dataset.ffile;
     let rec=null; DB.flows.forEach(f=>f.steps.forEach(s=>s.files.forEach(fl=>{if(fl.id===id)rec=fl}))); if(rec) openViewer(rec); });
   $$('[data-freject]',v).forEach(b=>b.onclick=()=>flowReject(b.dataset.freject));
