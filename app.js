@@ -1868,7 +1868,9 @@ function wirePeople(v){
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
   $$('[data-ed]',v).forEach(b=>b.onclick=()=>{const u=user(b.dataset.ed);
-    modal({title:'Edit '+u.name,body:'<div class="grid" style="gap:13px"><div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
+    modal({title:'Edit '+u.name,body:'<div class="grid" style="gap:13px">'+
+        '<div><label for="e-name">Full name</label><input id="e-name" type="text" value="'+esc(u.name||'')+'"'+((u.owner&&u.id!==ME.id)?' disabled':'')+'>'+((u.owner&&u.id!==ME.id)?'<div class="hint">Only the system owner can rename their own account.</div>':'<div class="hint">Used across the app and to match ALDS flow approvers — spelling matters.</div>')+'</div>'+
+        '<div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
@@ -1883,7 +1885,10 @@ function wirePeople(v){
         $('#e-reset',mv).onclick=()=>{ cl(); resetPasswordDialog(u) };
         $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
-        try{ await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
+        const nameEl=$('#e-name',mv), newName=nameEl?nameEl.value.trim():u.name;
+        if(nameEl&&!nameEl.disabled&&newName.length<2) return $('#e-err',mv).textContent='Enter a name of at least 2 characters.';
+        try{ if(nameEl&&!nameEl.disabled&&newName&&newName!==u.name) await rpc('admin_rename_user',{p_user:u.id,p_name:newName});
+          await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
           if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
