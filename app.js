@@ -68,7 +68,11 @@ function modal({title,body,footer,cls,onOpen}){
 /* every failed call surfaces its reason; the database writes them to be read */
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.';toast(m.replace(/^.*?: /,''),'bad');console.error(e)};
 async function rpc(fn,args){const {data,error}=await SB.rpc(fn,args||{}); if(error) throw error; return data}
-function busy(on){let v=$('#busy'); if(on&&!v){v=document.createElement('div');v.id='busy';v.className='busy-veil';v.innerHTML='<span class="spin"></span>';document.body.appendChild(v)} if(!on&&v)v.remove()}
+let busyTimer=null;
+function busy(on){let v=$('#busy');
+  if(on){ if(!v){v=document.createElement('div');v.id='busy';v.className='busy-veil';v.innerHTML='<span class="spin"></span>';document.body.appendChild(v)}
+    clearTimeout(busyTimer); busyTimer=setTimeout(()=>{const x=$('#busy'); if(x)x.remove()},15000); }  // never let the veil lock the screen
+  else { clearTimeout(busyTimer); if(v)v.remove(); } }
 
 /* ============================================================
    Loading everything this person is allowed to see
@@ -603,7 +607,15 @@ $('#si-go').onclick=async()=>{
     if(error) return siErr(/invalid/i.test(error.message)?'Wrong email or password.':error.message);
   } finally { btn.disabled=false }
 };
-$('#signout').onclick=async()=>{ await SB.auth.signOut() };
+/* Sign out that always returns to the login screen, even if the network call
+   to revoke the session hangs or fails. Local scope avoids the global revoke
+   round-trip; a short race + forced leave() guarantees the UI resets. */
+async function doSignOut(){
+  busy(false);                                   // drop any stuck overlay so the click isn't blocked
+  try{ await Promise.race([ SB.auth.signOut({scope:'local'}), new Promise(res=>setTimeout(res,2000)) ]); }catch(e){}
+  try{ leave(); }catch(e){ location.reload(); }  // force back to sign-in no matter what
+}
+$('#signout').onclick=doSignOut;
 
 async function enter(session){
   busy(true);
@@ -1075,7 +1087,7 @@ function moreSheet(){
     onOpen:(v,close)=>{
       $$('[data-go]',v).forEach(b=>b.onclick=()=>{close();go({name:b.dataset.go})});
       $$('[data-act]',v).forEach(b=>b.onclick=()=>{close();const a=b.dataset.act;
-        if(a==='pin')pinDialog(); else if(a==='me')profileDialog(); else if(a==='pw')newPasswordDialog({title:'Change your password',cancellable:true}); else if(a==='out')SB.auth.signOut()});
+        if(a==='pin')pinDialog(); else if(a==='me')profileDialog(); else if(a==='pw')newPasswordDialog({title:'Change your password',cancellable:true}); else if(a==='out')doSignOut()});
     }});
 }
 /* every screen is a history entry, so the Android back button (and the browser's)
