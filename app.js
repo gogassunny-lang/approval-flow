@@ -2341,19 +2341,49 @@ function flowRow(f){
     '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':'')+'</td></tr>';
 }
 /* ALDS flows surfaced inside the normal lists (Waiting on me / My requests / All).
-   They are raised from the Raise-a-request page, so there is no separate raise tab. */
+   They are raised from the Raise-a-request page, so there is no separate raise tab.
+   Each section carries a "requester" dropdown + search so an approver facing 100s of
+   flows can narrow to one person who raised them and act on just those. */
+let flowFilter={turn:{req:'',q:''},mine:{req:'',q:''},all:{req:'',q:''}};
 function flowSection(ctx){
   let list;
   if(ctx==='turn') list=flowMyTurn();
   else if(ctx==='mine') list=flowMine();
   else list=DB.flows.slice();
   if(!list.length) return '';
-  list.sort((a,b)=>b.createdAt-a.createdAt);
+  const ft=flowFilter[ctx]||(flowFilter[ctx]={req:'',q:''});
+  // the people who raised the flows in this section (so an approver sees only the
+  // requesters whose requests actually reached them)
+  const reqIds=[...new Set(list.map(f=>f.requesterId))].sort((a,b)=>user(a).name.localeCompare(user(b).name));
+  if(ft.req&&reqIds.indexOf(ft.req)<0) ft.req='';   // stale pick no longer present
+  let shown=list.slice();
+  if(ft.req) shown=shown.filter(f=>f.requesterId===ft.req);
+  if(ft.q){const q=ft.q.toLowerCase(); shown=shown.filter(f=>((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+f.division+' '+flowHeadLabel(f.head)).toLowerCase().includes(q));}
+  shown.sort((a,b)=>b.createdAt-a.createdAt);
   const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
-  return '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>'+label+'</h3><span class="tag t-prog" style="margin-left:auto">'+list.length+'</span></div>'+
-    '<table class="cards"><tbody>'+list.map(flowRow).join('')+'</tbody></table></div>';
+  const filtered=ft.req||ft.q;
+  const bar=reqIds.length>1||list.length>1
+    ? '<div class="row filters-row" style="gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">'+
+        '<select class="fl-req" data-ctx="'+ctx+'" style="width:auto"><option value="">All requesters ('+reqIds.length+')</option>'+
+          reqIds.map(id=>'<option value="'+id+'" '+(ft.req===id?'selected':'')+'>'+esc(user(id).name)+'</option>').join('')+'</select>'+
+        '<input class="fl-q" data-ctx="'+ctx+'" type="text" placeholder="Search number, title or division" value="'+esc(ft.q)+'" style="flex:1;min-width:180px">'+
+        (filtered?'<button class="btn ghost sm fl-clear" data-ctx="'+ctx+'">Clear</button>':'')+
+      '</div>'
+    : '';
+  return '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>'+label+'</h3>'+
+      '<span class="tag t-prog" style="margin-left:auto">'+shown.length+(filtered?' of '+list.length:'')+'</span></div>'+
+    bar+
+    (shown.length?'<table class="cards"><tbody>'+shown.map(flowRow).join('')+'</tbody></table>'
+      :'<div class="empty" style="padding:22px 16px"><h3>Nothing matches</h3><p class="hint">No flow matches this requester or search.</p></div>')+
+    '</div>';
 }
-function wireFlowRows(v){ $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow})); }
+function wireFlowRows(v){
+  $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow}));
+  $$('.fl-req',v).forEach(sel=>sel.onchange=()=>{const c=sel.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:''})).req=sel.value;render()});
+  $$('.fl-clear',v).forEach(b=>b.onclick=()=>{const c=b.dataset.ctx;flowFilter[c]={req:'',q:''};render()});
+  $$('.fl-q',v).forEach(inp=>inp.oninput=()=>{const c=inp.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:''})).q=inp.value;
+    const p=inp.selectionStart;render();const n=$('.fl-q[data-ctx="'+c+'"]');if(n){n.focus();n.setSelectionRange(p,p)}});
+}
 /* ---- detail: the stage → sub-step chain, visible to all, act only at your point ---- */
 const FLOW_ST={waiting:['t-wait','Waiting'],pending:['t-prog','Now here'],done:['t-ok','Done'],skipped:['t-hold','Skipped']};
 function flowStepRow(f,s){
