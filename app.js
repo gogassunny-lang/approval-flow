@@ -2321,11 +2321,12 @@ function wireGpReport(v){
    ============================================================ */
 const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':'ALDS WO (Work order)';
 const flowNorm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-const ACCT_NAMES=['narendra meshram','shilpa shelare','akshay ingole','pritam varade','akash meshram','prashant bhoyar'];
-const inAccountsTeam=()=>{const n=flowNorm(ME&&ME.name); return ACCT_NAMES.some(x=>n.indexOf(x)>-1)||!!(ME&&(ME.admin||ME.owner))};
 const flowLive=f=>f.steps.find(s=>s.status==='pending');
 const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
-const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&inAccountsTeam())};
+// a flow's first approval group = the division's Indent / Work Order approvers
+const flowFirstApprovers=f=>{const s=(f.steps||[]).filter(x=>x.action==='approve').sort((a,b)=>a.pos-b.pos)[0]; return s?s.actors:[]};
+// only those division approvers may escalate past CMD (accounts team no longer can)
+const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1)};
 const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)));
 const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
@@ -2365,7 +2366,7 @@ function flowStepRow(f,s){
   if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
   const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
   const mine=s.status==='pending'&&s.actors.indexOf(ME.id)>-1;
-  const canEsc=s.status==='pending'&&s.escalatable&&inAccountsTeam();
+  const canEsc=s.status==='pending'&&s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
   let act='';
   if(mine){ act='<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn primary sm" data-fact="'+s.id+'">'+flowActLabel(s)+'</button>'+
     (s.canReject?'<button class="btn bad sm" data-freject="'+s.id+'">Reject</button>':'')+'</div>'; }
