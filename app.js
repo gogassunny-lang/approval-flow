@@ -1813,7 +1813,7 @@ function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
-    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
+    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
@@ -1833,9 +1833,30 @@ function viewPeople(){
      '<span class="hint">Single requests are deleted from the request itself. Test accounts have a Remove button in the table above.</span></div></div>':'')+
    '<div class="card pad" style="margin-top:16px"><h3>The record is permanent</h3><p class="hint" style="margin-top:5px">Requests, approvals, conditions and the audit trail cannot be deleted or edited once recorded'+(ME.owner?', except by the system owner through the controls above, and those deletions are themselves recorded permanently':' — the database has no way to do it')+'. Corrections are added as new entries so the original stays visible.</p></div>';
 }
+/* Owner/admin: download the whole directory (names + emails + access) as Excel */
+function accessLabel(u){
+  const t=[]; if(u.owner)t.push('Owner'); if(u.admin)t.push('Admin'); if(u.manager)t.push('Manager');
+  if(u.seeAll)t.push('Sees all'); if(u.gateman)t.push('Gateman'); if(u.hrHead)t.push('HR Head'); if(u.gateOnly)t.push('Gate only');
+  return t.join(', ')||'User';
+}
+function exportUsersXlsx(){
+  if(!(ME.admin||ME.owner)) return;
+  const rows=DB.users.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(u=>({
+    Name:u.name, Email:u.email||'', Designation:u.role||'', Department:u.dept||'',
+    'Reports to':u.managerId?(user(u.managerId).name||''):'', Access:accessLabel(u),
+    Status:u.active?'Active':'Inactive', 'PIN today':pinOK(u)?'Set':'Not set'
+  }));
+  if(!window.XLSX){ toast('Spreadsheet engine still loading — try again in a moment.','bad'); return; }
+  const ws=XLSX.utils.json_to_sheet(rows);
+  ws['!cols']=[{wch:24},{wch:34},{wch:18},{wch:16},{wch:20},{wch:26},{wch:10},{wch:10}];
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Users');
+  XLSX.writeFile(wb,'setu-users-'+new Date().toISOString().slice(0,10)+'.xlsx');
+  toast(rows.length+' users downloaded.','ok');
+}
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
   if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
+  if($('#p-xls',v)) $('#p-xls',v).onclick=exportUsersXlsx;
   if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
