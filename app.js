@@ -1813,7 +1813,7 @@ function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
-    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
+    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-resync" title="Re-resolve approvers on live flows after renaming an account">Re-sync flow approvers</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
@@ -1857,6 +1857,13 @@ function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
   if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
   if($('#p-xls',v)) $('#p-xls',v).onclick=exportUsersXlsx;
+  if($('#p-resync',v)) $('#p-resync',v).onclick=()=>modal({title:'Re-sync flow approvers',
+    body:'<p style="margin-top:0">This re-checks every <b>live ALDS flow</b> and fills in any approval step that currently has no approver, matching the fixed hierarchy against the current directory.</p>'+
+      '<p class="hint">Use it after renaming an account to match the hierarchy (e.g. “prachikhara” → “Prachi Khara”). It only adds missing approvers — it never changes steps already resolved.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rs-go">Re-sync now</button>',
+    onOpen:(mv,cl)=>{$('#rs-go',mv).onclick=async()=>{$('#rs-go',mv).disabled=true;
+      try{ const n=await rpc('flow_resync_actors',{}); cl(); await load(); toast(n?('Added approvers to '+n+' step'+(n===1?'':'s')+'. Refresh the flow to see them.'):'Nothing to fix — every live flow already has its approvers.','ok'); render(); }
+      catch(e){ $('#rs-go',mv).disabled=false; fail(e); } }; }});
   if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
