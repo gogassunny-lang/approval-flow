@@ -773,9 +773,9 @@ function purgeRequestDialog(r){
       catch(e){ $('#pg-go',v).disabled=false; $('#pg-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
 }
 function purgeAllDialog(){
-  modal({title:'Delete every request',
-    body:'<p style="margin-top:0">This removes <b>every request in the system</b> — '+DB.requests.length+' visible to you — with all steps, tasks, notes, documents, notifications and audit rows. Accounts, teams, saved hierarchies and masters stay. References restart at 1001.</p>'+
-      '<p class="hint">Meant for one moment: the end of testing, before the first real request. It is logged permanently.</p>'+
+  modal({title:'Delete all data',
+    body:'<p style="margin-top:0">This removes <b>every request, ALDS PO/WO flow and gate pass in the system</b> — with all steps, tasks, notes, documents, selfies, notifications and audit rows, and clears the usage counters. Accounts, teams, saved hierarchies and masters stay. All reference numbers restart at 1001.</p>'+
+      '<p class="hint">Meant for one moment: the end of testing, before the first real entry. It is logged permanently.</p>'+
       '<div style="margin-top:14px"><label for="pa-c">Type <b>DELETE EVERYTHING</b> to confirm</label><input id="pa-c" type="text" autocomplete="off"></div>'+
       '<div style="margin-top:12px"><label for="pa-why">Why</label><input id="pa-why" type="text" placeholder="e.g. end of testing, going live"></div><div id="pa-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="pa-go">Delete everything</button>',
@@ -784,7 +784,7 @@ function purgeAllDialog(){
       if(why.length<4) return $('#pa-err',v).textContent='Say why.';
       $('#pa-go',v).disabled=true;
       try{ const paths=await rpc('all_file_paths'); await removeObjects(paths);
-        const res=await rpc('purge_all_requests',{p_confirm:c,p_why:why}); close(); await load(); toast(res.requests+' requests and '+res.files+' files deleted.','ok'); go({name:'dash'}) }
+        const res=await rpc('purge_all_requests',{p_confirm:c,p_why:why}); close(); await load(); toast('Cleared '+res.requests+' requests, '+res.flows+' flows and '+res.gate_passes+' gate passes. Entry starts fresh from 1001.','ok'); go({name:'dash'}) }
       catch(e){ $('#pa-go',v).disabled=false; $('#pa-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
 }
 function purgeUserDialog(u){
@@ -1808,7 +1808,7 @@ function viewPeople(){
      '<div class="sep"></div><h3>Project names</h3><p class="hint" style="margin-top:5px">'+DB.projects.map(esc).join(', ')+'</p></div></div>'+
    (ME.owner?'<div class="card pad" style="margin-top:16px;border-color:var(--stop)"><h3>Owner controls — testing and the go-live reset</h3>'+
      '<p class="hint" style="margin-top:5px">Only the system owner sees this. Deleting is the one exception to the permanent record and every use is logged where nobody, including you, can remove it. Use it to clear test data; once real requests exist, leave it alone.</p>'+
-     '<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn bad sm" id="p-purge-all">Delete every request</button>'+
+     '<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn bad sm" id="p-purge-all">Delete all data (reset to zero)</button>'+
      '<span class="hint">Single requests are deleted from the request itself. Test accounts have a Remove button in the table above.</span></div></div>':'')+
    '<div class="card pad" style="margin-top:16px"><h3>The record is permanent</h3><p class="hint" style="margin-top:5px">Requests, approvals, conditions and the audit trail cannot be deleted or edited once recorded'+(ME.owner?', except by the system owner through the controls above, and those deletions are themselves recorded permanently':' — the database has no way to do it')+'. Corrections are added as new entries so the original stays visible.</p></div>';
 }
