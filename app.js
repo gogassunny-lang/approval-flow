@@ -73,6 +73,22 @@ function busy(on){let v=$('#busy'); if(on&&!v){v=document.createElement('div');v
 /* ============================================================
    Loading everything this person is allowed to see
    ============================================================ */
+/* Fetch every row of a table in 1000-row pages, so tables that can grow past the
+   API's default row cap (the flow sub-tables) load in full rather than silently
+   truncating. Page size sits at the cap, so it works whatever the project limit is. */
+async function pageAll(table,orderCol,ascending){
+  const size=1000; let from=0; const out=[];
+  for(;;){
+    let qb=SB.from(table).select('*');
+    if(orderCol) qb=qb.order(orderCol,{ascending:ascending!==false});
+    const {data,error}=await qb.range(from,from+size-1);
+    if(error) throw error;
+    if(data&&data.length) out.push(...data);
+    if(!data||data.length<size) break;
+    from+=size;
+  }
+  return out;
+}
 async function load(){
   const q=[
     SB.from('profiles').select('*'),
@@ -88,16 +104,21 @@ async function load(){
     SB.from('stations').select('*').order('name'),
     SB.from('usage_daily').select('*'),
     SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60),
-    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(3000),
-    SB.from('flow_requests').select('*').order('created_at',{ascending:false}).limit(2000),
-    SB.from('flow_steps').select('*').order('pos'),
-    SB.from('flow_step_actors').select('*'),
-    SB.from('flow_files').select('*').order('created_at'),
-    SB.from('flow_audit').select('*').order('created_at',{ascending:false}).limit(1500)
+    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(3000)
   ];
   const r=await Promise.all(q);
   const bad=r.find(x=>x.error); if(bad) throw bad.error;
-  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes,freq,fsteps,factors,ffiles,faudit]=r.map(x=>x.data||[]);
+  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes]=r.map(x=>x.data||[]);
+  // Flow sub-tables grow with every flow (steps × actors), so a single request
+  // hits the API's 1000-row cap and newer flows come back with no actors — which
+  // leaves their live step with no approver and no action button. Page through them.
+  const [freq,fsteps,factors,ffiles,faudit]=await Promise.all([
+    pageAll('flow_requests','created_at',false),
+    pageAll('flow_steps','pos',true),
+    pageAll('flow_step_actors','step_id',true),
+    pageAll('flow_files','created_at',true),
+    pageAll('flow_audit','created_at',false)
+  ]);
 
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,role:p.role||'',dept:p.dept||'',
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
@@ -1792,7 +1813,7 @@ function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
-    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+(ME.admin?'<button class="btn" id="p-seed">Create ALDS people</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
+    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
    DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
@@ -1815,7 +1836,6 @@ function viewPeople(){
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
   if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
-  if($('#p-seed',v)) $('#p-seed',v).onclick=seedAldsPeopleDialog;
   if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
@@ -2295,42 +2315,6 @@ function wireGpReport(v){
   if($('#gr-csv',v)) $('#gr-csv',v).onclick=()=>gpRepDownload('csv');
 }
 
-/* ============================================================
-   Seed the named ALDS flow accounts (admin) — placeholder emails,
-   each gets a temporary password the owner can distribute and edit later.
-   ============================================================ */
-const ALDS_PEOPLE=[
-  ['Sanjay Palod','Approver'],['Rakesh Sharma','Approver'],['T Rao','Approver'],['Jatin Vora','Purchase Head'],
-  ['Jagdish Thawre','Approver'],['Rajiv Shah','Approver'],['Hardik Khara','Approver'],['Jai Singhal','Approver'],
-  ['Jinesh Khara','Approver'],['Prachi Khara','Approver'],['CMD','CMD Desk'],['Nishant Bhandari','Escalation'],
-  ['Narendra Meshram','Accounts'],['Shilpa Shelare','Accounts'],['Akshay Ingole','Accounts'],
-  ['Pritam Varade','Accounts (Retail)'],['Akash Meshram','Accounts (Retail)'],['Prashant Bhoyar','Accounts (Retail)']
-];
-const aldsEmail=n=>n.toLowerCase().replace(/[^a-z0-9]+/g,'.').replace(/^\.|\.$/g,'')+(n.toUpperCase()==='CMD'?'.desk':'')+'@confidencegroup.in';
-function seedAldsPeopleDialog(){
-  const existing=new Set(DB.users.map(u=>flowNorm(u.name)));
-  const todo=ALDS_PEOPLE.filter(p=>!existing.has(flowNorm(p[0])));
-  modal({title:'Create ALDS flow accounts',
-    body:'<p style="margin-top:0">This creates the named people used by the ALDS PO/WO flows, each with a placeholder email and a temporary password you can hand out and edit later.</p>'+
-      '<div class="hint">'+(todo.length?('To create ('+todo.length+'): '+todo.map(p=>esc(p[0])).join(', ')):'All of them already exist — nothing to create.')+'</div>'+
-      '<div class="hint" style="margin-top:8px">Afterwards, map the <b>Purchase team</b> members under <b>Jatin Vora</b> (edit each purchase person → Reports to: Jatin Vora).</div>'+
-      '<div id="seed-out" style="margin-top:10px"></div>',
-    footer:'<button class="btn" data-x>Close</button>'+(todo.length?'<button class="btn primary" id="seed-go">Create '+todo.length+' accounts</button>':''),
-    onOpen:(v,cl)=>{ if(!$('#seed-go',v)) return;
-      $('#seed-go',v).onclick=async()=>{ $('#seed-go',v).disabled=true; const out=$('#seed-out',v); const made=[];
-        for(const [name,role] of todo){ out.innerHTML='Creating <b>'+esc(name)+'</b>…';
-          try{ const {data,error}=await SB.functions.invoke('admin-create-user',{body:{name,email:aldsEmail(name),role,dept:'ALDS',mode:'password',password:''}});
-            if(error||!data||data.error){ made.push([name,aldsEmail(name),'(exists / error)']); }
-            else made.push([name,data.email,data.tempPassword||'—']); }
-          catch(e){ made.push([name,aldsEmail(name),'(error)']); }
-        }
-        await load();
-        out.innerHTML='<div class="hint" style="margin-bottom:6px">Done. Temporary passwords (copy and keep safe):</div>'+
-          '<table class="cards"><tbody>'+made.map(m=>'<tr><td><b>'+esc(m[0])+'</b><div class="hint">'+esc(m[1])+'</div></td><td class="meta num">'+esc(m[2])+'</td></tr>').join('')+'</tbody></table>';
-        render();
-      };
-    }});
-}
 
 /* ============================================================
    ALDS PO / WO fixed flows (Stage 2 UI)
