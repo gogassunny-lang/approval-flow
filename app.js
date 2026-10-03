@@ -915,6 +915,7 @@ function subscribe(){
     .on('postgres_changes',{event:'*',schema:'public',table:'gate_passes'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'flow_requests'},reloadSoon)
     .on('postgres_changes',{event:'*',schema:'public',table:'flow_steps'},reloadSoon)
+    .on('postgres_changes',{event:'*',schema:'public',table:'flow_step_actors'},reloadSoon)
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+ME.id},p=>{
       const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok'); reloadSoon();
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
