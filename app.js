@@ -1809,17 +1809,22 @@ function profileDialog(){
       try{ await rpc('update_my_profile',{p_role:r,p_dept:d,p_manager:m}); await load(); c(); $('#me-role').textContent=ME.role; render(); paintNav(); toast('Directory entry updated.','ok'); if(!pinOK(ME))setTimeout(pinDialog,350) }
       catch(e){ $('#q-e',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
 }
+let peopleQ='';
 function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
+  const pq=peopleQ.trim().toLowerCase();
+  const ulist=DB.users.filter(u=>!pq||((u.name+' '+(u.email||'')+' '+(u.role||'')+' '+(u.dept||'')).toLowerCase().includes(pq)));
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
     '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-resync" title="Re-resolve approvers on live flows after renaming an account">Re-sync flow approvers</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
-   '<div class="card"><table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
-   DB.users.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
+   '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="p-search" type="text" placeholder="Search name, email, designation or department" value="'+esc(peopleQ)+'" style="flex:1;min-width:220px">'+(pq?'<span class="tag t-prog" style="align-self:center">'+ulist.length+' of '+DB.users.length+'</span><button class="btn ghost sm" id="p-search-clear">Clear</button>':'')+'</div>'+
+   '<table class="cards people"><thead><tr><th>Name</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
+   ulist.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta">'+esc(u.role||'')+'</td>'+
      '<td class="hint meta">'+esc(u.dept||(u.admin?'no department':''))+'</td><td class="hint meta">'+(mgr?'reports to '+esc(mgr.name)+(u.managerConfirmed?'':' <span class="tag t-hold">unconfirmed</span>'):'')+'</td><td class="meta">'+(badges||'')+'</td><td class="meta">'+(pinOK(u)?'<span class="tag t-ok">PIN set</span>':'<span class="tag t-wait">No PIN today</span>')+'</td>'+
      '<td class="acts" style="text-align:right;white-space:nowrap">'+(ME.admin&&(!u.owner||u.id===ME.id)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+
-     (ME.owner&&!u.owner?' <button class="btn sm" data-rmu="'+u.id+'" style="color:var(--stop)">Remove</button>':'')+'</td></tr>'}).join('')+'</tbody></table></div>'+
+     (ME.owner&&!u.owner?' <button class="btn sm" data-rmu="'+u.id+'" style="color:var(--stop)">Remove</button>':'')+'</td></tr>'}).join('')+
+   (ulist.length?'':'<tr><td colspan="7"><div class="empty" style="padding:22px 8px"><h3>No one matches</h3><p class="hint">No person matches “'+esc(peopleQ)+'”.</p></div></td></tr>')+'</tbody></table></div>'+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Departments</h3><p class="hint" style="margin-top:5px">A request shows a handover whenever it crosses from one of these to another, so keep the list tight.</p><div class="row" style="flex-wrap:wrap;gap:7px;margin-top:12px">'+
      DB.departments.map(d=>'<span class="tag t-wait">'+esc(d)+' <button class="btn ghost sm" data-dd="'+esc(d)+'" style="padding:0 4px" title="Remove">×</button></span>').join('')+'</div><div class="row" style="gap:8px;margin-top:14px"><input id="dp-new" type="text" placeholder="Add a department" style="max-width:280px"><button class="btn sm" id="dp-add">Add</button></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Requests stuck on an absent approver</h3><p class="hint" style="margin-top:5px">Only an admin can move a request off someone who is unavailable. The original assignment stays in the trail.</p>'+
@@ -1855,6 +1860,9 @@ function exportUsersXlsx(){
 }
 function wirePeople(v){
   $('#p-me',v).onclick=profileDialog;
+  if($('#p-search',v)) $('#p-search',v).oninput=()=>{peopleQ=$('#p-search',v).value; const p=$('#p-search',v).selectionStart; render();
+    const n=$('#p-search'); if(n){n.focus();n.setSelectionRange(p,p)}};
+  if($('#p-search-clear',v)) $('#p-search-clear',v).onclick=()=>{peopleQ='';render()};
   if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
   if($('#p-xls',v)) $('#p-xls',v).onclick=exportUsersXlsx;
   if($('#p-resync',v)) $('#p-resync',v).onclick=()=>modal({title:'Re-sync flow approvers',
