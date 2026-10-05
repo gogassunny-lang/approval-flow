@@ -1167,12 +1167,17 @@ function viewDash(){
   const line=r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(typeLabel(r))+' · '+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td>'+
     '<td class="hint num meta">'+daysBetween(r.createdAt,Date.now())+'d open</td><td class="meta">'+tagFor(r)+'</td></tr>';
   const warn=!pinOK(ME)?'<div class="banner hold"><div><b>Your PIN is not set for today.</b><div class="hint" style="color:var(--hold)">You cannot approve, reject or send anything back until you set it.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-pin">Set PIN</button></div>':'';
-  const feed=DB.audit.slice(0,14);
+  const flowTurn=flowMyTurn().length;
+  // recent activity merges the legacy request trail and the ALDS flow trail
+  const flowFeed=[]; DB.flows.forEach(f=>f.audit.forEach(a=>flowFeed.push({ts:a.ts,actorName:a.actorName,action:a.action,detail:a.detail,ref:f.ref,flowId:f.id})));
+  const feed=DB.audit.map(a=>({ts:a.ts,actorName:a.actorName,action:a.action,detail:a.detail,ref:a.ref,reqId:a.reqId}))
+    .concat(flowFeed).sort((a,b)=>b.ts-a.ts).slice(0,16);
   return warn+'<div class="grid g4">'+
-    stat('Waiting on me',q.length,q.length?'Act to unblock the chain':'You are all clear','var(--indigo)')+
+    stat('Waiting on me',q.length+flowTurn,(q.length+flowTurn)?'Act to unblock the chain':'You are all clear','var(--indigo)')+
     stat('Tasks given to me',tk.length,tk.length?'Close these to unblock a manager':'No task assigned to you','var(--cyan)')+
     stat('Needs my input',st.length,st.length?'Someone asked you for more':'Nothing sent back to you','var(--hold)')+
     stat('Open beyond 7 days',aged,'Out of '+open.length+' open requests',aged?'var(--stop)':'var(--seal)')+'</div>'+
+  flowDashCard()+
   (q.length||st.length
     ?'<div class="grid g2" style="margin-top:14px;align-items:start">'+
       (q.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on me</h3><span class="tag t-prog" style="margin-left:auto">'+q.length+'</span></div><table class="cards"><tbody>'+q.map(line).join('')+'</tbody></table></div>':'')+
@@ -1184,15 +1189,32 @@ function viewDash(){
      '<button class="btn ghost sm" id="d-all">Open all requests</button></div></div>'+
    '<div class="card"><div class="row" style="padding:16px 18px;border-bottom:1px solid var(--line)"><h3>Recent activity</h3></div>'+
      (feed.length?'<div style="max-height:330px;overflow:auto">'+feed.map(a=>'<div style="padding:11px 18px;border-bottom:1px solid var(--line);display:flex;gap:11px"><div class="av sm">'+inits(a.actorName)+'</div>'+
-       '<div style="min-width:0"><div style="font-size:13.5px"><b>'+esc(a.actorName)+'</b> '+esc(a.action.toLowerCase())+' <a href="#" data-r="'+a.reqId+'">'+esc(a.ref)+'</a></div>'+
+       '<div style="min-width:0"><div style="font-size:13.5px"><b>'+esc(a.actorName)+'</b> '+esc(a.action.toLowerCase())+' <a href="#" '+(a.flowId?'data-flowgo="'+a.flowId+'"':'data-r="'+a.reqId+'"')+'>'+esc(a.ref)+'</a></div>'+
        '<div class="hint">'+esc(fmtDT(a.ts))+(a.detail?' · '+esc(a.detail):'')+'</div></div></div>').join('')+'</div>'
       :'<div class="empty"><h3>No activity yet</h3><p class="hint">Raise the first request to start the record.</p></div>')+'</div></div>';
+}
+/* ALDS flows on the dashboard — visible to everyone, so the landing page reflects
+   live flow activity even for people not sitting in a legacy approval chain. */
+function flowDashCard(){
+  const running=DB.flows.filter(f=>f.status==='running').sort((a,b)=>b.createdAt-a.createdAt);
+  const turn=flowMyTurn().length, recent=running.slice(0,8);
+  return '<div class="card" style="margin-top:14px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>ALDS PO / WO flows</h3>'+
+    '<span class="tag t-prog" style="margin-left:auto">'+running.length+' in progress</span>'+(turn?'<span class="tag t-wait" style="margin-left:6px">'+turn+' waiting on you</span>':'')+'</div>'+
+    (recent.length?'<table class="cards"><tbody>'+recent.map(f=>{
+      return '<tr data-flowgo="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
+        '<div class="hint">'+esc(f.title||'(no number)')+' · by '+esc(user(f.requesterId).name)+'</div></td>'+
+        '<td class="hint meta">'+esc(flowWhere(f))+'</td><td class="meta">'+(flowIsMine(f)?'<span class="tag t-prog">Your turn</span>':(flowCanEscalate(f)?'<span class="tag t-hold">Can escalate</span>':'<span class="tag t-wait">In progress</span>'))+'</td></tr>';}).join('')+'</tbody></table>'+
+      (running.length>recent.length?'<div class="row" style="padding:10px 18px"><button class="btn ghost sm" id="d-flows" style="margin-left:auto">See all '+running.length+' flows</button></div>':'')
+    :'<div class="empty" style="padding:22px 16px"><h3>No active flows</h3><p class="hint">ALDS indents and work orders appear here as they are raised — everyone can see them.</p></div>')+'</div>';
 }
 function wireDash(v){
   if($('#d-pin',v)) $('#d-pin',v).onclick=pinDialog;
   if($('#d-all',v)) $('#d-all',v).onclick=()=>go({name:'all'});
+  if($('#d-flows',v)) $('#d-flows',v).onclick=()=>go({name:'all'});
   $$('tr[data-r]',v).forEach(t=>t.onclick=()=>go({name:'detail',id:t.dataset.r}));
   $$('a[data-r]',v).forEach(a=>a.onclick=e=>{e.preventDefault();go({name:'detail',id:a.dataset.r})});
+  $$('tr[data-flowgo]',v).forEach(t=>t.onclick=()=>go({name:'flowdetail',id:t.dataset.flowgo}));
+  $$('a[data-flowgo]',v).forEach(a=>a.onclick=e=>{e.preventDefault();go({name:'flowdetail',id:a.dataset.flowgo})});
 }
 
 /* ============================================================
