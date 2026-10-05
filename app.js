@@ -2295,7 +2295,7 @@ function wireGate(v){
 /* ============================================================
    Gate Pass Reports — interactive graphs + downloads
    ============================================================ */
-let gpRepFilter=null;
+let gpRepFilter=null, gpRepDrill=null;   // gpRepDrill={by,val} drills the entries list from a clicked bar/tile
 function gpRepDefaults(){ const to=DAY(); const d=new Date(); d.setDate(d.getDate()-29);
   return {from:d.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),to:to,type:'all',dept:'all'}; }
 function gpRepData(){ const f=gpRepFilter;
@@ -2304,35 +2304,72 @@ function gpRepData(){ const f=gpRepFilter;
     if(f.type!=='all'&&g.kind!==f.type) return false;
     if(f.dept!=='all'&&(g.dept||'')!==f.dept) return false; return true; }); }
 const gpAgg=(rows,keyFn)=>{ const m={}; rows.forEach(g=>{const k=keyFn(g)||'—'; m[k]=(m[k]||0)+1}); return Object.entries(m).map(([label,value])=>({label,value})); };
-function gpBar(title,rows,color){
+/* a bar chart whose rows can be clicked to drill the entries list. dim names the
+   dimension (dept/type/status/day/person); each row's key is what a pass is matched on. */
+function gpBar(title,rows,color,dim){
   const max=Math.max(1,...rows.map(r=>r.value));
-  const body=rows.length?rows.map(r=>'<div class="gpr-bar"><div class="gpr-bar-l" title="'+esc(r.label)+'">'+esc(r.label)+'</div>'+
-      '<div class="gpr-bar-t"><i style="width:'+Math.round(r.value/max*100)+'%'+(color?';background:'+color:'')+'"></i></div>'+
-      '<div class="gpr-bar-v num">'+r.value+'</div></div>').join('')
+  const body=rows.length?rows.map(r=>{ const key=r.key!=null?r.key:r.label;
+      const on=dim&&gpRepDrill&&gpRepDrill.by===dim&&String(gpRepDrill.val)===String(key);
+      return '<div class="gpr-bar'+(dim?' gpr-click':'')+(on?' on':'')+'"'+(dim?' data-gpby="'+esc(dim)+'" data-gpval="'+esc(String(key))+'"':'')+'>'+
+        '<div class="gpr-bar-l" title="'+esc(r.label)+'">'+esc(r.label)+'</div>'+
+        '<div class="gpr-bar-t"><i style="width:'+Math.round(r.value/max*100)+'%'+(color?';background:'+color:'')+'"></i></div>'+
+        '<div class="gpr-bar-v num">'+r.value+'</div></div>'; }).join('')
     :'<div class="hint" style="padding:12px 2px">No data in this range.</div>';
-  return '<div class="card pad"><h3>'+esc(title)+'</h3><div style="margin-top:12px">'+body+'</div></div>';
+  return '<div class="card pad"><h3>'+esc(title)+'</h3>'+(dim?'<div class="hint" style="margin-top:3px">Tap a row to list those passes.</div>':'')+'<div style="margin-top:12px">'+body+'</div></div>';
+}
+function gpDrillMatch(g){ const d=gpRepDrill; if(!d) return true;
+  if(d.by==='dept')   return (g.dept||'—')===d.val;
+  if(d.by==='type')   return g.kind===d.val;
+  if(d.by==='status') return g.status===d.val;
+  if(d.by==='day')    return String(g.passDate||'').slice(0,10)===d.val;
+  if(d.by==='person') return (g.name||user(g.requesterId).name)===d.val;
+  return true; }
+/* full detail of one pass, shown in-app (no download needed) */
+function gpViewPass(g){
+  const row=(k,val)=>val?'<div class="row" style="justify-content:space-between;gap:14px;padding:5px 0;border-bottom:1px solid var(--line)"><span class="hint">'+esc(k)+'</span><b style="text-align:right">'+esc(val)+'</b></div>':'';
+  const selBtn=(p,lbl)=>p?'<button class="btn sm" data-selfieview="'+esc(p)+'" data-slabel="'+esc(lbl)+' — '+esc(g.name||'')+'">'+esc(lbl)+' selfie</button>':'';
+  modal({title:g.ref+' · '+gpKindLabel(g),
+    body:'<div>'+
+      row('Name',g.name||user(g.requesterId).name)+row('Employee ID',g.employeeId)+row('Department',g.dept)+
+      row('Type',gpKindLabel(g))+row('Purpose',g.purpose)+row('Status',(GP_STATUS[g.status]||['',g.status])[1])+
+      row('HOD',g.hodId?user(g.hodId).name:'')+row('HR',g.hrId?user(g.hrId).name:'')+row('Cleared by',g.gateBy?user(g.gateBy).name:'')+
+      row('Pass date',g.passDate)+row('Created',g.createdAt?fmtDT(g.createdAt):'')+row('HOD signed',g.hodAt?fmtDT(g.hodAt):'')+
+      row('HR signed',g.hrAt?fmtDT(g.hrAt):'')+row('Out',g.outAt?fmtDT(g.outAt):'')+row('Return',g.returnAt?fmtDT(g.returnAt):'')+
+      ((g.reqSelfie||g.hodSelfie||g.hrSelfie)?'<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">'+selBtn(g.reqSelfie,'Requester')+selBtn(g.hodSelfie,'HOD')+selBtn(g.hrSelfie,'HR')+'</div><div class="hint" style="margin-top:6px">Selfies auto-expire 7 days after the pass.</div>':'')+
+      '</div>',
+    footer:'<button class="btn" data-x>Close</button>',
+    onOpen:(mv,cl)=>{ $$('[data-selfieview]',mv).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfieview,b.dataset.slabel)); }});
 }
 function gpRepBody(){
   const rows=gpRepData(), byType=k=>rows.filter(g=>g.kind===k).length;
   const kpis='<div class="grid g4" style="margin:14px 0">'+
     stat('Total passes',rows.length,'In the selected range','var(--indigo)')+
     stat('Early / Half / Official',byType('early')+' / '+byType('halfday')+' / '+byType('official'),'By type','var(--cyan)')+
-    stat('Currently out',rows.filter(g=>g.status==='out').length,'Official, not back yet',rows.some(g=>g.status==='out')?'var(--hold)':'var(--seal)')+
-    stat('Rejected',rows.filter(g=>g.status==='rejected').length,'Declined by HOD or HR','var(--stop)')+'</div>';
+    '<div class="gpr-click" data-gpby="status" data-gpval="out">'+stat('Currently out',rows.filter(g=>g.status==='out').length,'Tap to list · not back yet',rows.some(g=>g.status==='out')?'var(--hold)':'var(--seal)')+'</div>'+
+    '<div class="gpr-click" data-gpby="status" data-gpval="rejected">'+stat('Rejected',rows.filter(g=>g.status==='rejected').length,'Tap to list · declined','var(--stop)')+'</div>'+'</div>';
   const deptAgg=gpAgg(rows,g=>g.dept).sort((a,b)=>b.value-a.value);
-  const typeAgg=GP_KINDS.map(k=>({label:k[1],value:byType(k[0])}));
-  const statusAgg=[['With HOD','pending_hod'],['With HR','pending_hr'],['At gate','pending_gate'],['Out','out'],['Closed','closed'],['Rejected','rejected']].map(([lbl,st])=>({label:lbl,value:rows.filter(g=>g.status===st).length}));
-  const m={}; rows.forEach(g=>{const k=String(g.passDate||'').slice(0,10); m[k]=(m[k]||0)+1}); const dayAgg=Object.keys(m).sort().map(k=>({label:k.slice(5),value:m[k]}));
+  const typeAgg=GP_KINDS.map(k=>({label:k[1],value:byType(k[0]),key:k[0]}));
+  const statusAgg=[['With HOD','pending_hod'],['With HR','pending_hr'],['At gate','pending_gate'],['Out','out'],['Closed','closed'],['Rejected','rejected']].map(([lbl,st])=>({label:lbl,value:rows.filter(g=>g.status===st).length,key:st}));
+  const m={}; rows.forEach(g=>{const k=String(g.passDate||'').slice(0,10); m[k]=(m[k]||0)+1}); const dayAgg=Object.keys(m).sort().map(k=>({label:k.slice(5),value:m[k],key:k}));
   const personAgg=gpAgg(rows,g=>g.name||user(g.requesterId).name).sort((a,b)=>b.value-a.value).slice(0,10);
   const multi=personAgg.filter(p=>p.value>1).length;
+  // the entries list — drilled by whatever bar/tile is selected, viewable in-app
+  const erows=rows.filter(gpDrillMatch).sort((a,b)=>b.createdAt-a.createdAt);
+  const dName={dept:'Department',type:'Type',status:'Status',day:'Day',person:'Person'};
+  const drillHdr=gpRepDrill?'<span class="tag t-prog" style="margin-left:auto">'+esc(dName[gpRepDrill.by]+': '+gpRepDrill.val)+' · '+erows.length+'</span><button class="btn ghost sm" id="gpr-clear">Clear</button>'
+    :'<span class="hint" style="margin-left:auto">'+erows.length+' entr'+(erows.length===1?'y':'ies')+'</span>';
+  const entries='<div class="card" style="margin-top:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>Gate pass entries</h3>'+drillHdr+'</div>'+
+    (erows.length?'<table class="cards"><tbody>'+erows.map(g=>gpRow(g,{action:'<button class="btn sm" data-gpview="'+g.id+'">View</button>'})).join('')+'</tbody></table>'
+      :'<div class="empty" style="padding:22px 16px"><h3>No passes</h3><p class="hint">Nothing matches this selection.</p></div>')+'</div>';
   return kpis+
     '<div class="grid g2" style="gap:14px;align-items:start">'+
-      gpBar('Passes by department',deptAgg,'var(--indigo)')+
-      gpBar('Passes by type',typeAgg,'var(--cyan)')+
-      gpBar('Passes by day',dayAgg,'var(--seal)')+
-      gpBar('By status',statusAgg,'var(--hold)')+
+      gpBar('Passes by department',deptAgg,'var(--indigo)','dept')+
+      gpBar('Passes by type',typeAgg,'var(--cyan)','type')+
+      gpBar('Passes by day',dayAgg,'var(--seal)','day')+
+      gpBar('By status',statusAgg,'var(--hold)','status')+
     '</div>'+
-    gpBar('People with the most passes'+(multi?' · '+multi+' took more than one':''),personAgg,'var(--indigo-deep)');
+    gpBar('People with the most passes'+(multi?' · '+multi+' took more than one':''),personAgg,'var(--indigo-deep)','person')+
+    entries;
 }
 function viewGpReport(){
   head('Gate Pass Reports','Live analytics across every gate pass — filter, then download');
@@ -2361,12 +2398,20 @@ function gpRepDownload(fmt){
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'})); a.download=name+'.csv'; a.click(); URL.revokeObjectURL(a.href);
 }
 function wireGpReport(v){
-  const f=gpRepFilter, upd=()=>{ $('#gpr-body',v).innerHTML=gpRepBody(); };
-  const set=(id,key)=>{const el=$(id,v); if(el) el.onchange=()=>{ f[key]=el.value; upd(); };};
+  const f=gpRepFilter;
+  const paintBody=()=>{ const b=$('#gpr-body',v); if(!b) return; b.innerHTML=gpRepBody();
+    const drill=(by,val)=>{ gpRepDrill=(gpRepDrill&&gpRepDrill.by===by&&String(gpRepDrill.val)===String(val))?null:{by,val}; paintBody(); };
+    $$('[data-gpby]',b).forEach(el=>el.onclick=()=>drill(el.dataset.gpby,el.dataset.gpval));
+    if($('#gpr-clear',b)) $('#gpr-clear',b).onclick=()=>{ gpRepDrill=null; paintBody(); };
+    $$('[data-gpview]',b).forEach(btn=>btn.onclick=()=>{ const g=DB.passes.find(x=>x.id===btn.dataset.gpview); if(g) gpViewPass(g); });
+    loadSelfieThumbs(b);
+  };
+  const set=(id,key)=>{const el=$(id,v); if(el) el.onchange=()=>{ f[key]=el.value; gpRepDrill=null; paintBody(); };};
   set('#gr-from','from'); set('#gr-to','to'); set('#gr-type','type'); set('#gr-dept','dept');
-  if($('#gr-reset',v)) $('#gr-reset',v).onclick=()=>{ gpRepFilter=gpRepDefaults(); render(); };
+  if($('#gr-reset',v)) $('#gr-reset',v).onclick=()=>{ gpRepFilter=gpRepDefaults(); gpRepDrill=null; render(); };
   if($('#gr-xlsx',v)) $('#gr-xlsx',v).onclick=()=>gpRepDownload('xlsx');
   if($('#gr-csv',v)) $('#gr-csv',v).onclick=()=>gpRepDownload('csv');
+  paintBody();
 }
 
 
