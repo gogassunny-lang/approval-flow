@@ -251,7 +251,7 @@ const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span c
 
 /* ---------- org structure: departments, their divisions, and the ALDS auto-hierarchies ---------- */
 const DEPT_DIV={
-  'ALDS':['ONM','Project','Retail','Transport'],
+  'ALDS':['O&M','Project','Retail','Transport'],
   'PCD':['Project','Operation','Purchase'],
   'HO':['Admin','HO-CNG'],
   'CNG':['Maintenance','Logistics','Project','IT Department','Accounts','Operation','Sales & Marketing','Store','Liaison']
@@ -340,7 +340,7 @@ function resolveSite(raw){
 /* map an ERP division label to the SETU Department/Division taxonomy */
 function detectOrg(out,conf,dept,rawDiv){
   const list=DEPT_DIV[dept]||[]; const key=String(rawDiv||'').toLowerCase().replace(/\s+/g,' ').trim();
-  const alias={'o&m':'ONM','onm':'ONM','o and m':'ONM','retail':'Retail','project':'Project','transport':'Transport'};
+  const alias={'o&m':'O&M','onm':'O&M','o and m':'O&M','retail':'Retail','project':'Project','transport':'Transport'};
   let div=list.find(x=>x.toLowerCase()===key)||alias[key]||list.find(x=>key.indexOf(x.toLowerCase())>-1);
   if(div&&list.indexOf(div)>-1){ out.department=dept; out.division=div; conf.department='hi'; conf.division='hi'; }
 }
