@@ -806,19 +806,30 @@ function purgeRequestDialog(r){
       catch(e){ $('#pg-go',v).disabled=false; $('#pg-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
 }
 function purgeAllDialog(){
-  modal({title:'Delete all data',
-    body:'<p style="margin-top:0">This removes <b>every request, ALDS PO/WO flow and gate pass in the system</b> — with all steps, tasks, notes, documents, selfies, notifications and audit rows, and clears the usage counters. Accounts, teams, saved hierarchies and masters stay. All reference numbers restart at 1001.</p>'+
-      '<p class="hint">Meant for one moment: the end of testing, before the first real entry. It is logged permanently.</p>'+
-      '<div style="margin-top:14px"><label for="pa-c">Type <b>DELETE EVERYTHING</b> to confirm</label><input id="pa-c" type="text" autocomplete="off"></div>'+
+  const note={all:'Everything — every indent / work order, ALDS flow, gate pass, with all steps, notes, documents, selfies and usage counters.',
+    flows:'Indent / Work order only — every chain request and ALDS PO/WO flow, with their steps, notes and documents. Gate passes stay.',
+    gate:'Gate passes only — every gate pass and its selfies. Indents, work orders and flows stay.'};
+  modal({title:'Reset data (to point zero)',
+    body:'<p style="margin-top:0">Choose what to wipe. Accounts, teams, saved hierarchies and masters always stay, and the numbering for whatever you clear restarts at 1001.</p>'+
+      '<div style="margin-top:12px"><label for="pa-scope">What to delete</label><select id="pa-scope">'+
+        '<option value="all">Everything</option>'+
+        '<option value="flows">Indent / Work order only</option>'+
+        '<option value="gate">Gate passes only</option></select>'+
+        '<div class="hint" id="pa-note" style="margin-top:6px">'+esc(note.all)+'</div></div>'+
+      '<p class="hint" style="margin-top:10px">Meant for the end of testing, before real entries. It is logged permanently.</p>'+
+      '<div style="margin-top:12px"><label for="pa-c">Type <b>DELETE EVERYTHING</b> to confirm</label><input id="pa-c" type="text" autocomplete="off"></div>'+
       '<div style="margin-top:12px"><label for="pa-why">Why</label><input id="pa-why" type="text" placeholder="e.g. end of testing, going live"></div><div id="pa-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
-    footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="pa-go">Delete everything</button>',
-    onOpen:(v,close)=>{$('#pa-go',v).onclick=async()=>{const c=$('#pa-c',v).value, why=$('#pa-why',v).value.trim();
-      if(c!=='DELETE EVERYTHING') return $('#pa-err',v).textContent='Type it exactly, in capitals.';
-      if(why.length<4) return $('#pa-err',v).textContent='Say why.';
-      $('#pa-go',v).disabled=true;
-      try{ const paths=await rpc('all_file_paths'); await removeObjects(paths);
-        const res=await rpc('purge_all_requests',{p_confirm:c,p_why:why}); close(); await load(); toast('Cleared '+res.requests+' requests, '+res.flows+' flows and '+res.gate_passes+' gate passes. Entry starts fresh from 1001.','ok'); go({name:'dash'}) }
-      catch(e){ $('#pa-go',v).disabled=false; $('#pa-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="pa-go">Delete</button>',
+    onOpen:(v,close)=>{
+      const sc=$('#pa-scope',v); sc.onchange=()=>{ $('#pa-note',v).textContent=note[sc.value]; };
+      $('#pa-go',v).onclick=async()=>{const scope=sc.value, c=$('#pa-c',v).value, why=$('#pa-why',v).value.trim();
+        if(c!=='DELETE EVERYTHING') return $('#pa-err',v).textContent='Type it exactly, in capitals.';
+        if(why.length<4) return $('#pa-err',v).textContent='Say why.';
+        $('#pa-go',v).disabled=true;
+        try{ const paths=await rpc('scoped_file_paths',{p_scope:scope}); await removeObjects(paths);
+          const res=await rpc('purge_scoped',{p_scope:scope,p_confirm:c,p_why:why}); close(); await load();
+          toast('Cleared '+res.requests+' requests, '+res.flows+' flows and '+res.gate_passes+' gate passes. Numbering restarts at 1001.','ok'); go({name:'dash'}); }
+        catch(e){ $('#pa-go',v).disabled=false; $('#pa-err',v).textContent=(e.message||'').replace(/^.*?: /,'') }}; }});
 }
 function purgeUserDialog(u){
   modal({title:'Remove '+u.name,
@@ -1847,7 +1858,7 @@ function viewPeople(){
      '<div class="sep"></div><h3>Project names</h3><p class="hint" style="margin-top:5px">'+DB.projects.map(esc).join(', ')+'</p></div></div>'+
    (ME.owner?'<div class="card pad" style="margin-top:16px;border-color:var(--stop)"><h3>Owner controls — testing and the go-live reset</h3>'+
      '<p class="hint" style="margin-top:5px">Only the system owner sees this. Deleting is the one exception to the permanent record and every use is logged where nobody, including you, can remove it. Use it to clear test data; once real requests exist, leave it alone.</p>'+
-     '<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn bad sm" id="p-purge-all">Delete all data (reset to zero)</button>'+
+     '<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn bad sm" id="p-purge-all">Reset data — choose what to delete</button>'+
      '<span class="hint">Single requests are deleted from the request itself. Test accounts have a Remove button in the table above.</span></div></div>':'')+
    '<div class="card pad" style="margin-top:16px"><h3>The record is permanent</h3><p class="hint" style="margin-top:5px">Requests, approvals, conditions and the audit trail cannot be deleted or edited once recorded'+(ME.owner?', except by the system owner through the controls above, and those deletions are themselves recorded permanently':' — the database has no way to do it')+'. Corrections are added as new entries so the original stays visible.</p></div>';
 }
@@ -2426,6 +2437,9 @@ const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-
 const flowFirstApprovers=f=>{const s=(f.steps||[]).filter(x=>x.action==='approve').sort((a,b)=>a.pos-b.pos)[0]; return s?s.actors:[]};
 // only those division approvers may escalate past CMD (accounts team no longer can)
 const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1)};
+// delete a flow: the requester may, but only before any approval; an admin/owner may anytime
+const flowApprovedYet=f=>(f.steps||[]).some(s=>s.action==='approve'&&s.status==='done');
+const flowCanDelete=f=>f.status!=='cancelled'&&((f.requesterId===ME.id&&!flowApprovedYet(f))||ME.admin||ME.owner);
 const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)));
 const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
@@ -2509,7 +2523,8 @@ function viewFlowDetail(id){
   const f=DB.flows.find(x=>x.id===id);
   if(!f){ head('Flow','Not found'); return '<div class="card pad">This flow could not be found.</div>'; }
   head(f.ref,flowHeadLabel(f.head)+' · '+f.division+(f.title?' · '+f.title:''));
-  let h='<div class="row" style="margin-bottom:12px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span></div>';
+  let h='<div class="row" style="margin-bottom:12px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
+    (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del" style="margin-left:9px">Delete request</button>':'')+'</div>';
   flowStageList(f).forEach(stage=>{
     const steps=f.steps.filter(s=>s.stage===stage);
     const anyLive=steps.some(s=>s.status==='pending');
@@ -2522,6 +2537,7 @@ function viewFlowDetail(id){
 }
 function wireFlowDetail(v){
   if($('#fl-back',v)) $('#fl-back',v).onclick=()=>history.back();
+  if($('#fl-del',v)) $('#fl-del',v).onclick=()=>flowCancelDialog(ROUTE.id);
   $$('[data-ffile]',v).forEach(b=>b.onclick=()=>{ const id=b.dataset.ffile;
     let rec=null; DB.flows.forEach(f=>f.steps.forEach(s=>s.files.forEach(fl=>{if(fl.id===id)rec=fl}))); if(rec) openViewer(rec); });
   $$('[data-freject]',v).forEach(b=>b.onclick=()=>flowReject(b.dataset.freject));
@@ -2556,6 +2572,22 @@ function flowEscalate(stepId){
   modal({title:'Escalate past CMD',body:'<p style="margin-top:0">This skips the CMD desk and sends it straight to <b>Nishant Bhandari</b> for approval, to speed up payment.</p>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="feg">Escalate</button>',
     onOpen:(mv,cl)=>{$('#feg',mv).onclick=()=>{cl(); flowPinThen(()=>flowCall(stepId,'escalate','',null,null,null,'Escalated to Nishant.')); }}});
+}
+/* delete a whole flow: requester (before any approval) or an admin/owner (anytime) */
+function flowCancelDialog(id){
+  const f=DB.flows.find(x=>x.id===id); if(!f) return;
+  const mine=f.requesterId===ME.id, approved=flowApprovedYet(f);
+  modal({title:'Delete this request',
+    body:'<p style="margin-top:0">Delete <b>'+esc(f.ref)+'</b> ('+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+(f.title?' · '+esc(f.title):'')+')?</p>'+
+      '<p class="hint">'+(mine&&!approved?'You raised this and no one has approved it yet, so you can remove it.':'Admin delete — this request is removed for everyone.')+' Every step, document and history row on it goes, and the deletion is logged permanently.</p>'+
+      '<div style="margin-top:12px"><label for="fc-why">Reason</label><input id="fc-why" type="text" placeholder="e.g. raised the wrong indent"></div><div id="fc-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
+    footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="fc-go">Delete</button>',
+    onOpen:(mv,cl)=>{ $('#fc-go',mv).onclick=async()=>{ const why=$('#fc-why',mv).value.trim(); if(why.length<3) return $('#fc-err',mv).textContent='Give a short reason.';
+      $('#fc-go',mv).disabled=true;
+      const paths=[]; f.steps.forEach(s=>s.files.forEach(fl=>fl.path&&paths.push(fl.path))); (f._files||[]).forEach(fl=>fl.path&&paths.push(fl.path));
+      try{ try{ await removeObjects(paths); }catch(e){}
+        await rpc('flow_cancel',{p_request:id,p_why:why}); cl(); await load(); toast('Request deleted.','ok'); go({name:'mine'}); }
+      catch(e){ $('#fc-go',mv).disabled=false; $('#fc-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 function flowAct(stepId){
   const x=flowFindStep(stepId); if(!x) return; const s=x.s;
