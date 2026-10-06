@@ -725,12 +725,19 @@ function resetPasswordDialog(u){
 /* a checklist of the optional pages; the always-on work pages are noted but not listable */
 function pagesChecklist(id,selected){
   const set=selected||DEFAULT_PAGES;
-  return '<div class="hint" style="font-weight:600;color:var(--ink-soft);margin-top:2px">Pages they can open</div>'+
+  return '<div class="row" style="align-items:center;margin-top:2px"><div class="hint" style="font-weight:600;color:var(--ink-soft)">Page access — tick what this person can open</div>'+
+    '<span style="margin-left:auto;display:flex;gap:6px"><button type="button" class="btn ghost sm" data-pgall="'+id+'" style="padding:0 8px">Select all</button><button type="button" class="btn ghost sm" data-pgnone="'+id+'" style="padding:0 8px">Clear</button></span></div>'+
     '<div id="'+id+'" style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;margin-top:6px">'+
     OPTIONAL_PAGES.map(pg=>'<label style="display:flex;align-items:center;gap:8px;margin:0;font-size:13.5px"><input type="checkbox" value="'+pg.k+'" style="width:auto" '+(set.indexOf(pg.k)>-1?'checked':'')+'> '+esc(pg.label)+'</label>').join('')+'</div>'+
     '<div class="hint" style="margin-top:6px">Dashboard, Notifications, Waiting on me, Tasks given to me, Needs my input and My requests are always available — they carry the work. Admins always see every page.</div>';
 }
 const readChecklist=(id,v)=>$$('#'+id+' input:checked',v).map(c=>c.value);
+/* wire the Select all / Clear buttons for a pages checklist */
+function wirePagesChecklist(id,v){
+  const all=$('[data-pgall="'+id+'"]',v), none=$('[data-pgnone="'+id+'"]',v);
+  if(all) all.onclick=()=>$$('#'+id+' input',v).forEach(c=>c.checked=true);
+  if(none) none.onclick=()=>$$('#'+id+' input',v).forEach(c=>c.checked=false);
+}
 
 /* ---------- an administrator creates an account directly ---------- */
 function createUserDialog(){
@@ -762,6 +769,7 @@ function createUserDialog(){
       $$('input[name="cu-sys"]',v).forEach(r=>r.onchange=syncDept); syncDept();
       const syncMode=()=>{const w=$('#cu-pw-wrap',v); if(w) w.classList.toggle('hide',(($('input[name="cu-mode"]:checked',v)||{}).value||'password')!=='password')};
       $$('input[name="cu-mode"]',v).forEach(r=>r.onchange=syncMode); syncMode();
+      wirePagesChecklist('cu-pages',v);
       $('#cu-go',v).onclick=async()=>{
         const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
           manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:sysRole()==='admin',
@@ -1020,6 +1028,7 @@ function confirmPin(label,then){
 /* pages that can be turned off per person; the rest are always shown when the person has work there */
 const OPTIONAL_PAGES=[
   {k:'new',label:'Raise a request'},
+  {k:'gate',label:'Gate Pass'},
   {k:'tpl',label:'Saved hierarchies'},
   {k:'team',label:'My team (managers only)'},
   {k:'all',label:'Requests I can see'},
@@ -1027,7 +1036,7 @@ const OPTIONAL_PAGES=[
   {k:'people',label:'People & masters'},
   {k:'usage',label:'Usage'}
 ];
-const DEFAULT_PAGES=['new','tpl','team','all','report'];   // a plain user's standard set
+const DEFAULT_PAGES=['new','gate','tpl','team','all','report'];   // a plain user's standard set
 function allowedPages(u){
   if(u.admin||u.owner) return OPTIONAL_PAGES.map(p=>p.k);   // admins run the system: every page
   if(Array.isArray(u.pages)) return u.pages;                // explicitly set
@@ -1959,6 +1968,7 @@ function wirePeople(v){
       footer:'<button class="btn bad" id="e-reset" style="margin-right:auto">Reset password</button><button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
       onOpen:(mv,cl)=>{
         $('#e-reset',mv).onclick=()=>{ cl(); resetPasswordDialog(u) };
+        wirePagesChecklist('e-pages',mv);
         $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         const nameEl=$('#e-name',mv), newName=nameEl?nameEl.value.trim():u.name;
