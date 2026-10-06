@@ -2624,27 +2624,32 @@ function flowAct(stepId){
     body+=s.fieldsSpec.map((lbl,i)=>'<div style="margin-top:8px"><label>'+esc(lbl)+'</label><input type="text" data-df="'+i+'"></div>').join('')+
       (s.needsFile?'<div style="margin-top:10px"><label>Attach copy</label><div id="fa-files"></div></div>':'');
   } else {
-    if(s.needsFile) body+='<div style="margin-top:10px"><label>Upload document</label><div id="fa-files"></div></div>';
+    if(s.needsFile){ const multiPO=(s.stage==='Purchase'&&s.action==='initiate');
+      body+='<div style="margin-top:10px"><label>'+(multiPO?'Attach purchase order(s) — one indent can have several':'Upload document(s)')+'</label><div id="fa-files"></div></div>'; }
   }
   if(s.needsDatetime) body+='<div style="margin-top:10px"><label for="fa-dt">Confirmation date & time</label><input type="datetime-local" id="fa-dt"></div>';
+  // supporting documents are allowed on every step (quotations, comparisons, photos…)
+  body+='<div style="margin-top:10px"><label>Supporting documents <span class="hint">optional</span></label><div id="fa-supp"></div></div>';
   body+='<div style="margin-top:10px"><label for="fa-rem">Remark <span class="hint">optional</span></label><input type="text" id="fa-rem"></div><div id="fa-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
   modal({title:flowActLabel(s),body:body,footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Continue</button>',
     onOpen:(mv,cl)=>{
-      if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,{mode:'support',single:(s.action!=='payment'),label:'Tap to upload (PDF, image, Excel, Word)'});
+      if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,{mode:'support',single:false,label:'Tap to upload (PDF, image, Excel, Word) — add more than one if needed'});
+      if($('#fa-supp',mv)) uploader($('#fa-supp',mv),local.support,{mode:'support',single:false,label:'Add supporting files (optional)'});
       if($('#fp-adv',mv)){ const paint=()=>{ $('#fp-adv',mv).innerHTML=advices.map((a,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center"><input type="number" min="0" max="100" placeholder="%" data-pct="'+i+'" value="'+esc(a.pct)+'" style="width:80px"><div style="flex:1" id="adv-f-'+i+'"></div></div>').join('');
         advices.forEach((a,i)=>{ $('[data-pct="'+i+'"]',mv).oninput=e=>a.pct=e.target.value; a._list=a._list||[]; uploader($('#adv-f-'+i,mv),a._list,{mode:'support',single:true,label:'Advice '+(i+1)+' PDF'}); }); };
         paint(); }
       $$('#fp-mode button',mv).forEach(b=>b.onclick=()=>{payMode=b.dataset.m; $$('#fp-mode button',mv).forEach(x=>x.classList.toggle('on',x.dataset.m===payMode)); $('#fp-partial',mv).classList.toggle('hide',payMode!=='partial'); });
       $('#fa-go',mv).onclick=()=>{
         const err=$('#fa-err',mv); err.textContent='';
-        let files=filesPayload(local.files), data=null;
-        if(s.needsFile && !files.length && s.action!=='payment') return err.textContent='Upload the document first.';
+        const primary=filesPayload(local.files), supp=filesPayload(local.support);
+        let files=primary.concat(supp), data=null;
+        if(s.needsFile && !primary.length && s.action!=='payment') return err.textContent='Upload the document first.';
         if(s.needsDatetime){ dt=$('#fa-dt',mv).value; if(!dt) return err.textContent='Select the date & time.'; }
         if(s.action==='data'){ let miss=false; s.fieldsSpec.forEach((lbl,i)=>{const val=$('[data-df="'+i+'"]',mv).value.trim(); if(!val)miss=true; dataFields[lbl]=val;}); if(miss) return err.textContent='Fill all the fields.'; data=dataFields; }
         if(s.action==='payment'){ data={mode:payMode};
           if(payMode==='partial'){ const adv=[]; advices.forEach((a,i)=>{ if(a.pct&&a._list&&a._list.length){ adv.push({pct:Number(a.pct),name:a._list[0].name,path:a._list[0].path}); files=files.concat(filesPayload(a._list)); } });
             if(!adv.length) return err.textContent='Add at least one advice with a % and PDF.'; data.advices=adv; }
-          else if(!files.length) return err.textContent='Upload the advice document.';
+          else if(!primary.length) return err.textContent='Upload the advice document.';
         }
         const remark=$('#fa-rem',mv).value.trim();
         cl(); flowPinThen(()=>flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,'Signed.'));
