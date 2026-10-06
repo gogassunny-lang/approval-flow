@@ -171,7 +171,7 @@ async function load(){
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
       canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,actedBy:s.acted_by,actedAt:ts(s.acted_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
-      infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
+      infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
       actors:[],files:[]}});
   factors.forEach(a=>{const s=FS[a.step_id]; if(s) s.actors.push(a.user_id)});
   ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by};
@@ -2464,7 +2464,7 @@ const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowF
 // delete a flow: the requester may, but only before any approval; an admin/owner may anytime
 const flowApprovedYet=f=>(f.steps||[]).some(s=>s.action==='approve'&&s.status==='done');
 const flowCanDelete=f=>f.status!=='cancelled'&&((f.requesterId===ME.id&&!flowApprovedYet(f))||ME.admin||ME.owner);
-const flowNeedsMyReply=f=>{const s=flowLive(f); return !!(s&&s.infoRequested&&f.requesterId===ME.id)};
+const flowNeedsMyReply=f=>{const s=flowLive(f); return !!(s&&s.infoRequested&&((s.infoTo&&s.infoTo===ME.id)||(!s.infoTo&&f.requesterId===ME.id)))};
 const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)||flowNeedsMyReply(f)));
 const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
@@ -2566,17 +2566,20 @@ function flowSidePanel(f){
   const mine=s.actors.indexOf(ME.id)>-1, isReq=f.requesterId===ME.id;
   const canEsc=s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
   const withWho=s.actors.map(id=>user(id).name).join(', ')||'—';
-  if(s.infoRequested && isReq){
-    return '<div class="card pad"><h3>The approver needs more</h3>'+
+  const amRecipient = s.infoRequested && (s.infoTo ? s.infoTo===ME.id : isReq);
+  if(amRecipient){
+    const asReq = !s.infoTo && isReq;
+    return '<div class="card pad"><h3>'+(s.infoTo?'You were tagged to check':'The approver needs more')+'</h3>'+
       '<p class="hint" style="margin-top:6px">'+(s.infoBy?esc(user(s.infoBy).name):'An approver')+' asked on <b>'+esc(s.label)+'</b>:</p>'+
       '<div class="banner hold" style="margin-top:8px"><div>'+esc(s.infoText)+'</div></div>'+
       '<div style="margin-top:12px"><label for="fr-text">Your response</label><textarea id="fr-text" placeholder="Answer, or note what you changed"></textarea></div>'+
-      '<div style="margin-top:10px"><label>Attach <span class="hint">optional — e.g. the corrected document</span></label><div id="fr-files"></div></div>'+
+      '<div style="margin-top:10px"><label>Attach <span class="hint">optional'+(asReq?' — e.g. the corrected indent':'')+'</span></label><div id="fr-files"></div></div>'+
+      (asReq?'<label style="display:flex;align-items:center;gap:9px;margin:10px 0 0"><input type="checkbox" id="fr-replace" style="width:auto"> <span><b>This replaces the original indent document</b><div class="hint">The attached file becomes the new indent at step 1.</div></span></label>':'')+
       '<div id="fr-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
       '<button class="btn primary" id="fr-go" style="margin-top:12px;width:100%">Send response</button></div>';
   }
   if(mine){
-    if(s.infoRequested) return '<div class="card pad"><h3>Waiting on the requester</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>. You can act once they respond.</p></div>';
+    if(s.infoRequested){ const who=s.infoTo?user(s.infoTo).name:'the requester'; return '<div class="card pad"><h3>Waiting on '+esc(who)+'</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>. You can act once they respond.</p></div>'; }
     const approving=(s.action==='approve'||s.action==='confirm');
     let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</p>';
     if(s.infoReply) body+='<div class="banner" style="margin-top:8px"><div class="hint">Requester replied: '+esc(s.infoReply)+'</div></div>';
@@ -2612,38 +2615,67 @@ function wireFlowDetail(v){
   const reply={files:[]};
   if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
   if($('#fr-go',v)) $('#fr-go',v).onclick=async()=>{ const t=$('#fr-text',v).value.trim(); if(t.length<2){ $('#fr-err',v).textContent='Write a short response.'; return; }
+    const rep=$('#fr-replace',v)?$('#fr-replace',v).checked:false;
+    if(rep && !reply.files.length){ $('#fr-err',v).textContent='Attach the new document to replace the original.'; return; }
     $('#fr-go',v).disabled=true;
-    try{ await rpc('flow_reply',{p_request:ROUTE.id,p_text:t,p_files:filesPayload(reply.files)}); await load(); toast('Sent to the approver.','ok'); render(); }
+    // the original document the replace will drop (remove from storage best-effort)
+    const flow=DB.flows.find(x=>x.id===ROUTE.id); const oldPaths=(rep&&flow&&flow.steps[0])?flow.steps[0].files.map(fl=>fl.path).filter(Boolean):[];
+    try{ await rpc('flow_reply',{p_request:ROUTE.id,p_text:t,p_files:filesPayload(reply.files),p_replace:rep});
+      if(oldPaths.length){ try{ await removeObjects(oldPaths); }catch(e){} }
+      await load(); toast(rep?'New document sent and the original replaced.':'Sent to the approver.','ok'); render(); }
     catch(e){ $('#fr-go',v).disabled=false; $('#fr-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
 }
 /* Approve with a condition — a normal approve whose condition rides in data_val */
 function flowCondDialog(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; let dt='';
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; let dt=''; const state={text:'',tagId:null};
   modal({title:'Approve with a condition',
-    body:'<p style="margin-top:0">Approve <b>'+esc(s.label)+'</b> with a condition the people after you will see.</p>'+
-      '<div style="margin-top:8px"><label for="fcnd">Condition</label><textarea id="fcnd" placeholder="e.g. release only after the revised quote is attached"></textarea></div>'+
+    body:'<p style="margin-top:0">Approve <b>'+esc(s.label)+'</b> with a condition the people after you will see. Type <b>@</b> to tag a person in it.</p>'+
+      '<div style="margin-top:8px"><label for="fcnd">Condition <span class="hint">type @ to tag</span></label>'+
+      '<div style="position:relative"><textarea id="fcnd" placeholder="e.g. @Jai Singhal release only after the revised quote is attached"></textarea><div id="fcnd-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
+      '<div id="fcnd-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
       (s.needsDatetime?'<div style="margin-top:10px"><label for="fcnd-dt">Confirmation date & time</label><input type="datetime-local" id="fcnd-dt"></div>':'')+
       '<div style="margin-top:10px"><label>Supporting documents <span class="hint">optional</span></label><div id="fcnd-files"></div></div>'+
       '<div id="fcnd-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fcnd-go">Continue</button>',
     onOpen:(mv,cl)=>{ uploader($('#fcnd-files',mv),local.files,{mode:'support',single:false,label:'Add supporting files (optional)'});
-      $('#fcnd-go',mv).onclick=()=>{ const cond=$('#fcnd',mv).value.trim(); if(cond.length<3) return $('#fcnd-err',mv).textContent='Write the condition.';
+      wireMention(mv,'#fcnd','#fcnd-sug','#fcnd-tags',state);
+      $('#fcnd-go',mv).onclick=()=>{ const cond=(state.text||$('#fcnd',mv).value).trim(); if(cond.length<3) return $('#fcnd-err',mv).textContent='Write the condition.';
         if(s.needsDatetime){ dt=$('#fcnd-dt',mv).value; if(!dt) return $('#fcnd-err',mv).textContent='Select the date & time.'; }
         const files=filesPayload(local.files); cl();
         flowPinThen(()=>flowCall(stepId,'act','Condition: '+cond, files.length?files:null, dt?new Date(dt).toISOString():null, {condition:cond}, 'Approved with a condition.')); }; }});
 }
 /* Ask the requester for more — soft send-back, nothing downstream resets */
-function flowAskDialog(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s;
-  modal({title:'Ask the requester for more',
-    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back to the requester for more, without rejecting. The step stays here and anything already approved stays approved.</p>'+
-      '<div style="margin-top:8px"><label for="fask">What do you need?</label><textarea id="fask" placeholder="e.g. attach the revised quotation / correct the indent amount"></textarea></div><div id="fask-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
-    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fask-go">Ask</button>',
-    onOpen:(mv,cl)=>{ $('#fask-go',mv).onclick=()=>{ const t=$('#fask',mv).value.trim(); if(t.length<3) return $('#fask-err',mv).textContent='Say what you need.'; cl();
-      flowPinThen(()=>flowAskCall(stepId,t)); }; }});
+/* @-mention autocomplete: type @ to tag a person. state={text,tagId}. */
+function wireMention(mv, taSel, sugSel, tagsSel, state){
+  const ta=$(taSel,mv), sug=$(sugSel,mv), tags=$(tagsSel,mv);
+  const paintTags=()=>{ if(!tags) return; tags.innerHTML=state.tagId?'<span class="tag t-prog">@'+esc(user(state.tagId).name)+' <button class="btn ghost sm" data-untag style="padding:0 5px">×</button></span>':'';
+    if($('[data-untag]',tags)) $('[data-untag]',tags).onclick=()=>{state.tagId=null;paintTags()}; };
+  const token=()=>{ const v=ta.value, c=ta.selectionStart, up=v.slice(0,c), m=up.match(/@([A-Za-z0-9 .]*)$/); return m?{q:m[1],start:c-m[0].length}:null; };
+  ta.oninput=()=>{ state.text=ta.value; const t=token(); if(!t||!sug){ if(sug)sug.style.display='none'; return; }
+    const q=t.q.trim().toLowerCase(), hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&u.name.toLowerCase().includes(q)).slice(0,6);
+    if(!hits.length){ sug.style.display='none'; return; }
+    sug.innerHTML='<div class="results">'+hits.map(u=>'<button data-mu="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div style="min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div></button>').join('')+'</div>';
+    sug.style.display='block';
+    $$('[data-mu]',sug).forEach(b=>b.onclick=()=>{ const u=user(b.dataset.mu), before=ta.value.slice(0,t.start), after=ta.value.slice(ta.selectionStart);
+      ta.value=before+'@'+u.name+' '+after; state.text=ta.value; state.tagId=u.id; sug.style.display='none'; paintTags(); ta.focus(); }); };
+  paintTags();
 }
-async function flowAskCall(stepId,remark){ busy(true);
-  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin}); await load(); toast('Sent to the requester.','ok'); render(); }
+function flowAskDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const state={text:'',tagId:null};
+  modal({title:'Ask for more / tag someone',
+    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag a specific person to check it; leave it untagged to send to the requester.</p>'+
+      '<div style="margin-top:8px"><label for="fask">What do you need? <span class="hint">type @ to tag</span></label>'+
+      '<div style="position:relative"><textarea id="fask" placeholder="e.g. @T Rao please re-check the amount"></textarea><div id="fask-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
+      '<div id="fask-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
+      '<div id="fask-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fask-go">Send</button>',
+    onOpen:(mv,cl)=>{ wireMention(mv,'#fask','#fask-sug','#fask-tags',state);
+      $('#fask-go',mv).onclick=()=>{ const t=(state.text||$('#fask',mv).value).trim(); if(t.length<3) return $('#fask-err',mv).textContent='Say what you need.'; cl();
+        flowPinThen(()=>flowAskCall(stepId,t,state.tagId)); }; }});
+}
+async function flowAskCall(stepId,remark,toId){ busy(true);
+  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin,p_to:toId||null}); await load();
+    toast(toId?('Tagged '+user(toId).name+' to check.'):'Sent to the requester.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
