@@ -133,7 +133,7 @@ async function load(){
 
   const R={};
   DB.requests=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,infoStep:x.info_step,infoTo:x.info_to,f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
@@ -171,7 +171,7 @@ async function load(){
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
       canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,actedBy:s.acted_by,actedAt:ts(s.acted_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
-      infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
+      infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoTos:s.info_tos||[],infoReplies:s.info_replies||[],infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
       actors:[],files:[]}});
   factors.forEach(a=>{const s=FS[a.step_id]; if(s) s.actors.push(a.user_id)});
   ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by};
@@ -202,7 +202,12 @@ function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
   if(r.status==='Info Requested')return user(r.requesterId);
   const s=r.chain[r.current]; return s?user(s.userId):null }
 const isMyTurn=r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;
-const needsMyInfo=r=>r.status==='Info Requested'&&((r.infoTo&&r.infoTo===ME.id)||(!r.infoTo&&r.requesterId===ME.id));
+// one reply per tagged person — did I already answer this ask?
+const iReplied=repl=>Array.isArray(repl)&&repl.some(e=>(e.user_id||e.userId)===ME.id);
+// the list of people a tag is directed at (supports old single-tag data)
+const infoTargets=o=>(o&&o.infoTos&&o.infoTos.length)?o.infoTos:(o&&o.infoTo?[o.infoTo]:[]);
+const needsMyInfo=r=>{ if(r.status!=='Info Requested') return false;
+  const tg=infoTargets(r); return tg.length?(tg.includes(ME.id)&&!iReplied(r.infoReplies)):(r.requesterId===ME.id); };
 const isManager=u=>!!(u&&(u.manager||u.admin||u.owner));
 const teamOf=id=>DB.users.filter(u=>u.active&&u.managerId===id&&u.managerConfirmed);
 const pendingTeam=id=>DB.users.filter(u=>u.active&&u.managerId===id&&!u.managerConfirmed);
@@ -1474,7 +1479,7 @@ function stepLabel(r){
 }
 function rowsHTML(list){
   return '<table class="cards"><thead><tr><th>Request</th><th>Type</th><th>Amount</th><th>Raised</th><th>Status</th><th>Position</th></tr></thead><tbody>'+
-   list.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td><td class="hint meta">'+esc(typeLabel(r))+'</td>'+
+   list.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b> <span class="tag t-wait" style="font-size:10.5px">Custom chain</span><div class="hint">'+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td><td class="hint meta">'+esc(typeLabel(r))+'</td>'+
    '<td class="num meta">'+(r.type==='workorder'?money(r.f.amountPost):'—')+'</td><td class="hint num meta">'+esc(fmtD(r.createdAt))+'</td><td class="meta">'+tagFor(r)+'</td><td class="hint pos">'+esc(stepLabel(r))+'</td></tr>').join('')+'</tbody></table>';
 }
 function viewList(list,t,s,et,es){ head(t,s);
@@ -1515,7 +1520,7 @@ function subBranchHTML(r,s){
 function viewDetail(id){
   const r=DB.requests.find(x=>x.id===id);
   if(!r) return '<div class="card"><div class="empty"><h3>That request is not visible to you</h3><p class="hint">It may have been raised in a chain you are not part of.</p></div></div>';
-  head(docTitle(r),typeLabel(r)+' · '+r.ref+' · raised by '+user(r.requesterId).name+' on '+fmtD(r.createdAt));
+  head(docTitle(r),'Custom chain · '+typeLabel(r)+' · '+r.ref+' · raised by '+user(r.requesterId).name+' on '+fmtD(r.createdAt));
   const mine=isMyTurn(r), info=needsMyInfo(r), f=r.f, mt=myOpenTask(r);
   const mayExtend=(r.requesterId===ME.id||ME.admin||ME.owner)&&r.status!=='Rejected';
   let banner='';
@@ -1524,6 +1529,8 @@ function viewDetail(id){
   if(mt) banner='<div class="banner live"><div><b>You have a task on this request.</b><div class="hint">Close it below and it goes back to '+esc(user(r.chain[mt.stepIndex].userId).name)+'.</div></div></div>';
   else if(mine) banner='<div class="banner live"><div><b>This is with you.</b><div class="hint">Everyone after you is locked out until you act. Open the attached document before signing.</div></div></div>';
   else if(info) banner='<div class="banner hold"><div><b>'+esc(user(r.chain[r.infoStep].userId).name)+' has asked you for more.</b><div class="hint">Reply at step '+(r.infoStep+2)+' below. The chain picks up where it stopped.</div></div></div>';
+  else if(r.status==='Info Requested'&&r.chain[r.infoStep]&&r.chain[r.infoStep].userId===ME.id){ const tg=infoTargets(r), who=tg.length?tg.map(id=>user(id).name).join(', '):user(r.requesterId).name, done=(r.infoReplies||[]).length;
+    banner='<div class="banner hold"><div><b>You asked '+esc(who)+' for more.</b><div class="hint">'+(tg.length>1?done+' of '+tg.length+' have replied. ':'')+'It comes back to you once '+(tg.length>1?'everyone has':'they have')+' responded.</div></div></div>'; }
   else if(r.status==='In Progress') banner='<div class="banner live"><div><b>With '+esc(user(r.chain[r.current].userId).name)+' at step '+(r.current+2)+'.</b><div class="hint">You can follow the whole chain, but only the holder can act.</div></div></div>';
 
   let nodes='<div class="node done"><div class="dot">1</div><div class="body"><div class="row"><div><h4>'+esc(user(r.requesterId).name)+'</h4><div class="meta">'+esc(user(r.requesterId).role)+(user(r.requesterId).dept?' · '+esc(user(r.requesterId).dept):'')+' — raised this request</div></div>'+
@@ -1656,18 +1663,19 @@ function wireDetail(v){
     $('#a-cond',v).onclick=()=>modal({title:'Approve with a condition',body:'<p class="hint" style="margin-top:0">The ERP document cannot be changed from here, so record what must happen instead. The condition travels with the request and every later approver sees it.</p><div style="margin-top:14px"><label for="cd">The condition</label><textarea id="cd" placeholder="e.g. Release only after the revised quote is received."></textarea></div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn ok" id="cg">Approve with this condition</button>',
       onOpen:(mv,close)=>{$('#cg',mv).onclick=()=>{const cond=$('#cd',mv).value.trim(); if(cond.length<5) return toast('Write the condition out in full.','bad'); close(); act('conditional','approve '+docNo(r)+' with a condition',{condition:cond})}}});
-    $('#a-info',v).onclick=()=>{ const state={text:'',tagId:null};
-      modal({title:'Ask for more / tag someone',
-        body:'<p style="margin-top:0" class="hint">Send <b>'+esc(docNo(r))+'</b> back without rejecting — earlier approvals stand. Type <b>@</b> to tag a specific person to check it; leave it untagged to send to the requester.</p>'+
-          '<div style="margin-top:12px"><label for="ai">What do you need? <span class="hint">type @ to tag</span></label>'+
-          '<div style="position:relative"><textarea id="ai" placeholder="e.g. @Name please re-check the rate"></textarea><div id="ai-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
+    $('#a-info',v).onclick=()=>{ const state={text:'',tagIds:[]};
+      modal({title:'Ask for more / tag people',
+        body:'<p style="margin-top:0" class="hint">Send <b>'+esc(docNo(r))+'</b> back without rejecting — earlier approvals stand. Type <b>@</b> to tag one or more people to check it (it parks until everyone tagged replies); leave it untagged to send to the requester.</p>'+
+          '<div style="margin-top:12px"><label for="ai">What do you need? <span class="hint">type @ to tag — add as many as you like</span></label>'+
+          '<div style="position:relative"><textarea id="ai" placeholder="e.g. @Name @Other please re-check the rate"></textarea><div id="ai-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
           '<div id="ai-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
           '<div id="ai-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
         footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="ai-go">Send</button>',
         onOpen:(mv,cl)=>{ wireMention(mv,'#ai','#ai-sug','#ai-tags',state);
           $('#ai-go',mv).onclick=()=>{ const t=(state.text||$('#ai',mv).value).trim(); if(t.length<3) return $('#ai-err',mv).textContent='Say what you need.'; cl();
-            confirmPin('send '+docNo(r)+' back for more',async pin=>{ await rpc('act_on_step',{p_request:r.id,p_action:'info',p_remark:t,p_condition:'',p_pin:pin,p_files:filesPayload(files),p_to:state.tagId||null});
-              await after(state.tagId?('Tagged '+user(state.tagId).name+' to check.'):'Sent back to '+user(r.requesterId).name+'.'); }); }; }});
+            const tos=state.tagIds.length?state.tagIds:null;
+            confirmPin('send '+docNo(r)+' back for more',async pin=>{ await rpc('act_on_step',{p_request:r.id,p_action:'info',p_remark:t,p_condition:'',p_pin:pin,p_files:filesPayload(files),p_tos:tos});
+              await after(tos?('Tagged '+tos.map(id=>user(id).name).join(', ')+' to check.'):'Sent back to '+user(r.requesterId).name+'.'); }); }; }});
     };
     $('#a-no',v).onclick=()=>{if(!rem()){toast('Say why you are rejecting it before you close it.','bad');$('#d-rem',v).focus();return} act('reject','reject '+docNo(r))};
   }
@@ -2476,7 +2484,8 @@ const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowF
 // delete a flow: the requester may, but only before any approval; an admin/owner may anytime
 const flowApprovedYet=f=>(f.steps||[]).some(s=>s.action==='approve'&&s.status==='done');
 const flowCanDelete=f=>f.status!=='cancelled'&&((f.requesterId===ME.id&&!flowApprovedYet(f))||ME.admin||ME.owner);
-const flowNeedsMyReply=f=>{const s=flowLive(f); return !!(s&&s.infoRequested&&((s.infoTo&&s.infoTo===ME.id)||(!s.infoTo&&f.requesterId===ME.id)))};
+const flowNeedsMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
+  const tg=infoTargets(s); return tg.length?(tg.includes(ME.id)&&!iReplied(s.infoReplies)):(f.requesterId===ME.id)};
 const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)||flowNeedsMyReply(f)));
 const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
@@ -2485,7 +2494,7 @@ const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed<
 
 function flowRow(f){
   const s=flowLive(f), withWho=s?s.actors.map(id=>user(id).name).slice(0,3).join(', ')+(s.actors.length>3?' +'+(s.actors.length-3):''):'';
-  return '<tr data-flow="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
+  return '<tr data-flow="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
     '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
     '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
     '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':flowNeedsMyReply(f)?'<div class="hint" style="color:var(--hold)">Needs your reply</div>':'')+'</td></tr>';
@@ -2546,8 +2555,10 @@ function flowStepRow(f,s){
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
   if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
   if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
-  if(s.infoRequested) meta+='<div class="hint" style="color:var(--hold)">Waiting on requester'+(s.infoBy?' — '+esc(user(s.infoBy).name)+' asked':'')+': '+esc(s.infoText)+'</div>';
-  else if(s.infoReply) meta+='<div class="hint">Requester replied: '+esc(s.infoReply)+'</div>';
+  if(s.infoRequested){ const tg=infoTargets(s), who=tg.length?tg.map(id=>user(id).name).join(', '):'requester', done=(s.infoReplies||[]).length;
+    meta+='<div class="hint" style="color:var(--hold)">Waiting on '+esc(who)+(tg.length>1?' ('+done+' of '+tg.length+' replied)':'')+(s.infoBy?' — '+esc(user(s.infoBy).name)+' asked':'')+': '+esc(s.infoText)+'</div>'; }
+  if(s.infoReplies&&s.infoReplies.length) meta+=s.infoReplies.map(e=>'<div class="hint">'+esc(e.name||user(e.user_id).name)+' replied: '+esc(e.text)+'</div>').join('');
+  else if(s.infoReply&&!s.infoRequested) meta+='<div class="hint">Replied: '+esc(s.infoReply)+'</div>';
   const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
   return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
     '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span></div>'+
@@ -2558,7 +2569,7 @@ const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:
 function viewFlowDetail(id){
   const f=DB.flows.find(x=>x.id===id);
   if(!f){ head('Flow','Not found'); return '<div class="card pad">This flow could not be found.</div>'; }
-  head(f.ref,flowHeadLabel(f.head)+' · '+f.division+(f.title?' · '+f.title:''));
+  head(f.ref,'Fixed flow · '+flowHeadLabel(f.head)+' · '+f.division+(f.title?' · '+f.title:''));
   let left='<div class="row" style="margin-bottom:12px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
     (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del" style="margin-left:9px">Delete request</button>':'')+'</div>';
   flowStageList(f).forEach(stage=>{
@@ -2578,10 +2589,11 @@ function flowSidePanel(f){
   const mine=s.actors.indexOf(ME.id)>-1, isReq=f.requesterId===ME.id;
   const canEsc=s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
   const withWho=s.actors.map(id=>user(id).name).join(', ')||'—';
-  const amRecipient = s.infoRequested && (s.infoTo ? s.infoTo===ME.id : isReq);
+  const tg=infoTargets(s);
+  const amRecipient = s.infoRequested && (tg.length?(tg.indexOf(ME.id)>-1 && !iReplied(s.infoReplies)):isReq);
   if(amRecipient){
-    const asReq = !s.infoTo && isReq;
-    return '<div class="card pad"><h3>'+(s.infoTo?'You were tagged to check':'The approver needs more')+'</h3>'+
+    const asReq = !tg.length && isReq;
+    return '<div class="card pad"><h3>'+(tg.length?'You were tagged to check':'The approver needs more')+'</h3>'+
       '<p class="hint" style="margin-top:6px">'+(s.infoBy?esc(user(s.infoBy).name):'An approver')+' asked on <b>'+esc(s.label)+'</b>:</p>'+
       '<div class="banner hold" style="margin-top:8px"><div>'+esc(s.infoText)+'</div></div>'+
       '<div style="margin-top:12px"><label for="fr-text">Your response</label><textarea id="fr-text" placeholder="Answer, or note what you changed"></textarea></div>'+
@@ -2591,10 +2603,14 @@ function flowSidePanel(f){
       '<button class="btn primary" id="fr-go" style="margin-top:12px;width:100%">Send response</button></div>';
   }
   if(mine){
-    if(s.infoRequested){ const who=s.infoTo?user(s.infoTo).name:'the requester'; return '<div class="card pad"><h3>Waiting on '+esc(who)+'</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>. You can act once they respond.</p></div>'; }
+    if(s.infoRequested){ const who=tg.length?tg.map(id=>user(id).name).join(', '):'the requester', done=(s.infoReplies||[]).length, tot=tg.length;
+      let w='<div class="card pad"><h3>Waiting on '+esc(who)+'</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>.'+(tot>1?' '+done+' of '+tot+' have replied.':'')+' You can act once '+(tot>1?'everyone has':'they have')+' responded.</p>';
+      if((s.infoReplies||[]).length) w+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b>: '+esc(e.text)+'</div></div>').join('');
+      return w+'</div>'; }
     const approving=(s.action==='approve'||s.action==='confirm');
     let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</p>';
-    if(s.infoReply) body+='<div class="banner" style="margin-top:8px"><div class="hint">Requester replied: '+esc(s.infoReply)+'</div></div>';
+    if(s.infoReplies&&s.infoReplies.length) body+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b> replied: '+esc(e.text)+'</div></div>').join('');
+    else if(s.infoReply) body+='<div class="banner" style="margin-top:8px"><div class="hint">Replied: '+esc(s.infoReply)+'</div></div>';
     body+='<div class="grid" style="gap:9px;margin-top:14px">';
     if(approving){
       body+='<button class="btn primary" data-fact="'+s.id+'">'+(s.action==='confirm'?'Confirm and pass on':'Approve and pass on')+'</button>'+
@@ -2639,7 +2655,7 @@ function wireFlowDetail(v){
 }
 /* Approve with a condition — a normal approve whose condition rides in data_val */
 function flowCondDialog(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; let dt=''; const state={text:'',tagId:null};
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; let dt=''; const state={text:'',tagIds:[]};
   modal({title:'Approve with a condition',
     body:'<p style="margin-top:0">Approve <b>'+esc(s.label)+'</b> with a condition the people after you will see. Type <b>@</b> to tag a person in it.</p>'+
       '<div style="margin-top:8px"><label for="fcnd">Condition <span class="hint">type @ to tag</span></label>'+
@@ -2657,37 +2673,40 @@ function flowCondDialog(stepId){
         flowPinThen(()=>flowCall(stepId,'act','Condition: '+cond, files.length?files:null, dt?new Date(dt).toISOString():null, {condition:cond}, 'Approved with a condition.')); }; }});
 }
 /* Ask the requester for more — soft send-back, nothing downstream resets */
-/* @-mention autocomplete: type @ to tag a person. state={text,tagId}. */
+/* @-mention autocomplete: type @ to tag one or MANY people. state={text,tagIds:[]}. */
 function wireMention(mv, taSel, sugSel, tagsSel, state){
   const ta=$(taSel,mv), sug=$(sugSel,mv), tags=$(tagsSel,mv);
-  const paintTags=()=>{ if(!tags) return; tags.innerHTML=state.tagId?'<span class="tag t-prog">@'+esc(user(state.tagId).name)+' <button class="btn ghost sm" data-untag style="padding:0 5px">×</button></span>':'';
-    if($('[data-untag]',tags)) $('[data-untag]',tags).onclick=()=>{state.tagId=null;paintTags()}; };
+  if(!Array.isArray(state.tagIds)) state.tagIds=[];
+  const paintTags=()=>{ if(!tags) return;
+    tags.innerHTML=state.tagIds.map(id=>'<span class="tag t-prog">@'+esc(user(id).name)+' <button class="btn ghost sm" data-untag="'+id+'" style="padding:0 5px">×</button></span>').join(' ');
+    $$('[data-untag]',tags).forEach(b=>b.onclick=()=>{ state.tagIds=state.tagIds.filter(x=>x!==b.dataset.untag); paintTags(); }); };
   const token=()=>{ const v=ta.value, c=ta.selectionStart, up=v.slice(0,c), m=up.match(/@([A-Za-z0-9 .]*)$/); return m?{q:m[1],start:c-m[0].length}:null; };
   ta.oninput=()=>{ state.text=ta.value; const t=token(); if(!t||!sug){ if(sug)sug.style.display='none'; return; }
-    const q=t.q.trim().toLowerCase(), hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&u.name.toLowerCase().includes(q)).slice(0,6);
+    const q=t.q.trim().toLowerCase(), hits=DB.users.filter(u=>u.active&&u.id!==ME.id&&state.tagIds.indexOf(u.id)<0&&u.name.toLowerCase().includes(q)).slice(0,6);
     if(!hits.length){ sug.style.display='none'; return; }
     sug.innerHTML='<div class="results">'+hits.map(u=>'<button data-mu="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div style="min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div></button>').join('')+'</div>';
     sug.style.display='block';
     $$('[data-mu]',sug).forEach(b=>b.onclick=()=>{ const u=user(b.dataset.mu), before=ta.value.slice(0,t.start), after=ta.value.slice(ta.selectionStart);
-      ta.value=before+'@'+u.name+' '+after; state.text=ta.value; state.tagId=u.id; sug.style.display='none'; paintTags(); ta.focus(); }); };
+      ta.value=before+'@'+u.name+' '+after; state.text=ta.value; if(state.tagIds.indexOf(u.id)<0) state.tagIds.push(u.id); sug.style.display='none'; paintTags(); ta.focus(); }); };
   paintTags();
 }
 function flowAskDialog(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const state={text:'',tagId:null};
-  modal({title:'Ask for more / tag someone',
-    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag a specific person to check it; leave it untagged to send to the requester.</p>'+
-      '<div style="margin-top:8px"><label for="fask">What do you need? <span class="hint">type @ to tag</span></label>'+
-      '<div style="position:relative"><textarea id="fask" placeholder="e.g. @T Rao please re-check the amount"></textarea><div id="fask-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const state={text:'',tagIds:[]};
+  modal({title:'Ask for more / tag people',
+    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag one or more people to check it (it parks until everyone tagged replies); leave it untagged to send to the requester.</p>'+
+      '<div style="margin-top:8px"><label for="fask">What do you need? <span class="hint">type @ to tag — add as many as you like</span></label>'+
+      '<div style="position:relative"><textarea id="fask" placeholder="e.g. @T Rao @Jai Singhal please re-check the amount"></textarea><div id="fask-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
       '<div id="fask-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
       '<div id="fask-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fask-go">Send</button>',
     onOpen:(mv,cl)=>{ wireMention(mv,'#fask','#fask-sug','#fask-tags',state);
       $('#fask-go',mv).onclick=()=>{ const t=(state.text||$('#fask',mv).value).trim(); if(t.length<3) return $('#fask-err',mv).textContent='Say what you need.'; cl();
-        flowPinThen(()=>flowAskCall(stepId,t,state.tagId)); }; }});
+        flowPinThen(()=>flowAskCall(stepId,t,state.tagIds)); }; }});
 }
-async function flowAskCall(stepId,remark,toId){ busy(true);
-  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin,p_to:toId||null}); await load();
-    toast(toId?('Tagged '+user(toId).name+' to check.'):'Sent to the requester.','ok'); render(); }
+async function flowAskCall(stepId,remark,toIds){ busy(true);
+  const tos=(toIds&&toIds.length)?toIds:null;
+  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin,p_tos:tos}); await load();
+    toast(tos?('Tagged '+tos.map(id=>user(id).name).join(', ')+' to check.'):'Sent to the requester.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
