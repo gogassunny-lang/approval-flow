@@ -170,7 +170,9 @@ async function load(){
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
       canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,actedBy:s.acted_by,actedAt:ts(s.acted_at),
-      remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,actors:[],files:[]}});
+      remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
+      infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
+      actors:[],files:[]}});
   factors.forEach(a=>{const s=FS[a.step_id]; if(s) s.actors.push(a.user_id)});
   ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by};
     if(s) s.files.push(rec); else if(FR[f.request_id]) FR[f.request_id]._files=(FR[f.request_id]._files||[]).concat(rec)});
@@ -2462,7 +2464,8 @@ const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowF
 // delete a flow: the requester may, but only before any approval; an admin/owner may anytime
 const flowApprovedYet=f=>(f.steps||[]).some(s=>s.action==='approve'&&s.status==='done');
 const flowCanDelete=f=>f.status!=='cancelled'&&((f.requesterId===ME.id&&!flowApprovedYet(f))||ME.admin||ME.owner);
-const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)));
+const flowNeedsMyReply=f=>{const s=flowLive(f); return !!(s&&s.infoRequested&&f.requesterId===ME.id)};
+const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)||flowNeedsMyReply(f)));
 const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
 const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const s=flowLive(f); return s?(s.stage+' · '+s.label):'—'; };
@@ -2473,7 +2476,7 @@ function flowRow(f){
   return '<tr data-flow="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
     '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
     '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
-    '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':'')+'</td></tr>';
+    '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':flowNeedsMyReply(f)?'<div class="hint" style="color:var(--hold)">Needs your reply</div>':'')+'</td></tr>';
 }
 /* ALDS flows surfaced inside the normal lists (Waiting on me / My requests / All).
    They are raised from the Raise-a-request page, so there is no separate raise tab.
@@ -2521,41 +2524,79 @@ function wireFlowRows(v){
 }
 /* ---- detail: the stage → sub-step chain, visible to all, act only at your point ---- */
 const FLOW_ST={waiting:['t-wait','Waiting'],pending:['t-prog','Now here'],done:['t-ok','Done'],skipped:['t-hold','Skipped']};
+/* read-only timeline row — the actions live in the right-hand panel */
 function flowStepRow(f,s){
   const st=FLOW_ST[s.status]||['t-wait',s.status];
   const actors=s.actors.map(id=>user(id).name).join(', ')||'—';
   let meta='';
   if(s.status==='done'){ meta='<div class="hint">'+(s.actedBy?esc(user(s.actedBy).name):'—')+' · '+esc(fmtDT(s.actedAt))+(s.remark?' · '+esc(s.remark):'')+'</div>'; }
+  if(s.dataVal&&s.dataVal.condition) meta+='<div class="hint" style="color:var(--hold)">Condition: '+esc(s.dataVal.condition)+'</div>';
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
-  if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
+  if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
   if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
+  if(s.infoRequested) meta+='<div class="hint" style="color:var(--hold)">Waiting on requester'+(s.infoBy?' — '+esc(user(s.infoBy).name)+' asked':'')+': '+esc(s.infoText)+'</div>';
+  else if(s.infoReply) meta+='<div class="hint">Requester replied: '+esc(s.infoReply)+'</div>';
   const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
-  const mine=s.status==='pending'&&s.actors.indexOf(ME.id)>-1;
-  const canEsc=s.status==='pending'&&s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
-  let act='';
-  if(mine){ act='<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn primary sm" data-fact="'+s.id+'">'+flowActLabel(s)+'</button>'+
-    (s.canReject?'<button class="btn bad sm" data-freject="'+s.id+'">Reject</button>':'')+'</div>'; }
-  else if(canEsc){ act='<div class="row" style="gap:8px;margin-top:8px"><button class="btn hold sm" data-fesc="'+s.id+'">Escalate past CMD</button></div>'; }
   return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
     '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span></div>'+
-    '<div class="hint">'+esc(actors)+'</div>'+meta+files+act+'</div></div>';
+    '<div class="hint">'+esc(actors)+'</div>'+meta+files+'</div></div>';
 }
 const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:'Approve',confirm:'Confirm',data:'Enter details & sign',payment:'Initiate advice'})[s.action]||'Submit';
+/* left: the read-only stage/step timeline. right: the current person's options. */
 function viewFlowDetail(id){
   const f=DB.flows.find(x=>x.id===id);
   if(!f){ head('Flow','Not found'); return '<div class="card pad">This flow could not be found.</div>'; }
   head(f.ref,flowHeadLabel(f.head)+' · '+f.division+(f.title?' · '+f.title:''));
-  let h='<div class="row" style="margin-bottom:12px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
+  let left='<div class="row" style="margin-bottom:12px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
     (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del" style="margin-left:9px">Delete request</button>':'')+'</div>';
   flowStageList(f).forEach(stage=>{
     const steps=f.steps.filter(s=>s.stage===stage);
     const anyLive=steps.some(s=>s.status==='pending');
-    h+='<div class="card" style="margin-bottom:12px'+(anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(stage)+'</h3></div>'+
+    left+='<div class="card" style="margin-bottom:12px'+(anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(stage)+'</h3></div>'+
       '<div style="padding:10px 16px">'+steps.map(s=>flowStepRow(f,s)).join('')+'</div></div>';
   });
-  if(f.audit.length) h+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
+  if(f.audit.length) left+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
     f.audit.slice().reverse().map(a=>'<div class="hint" style="padding:3px 0"><b>'+esc(a.actorName||'')+'</b> — '+esc(a.action)+(a.detail?' · '+esc(a.detail):'')+' · '+esc(fmtDT(a.ts))+'</div>').join('')+'</div></div>';
-  return h;
+  return '<div class="detail-grid"><div>'+left+'</div><div>'+flowSidePanel(f)+'</div></div>';
+}
+/* the right-hand options panel for whoever is viewing */
+function flowSidePanel(f){
+  const s=flowLive(f);
+  if(!s) return '<div class="card pad"><h3>'+(f.status==='completed'?'Completed':f.status==='cancelled'?'Cancelled':'Nothing to do')+'</h3><p class="hint" style="margin-top:6px">This flow has no open step right now.</p></div>';
+  const mine=s.actors.indexOf(ME.id)>-1, isReq=f.requesterId===ME.id;
+  const canEsc=s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
+  const withWho=s.actors.map(id=>user(id).name).join(', ')||'—';
+  if(s.infoRequested && isReq){
+    return '<div class="card pad"><h3>The approver needs more</h3>'+
+      '<p class="hint" style="margin-top:6px">'+(s.infoBy?esc(user(s.infoBy).name):'An approver')+' asked on <b>'+esc(s.label)+'</b>:</p>'+
+      '<div class="banner hold" style="margin-top:8px"><div>'+esc(s.infoText)+'</div></div>'+
+      '<div style="margin-top:12px"><label for="fr-text">Your response</label><textarea id="fr-text" placeholder="Answer, or note what you changed"></textarea></div>'+
+      '<div style="margin-top:10px"><label>Attach <span class="hint">optional — e.g. the corrected document</span></label><div id="fr-files"></div></div>'+
+      '<div id="fr-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
+      '<button class="btn primary" id="fr-go" style="margin-top:12px;width:100%">Send response</button></div>';
+  }
+  if(mine){
+    if(s.infoRequested) return '<div class="card pad"><h3>Waiting on the requester</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>. You can act once they respond.</p></div>';
+    const approving=(s.action==='approve'||s.action==='confirm');
+    let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</p>';
+    if(s.infoReply) body+='<div class="banner" style="margin-top:8px"><div class="hint">Requester replied: '+esc(s.infoReply)+'</div></div>';
+    body+='<div class="grid" style="gap:9px;margin-top:14px">';
+    if(approving){
+      body+='<button class="btn primary" data-fact="'+s.id+'">'+(s.action==='confirm'?'Confirm and pass on':'Approve and pass on')+'</button>'+
+        '<button class="btn" data-fcond="'+s.id+'">Approve with a condition</button>'+
+        '<button class="btn hold" data-fask="'+s.id+'">Ask the requester for more</button>'+
+        (s.canReject?'<button class="btn bad" data-freject="'+s.id+'">Reject and close</button>':'');
+    } else {
+      body+='<button class="btn primary" data-fact="'+s.id+'">'+flowActLabel(s)+'</button>'+
+        '<button class="btn hold" data-fask="'+s.id+'">Ask the requester for more</button>'+
+        (s.canReject?'<button class="btn bad" data-freject="'+s.id+'">Reject</button>':'');
+    }
+    if(canEsc) body+='<button class="btn hold" data-fesc="'+s.id+'">Escalate past CMD</button>';
+    body+='</div><p class="hint" style="margin-top:12px">The document cannot be changed from here. Ask the requester for more, or reject it and have it reissued.</p></div>';
+    return body;
+  }
+  if(canEsc) return '<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:6px">With '+esc(withWho)+'. As a division approver you can escalate it past CMD.</p><button class="btn hold" data-fesc="'+s.id+'" style="margin-top:12px;width:100%">Escalate past CMD</button></div>';
+  return '<div class="card pad"><h3>With '+esc(withWho)+'</h3><p class="hint" style="margin-top:6px">Current step: <b>'+esc(s.label)+'</b>. You can watch its progress on the left.</p></div>';
 }
 function wireFlowDetail(v){
   if($('#fl-back',v)) $('#fl-back',v).onclick=()=>history.back();
@@ -2565,7 +2606,45 @@ function wireFlowDetail(v){
   $$('[data-freject]',v).forEach(b=>b.onclick=()=>flowReject(b.dataset.freject));
   $$('[data-fesc]',v).forEach(b=>b.onclick=()=>flowEscalate(b.dataset.fesc));
   $$('[data-fact]',v).forEach(b=>b.onclick=()=>flowAct(b.dataset.fact));
+  $$('[data-fcond]',v).forEach(b=>b.onclick=()=>flowCondDialog(b.dataset.fcond));
+  $$('[data-fask]',v).forEach(b=>b.onclick=()=>flowAskDialog(b.dataset.fask));
+  // requester's reply panel (answer an "ask for more")
+  const reply={files:[]};
+  if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
+  if($('#fr-go',v)) $('#fr-go',v).onclick=async()=>{ const t=$('#fr-text',v).value.trim(); if(t.length<2){ $('#fr-err',v).textContent='Write a short response.'; return; }
+    $('#fr-go',v).disabled=true;
+    try{ await rpc('flow_reply',{p_request:ROUTE.id,p_text:t,p_files:filesPayload(reply.files)}); await load(); toast('Sent to the approver.','ok'); render(); }
+    catch(e){ $('#fr-go',v).disabled=false; $('#fr-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
 }
+/* Approve with a condition — a normal approve whose condition rides in data_val */
+function flowCondDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; let dt='';
+  modal({title:'Approve with a condition',
+    body:'<p style="margin-top:0">Approve <b>'+esc(s.label)+'</b> with a condition the people after you will see.</p>'+
+      '<div style="margin-top:8px"><label for="fcnd">Condition</label><textarea id="fcnd" placeholder="e.g. release only after the revised quote is attached"></textarea></div>'+
+      (s.needsDatetime?'<div style="margin-top:10px"><label for="fcnd-dt">Confirmation date & time</label><input type="datetime-local" id="fcnd-dt"></div>':'')+
+      '<div style="margin-top:10px"><label>Supporting documents <span class="hint">optional</span></label><div id="fcnd-files"></div></div>'+
+      '<div id="fcnd-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fcnd-go">Continue</button>',
+    onOpen:(mv,cl)=>{ uploader($('#fcnd-files',mv),local.files,{mode:'support',single:false,label:'Add supporting files (optional)'});
+      $('#fcnd-go',mv).onclick=()=>{ const cond=$('#fcnd',mv).value.trim(); if(cond.length<3) return $('#fcnd-err',mv).textContent='Write the condition.';
+        if(s.needsDatetime){ dt=$('#fcnd-dt',mv).value; if(!dt) return $('#fcnd-err',mv).textContent='Select the date & time.'; }
+        const files=filesPayload(local.files); cl();
+        flowPinThen(()=>flowCall(stepId,'act','Condition: '+cond, files.length?files:null, dt?new Date(dt).toISOString():null, {condition:cond}, 'Approved with a condition.')); }; }});
+}
+/* Ask the requester for more — soft send-back, nothing downstream resets */
+function flowAskDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s;
+  modal({title:'Ask the requester for more',
+    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back to the requester for more, without rejecting. The step stays here and anything already approved stays approved.</p>'+
+      '<div style="margin-top:8px"><label for="fask">What do you need?</label><textarea id="fask" placeholder="e.g. attach the revised quotation / correct the indent amount"></textarea></div><div id="fask-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fask-go">Ask</button>',
+    onOpen:(mv,cl)=>{ $('#fask-go',mv).onclick=()=>{ const t=$('#fask',mv).value.trim(); if(t.length<3) return $('#fask-err',mv).textContent='Say what you need.'; cl();
+      flowPinThen(()=>flowAskCall(stepId,t)); }; }});
+}
+async function flowAskCall(stepId,remark){ busy(true);
+  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin}); await load(); toast('Sent to the requester.','ok'); render(); }
+  catch(e){ fail(e); } finally{ busy(false); } }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
   busy(true);
