@@ -133,7 +133,7 @@ async function load(){
 
   const R={};
   DB.requests=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,infoStep:x.info_step,f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,infoStep:x.info_step,infoTo:x.info_to,f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
@@ -202,7 +202,7 @@ function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
   if(r.status==='Info Requested')return user(r.requesterId);
   const s=r.chain[r.current]; return s?user(s.userId):null }
 const isMyTurn=r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;
-const needsMyInfo=r=>r.status==='Info Requested'&&r.requesterId===ME.id;
+const needsMyInfo=r=>r.status==='Info Requested'&&((r.infoTo&&r.infoTo===ME.id)||(!r.infoTo&&r.requesterId===ME.id));
 const isManager=u=>!!(u&&(u.manager||u.admin||u.owner));
 const teamOf=id=>DB.users.filter(u=>u.active&&u.managerId===id&&u.managerConfirmed);
 const pendingTeam=id=>DB.users.filter(u=>u.active&&u.managerId===id&&!u.managerConfirmed);
@@ -1656,7 +1656,19 @@ function wireDetail(v){
     $('#a-cond',v).onclick=()=>modal({title:'Approve with a condition',body:'<p class="hint" style="margin-top:0">The ERP document cannot be changed from here, so record what must happen instead. The condition travels with the request and every later approver sees it.</p><div style="margin-top:14px"><label for="cd">The condition</label><textarea id="cd" placeholder="e.g. Release only after the revised quote is received."></textarea></div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn ok" id="cg">Approve with this condition</button>',
       onOpen:(mv,close)=>{$('#cg',mv).onclick=()=>{const cond=$('#cd',mv).value.trim(); if(cond.length<5) return toast('Write the condition out in full.','bad'); close(); act('conditional','approve '+docNo(r)+' with a condition',{condition:cond})}}});
-    $('#a-info',v).onclick=()=>{if(!rem()){toast('Tell the requester exactly what you need.','bad');$('#d-rem',v).focus();return} act('info','send '+docNo(r)+' back for more detail')};
+    $('#a-info',v).onclick=()=>{ const state={text:'',tagId:null};
+      modal({title:'Ask for more / tag someone',
+        body:'<p style="margin-top:0" class="hint">Send <b>'+esc(docNo(r))+'</b> back without rejecting — earlier approvals stand. Type <b>@</b> to tag a specific person to check it; leave it untagged to send to the requester.</p>'+
+          '<div style="margin-top:12px"><label for="ai">What do you need? <span class="hint">type @ to tag</span></label>'+
+          '<div style="position:relative"><textarea id="ai" placeholder="e.g. @Name please re-check the rate"></textarea><div id="ai-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
+          '<div id="ai-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
+          '<div id="ai-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+        footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="ai-go">Send</button>',
+        onOpen:(mv,cl)=>{ wireMention(mv,'#ai','#ai-sug','#ai-tags',state);
+          $('#ai-go',mv).onclick=()=>{ const t=(state.text||$('#ai',mv).value).trim(); if(t.length<3) return $('#ai-err',mv).textContent='Say what you need.'; cl();
+            confirmPin('send '+docNo(r)+' back for more',async pin=>{ await rpc('act_on_step',{p_request:r.id,p_action:'info',p_remark:t,p_condition:'',p_pin:pin,p_files:filesPayload(files),p_to:state.tagId||null});
+              await after(state.tagId?('Tagged '+user(state.tagId).name+' to check.'):'Sent back to '+user(r.requesterId).name+'.'); }); }; }});
+    };
     $('#a-no',v).onclick=()=>{if(!rem()){toast('Say why you are rejecting it before you close it.','bad');$('#d-rem',v).focus();return} act('reject','reject '+docNo(r))};
   }
   if(needsMyInfo(r)){
