@@ -247,10 +247,10 @@ const gpClearedToday=()=>DB.passes.filter(g=>g.gateBy===ME.id&&g.passDate===DAY(
 const gpAllToday=()=>DB.passes.filter(g=>g.passDate===DAY());
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()&&g.requesterId!==ME.id):[];   // a gateman clears others, never their own pass
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
-const GP_KINDS=[['early','Early going'],['halfday','Half day leave'],['official','Official work outpass']];
+const GP_KINDS=[['early','Early going'],['halfday','Half day leave'],['official','Outpass']];
 const gpKindNote=k=>k==='early'?('Early-going passes left this month: <b>'+Math.max(0,2-gpEarlyUsed())+' of 2</b>. The gateman signs you out — you are not returning.')
   :k==='halfday'?'Half day leave — the gateman signs you out; you are not expected back today.'
-  :'Official work outpass — the gateman records your out-time and, when you return, the time back. Not capped.';
+  :'Outpass — the gateman records your out-time and, when you return, the time back. Not capped.';
 const gpKindLabel=g=>{const k=(typeof g==='string')?g:g.kind;const m=GP_KINDS.find(x=>x[0]===k);return m?m[1]:k;};
 const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind==='early'&&g.status!=='rejected'&&String(g.passDate).slice(0,7)===m).length};
 const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
@@ -2007,7 +2007,7 @@ function localPicker(mount,label,onFile){
    stamps the time it arrives. Photos are wiped after 7 days; the
    record of who signed, and when, is permanent.
    ============================================================ */
-let gpDraft=null, gateTab='desk';
+let gpDraft=null, gateTab='desk', gateKindFilter='all';
 async function selfieUpload(blob){
   const path=ME.id+'/gate-'+uid()+'.jpg';
   const {error}=await SB.storage.from('documents').upload(path,blob,{contentType:'image/jpeg',upsert:false});
@@ -2202,20 +2202,45 @@ function gpRow(g,opts){
     (opts.action?'<td class="meta">'+opts.action+'</td>':'')+'</tr>';
 }
 const gpSection=(title,count,inner)=>'<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(title)+'</h3><span class="tag '+(count?'t-ok':'t-wait')+'" style="margin-left:auto">'+count+'</span></div>'+inner+'</div>';
+/* reactive bifurcation bar: one chip per pass type with a live count; tap to filter.
+   `base` is the set the counts are drawn from (today's at-gate + cleared). */
+function gpKindBar(base){
+  const cnt=k=>base.filter(g=>g.kind===k).length;
+  const chip=(val,label,n)=>{ const on=gateKindFilter===val;
+    return '<button data-gk="'+val+'" style="display:inline-flex;align-items:center;gap:7px;border:1px solid '+(on?'var(--indigo)':'var(--line)')+';background:'+(on?'var(--indigo)':'var(--card,#fff)')+';color:'+(on?'#fff':'inherit')+';border-radius:999px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer">'+
+      '<span style="display:inline-flex;min-width:20px;height:20px;align-items:center;justify-content:center;border-radius:999px;font-size:12px;line-height:1;padding:0 6px;background:'+(on?'rgba(255,255,255,.26)':'var(--wash,#eef2ff)')+';color:'+(on?'#fff':'var(--indigo)')+'">'+n+'</span>'+esc(label)+'</button>'; };
+  return '<div class="row" style="gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:14px">'+
+    chip('all','All',base.length)+GP_KINDS.map(k=>chip(k[0],k[1],cnt(k[0]))).join('')+
+    '<button class="btn sm" id="gc-xlsx" style="margin-left:auto">⬇ Excel (this view)</button></div>';
+}
+/* download the currently selected console view (today, filtered by type) */
+function gateConsoleExport(){
+  if(!window.XLSX){ toast('Spreadsheet engine still loading — try again in a moment.','bad'); return; }
+  const fk=gateKindFilter, base=gpAtGate().concat(gpClearedToday());
+  const sel=base.filter(g=>fk==='all'||g.kind===fk);
+  if(!sel.length) return toast('Nothing in this view to download.','bad');
+  const rows=sel.map(gpToObj), ws=XLSX.utils.json_to_sheet(rows), wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Gate '+DAY());
+  XLSX.writeFile(wb,'gate-today_'+DAY()+(fk==='all'?'':'_'+fk)+'.xlsx');
+  toast('Downloaded '+sel.length+' entr'+(sel.length===1?'y':'ies')+'.','ok');
+}
 /* the gateman/HR-head console: dense rows, newest live at the top */
 function gateConsole(){
   const gm=isGateman(ME);
   let h='';
   if(gm){
-    const needs=gpAtGate();
-    h+=gpSection('At the gate',needs.length,
+    const needsAll=gpAtGate(), doneAll=gpClearedToday();
+    const fk=gateKindFilter, keep=g=>fk==='all'||g.kind===fk;
+    const needs=needsAll.filter(keep), done=doneAll.filter(keep);
+    const suffix=fk==='all'?'':' · '+gpKindLabel(fk);
+    h+=gpKindBar(needsAll.concat(doneAll));
+    h+=gpSection('At the gate'+suffix,needs.length,
       needs.length
         ? '<div style="padding:10px 16px 0" class="hint">Tap a photo to enlarge. New passes arrive here live.</div><table class="cards gp-dense"><tbody>'+needs.map(g=>gpRow(g,{action:'<button class="btn primary sm" data-gate="'+g.id+'">'+gpGateBtnLabel(g)+'</button>'})).join('')+'</tbody></table>'
-        : '<div class="empty" style="padding:24px 16px"><h3>No one at the gate right now</h3><p class="hint">Cleared passes land here the moment HR signs — live.</p></div>');
-    const done=gpClearedToday();
-    h+=gpSection('Cleared today',done.length,
+        : '<div class="empty" style="padding:24px 16px"><h3>'+(fk==='all'?'No one at the gate right now':'No '+esc(gpKindLabel(fk).toLowerCase())+' at the gate right now')+'</h3><p class="hint">Cleared passes land here the moment HR signs — live.</p></div>');
+    h+=gpSection('Cleared today'+suffix,done.length,
       done.length ? '<table class="cards gp-dense"><tbody>'+done.map(g=>gpRow(g,{})).join('')+'</tbody></table>'
-        : '<div class="empty" style="padding:18px 16px"><p class="hint">Nothing cleared yet today.</p></div>');
+        : '<div class="empty" style="padding:18px 16px"><p class="hint">Nothing cleared yet today'+(fk==='all'?'':' in this type')+'.</p></div>');
   } else {
     const all=gpAllToday();
     h+='<div class="hint" style="margin:-2px 0 12px">Live, read-only view of every gate pass today. Full history and graphs are under Reports.</div>'+
@@ -2286,12 +2311,15 @@ function viewGate(){
       '<button data-gt="new" class="'+(tab==='new'?'on':'')+'">New pass</button></div>'+
       '<div id="gate-body">'+(tab==='desk'?gateConsole():gateCreateAndMine())+'</div>';
   }
-  head('Gate Pass','Take an early-going or official outpass — a live selfie is your signature');
+  head('Gate Pass','Take an early-going pass or an outpass — a live selfie is your signature');
   return gateCreateAndMine();
 }
 function wireGate(v){
   // console tabs (gateman / HR head)
   $$('[data-gt]',v).forEach(b=>b.onclick=()=>{ gateTab=b.dataset.gt; render(); });
+  // bifurcation chips (early / half day / outpass) + per-view Excel
+  $$('[data-gk]',v).forEach(b=>b.onclick=()=>{ gateKindFilter=b.dataset.gk; render(); });
+  if($('#gc-xlsx',v)) $('#gc-xlsx',v).onclick=()=>gateConsoleExport();
   // whole console/history row → open the pass's photos & timeline
   if($('#g-send',v)){
   const d=gpDraft;
@@ -2399,7 +2427,7 @@ function gpRepBody(){
   const rows=gpRepData(), byType=k=>rows.filter(g=>g.kind===k).length;
   const kpis='<div class="grid g4" style="margin:14px 0">'+
     stat('Total passes',rows.length,'In the selected range','var(--indigo)')+
-    stat('Early / Half / Official',byType('early')+' / '+byType('halfday')+' / '+byType('official'),'By type','var(--cyan)')+
+    stat('Early / Half / Outpass',byType('early')+' / '+byType('halfday')+' / '+byType('official'),'By type','var(--cyan)')+
     '<div class="gpr-click" data-gpby="status" data-gpval="out">'+stat('Currently out',rows.filter(g=>g.status==='out').length,'Tap to list · not back yet',rows.some(g=>g.status==='out')?'var(--hold)':'var(--seal)')+'</div>'+
     '<div class="gpr-click" data-gpby="status" data-gpval="rejected">'+stat('Rejected',rows.filter(g=>g.status==='rejected').length,'Tap to list · declined','var(--stop)')+'</div>'+'</div>';
   const deptAgg=gpAgg(rows,g=>g.dept).sort((a,b)=>b.value-a.value);
@@ -2438,11 +2466,12 @@ function viewGpReport(){
     '</div><div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="gr-reset">Reset to last 30 days</button><button class="btn primary" id="gr-xlsx">Download Excel</button><button class="btn" id="gr-csv">Download CSV</button></div></div>';
   return filters+'<div id="gpr-body">'+gpRepBody()+'</div>';
 }
-function gpRepRows(){ return gpRepData().map(g=>({
+function gpToObj(g){ return {
   Ref:g.ref, Type:gpKindLabel(g), Name:g.name||user(g.requesterId).name, 'Employee ID':g.employeeId||'',
   Department:g.dept||'', Purpose:g.purpose||'', Status:(GP_STATUS[g.status]||['',g.status])[1],
   HOD:g.hodId?user(g.hodId).name:'', HR:g.hrId?user(g.hrId).name:'', 'Cleared by':g.gateBy?user(g.gateBy).name:'',
-  Created:fmtDT(g.createdAt),'HOD signed':fmtDT(g.hodAt),'HR signed':fmtDT(g.hrAt),'Out':fmtDT(g.outAt),'Return':fmtDT(g.returnAt),'Pass date':g.passDate })); }
+  Created:fmtDT(g.createdAt),'HOD signed':fmtDT(g.hodAt),'HR signed':fmtDT(g.hrAt),'Out':fmtDT(g.outAt),'Return':fmtDT(g.returnAt),'Pass date':g.passDate }; }
+function gpRepRows(){ return gpRepData().map(gpToObj); }
 function gpRepDownload(fmt){
   const rows=gpRepRows(); if(!rows.length) return toast('No entries in this range.','bad');
   const name='gate-passes_'+gpRepFilter.from+'_to_'+gpRepFilter.to;
