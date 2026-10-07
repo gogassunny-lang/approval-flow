@@ -1504,13 +1504,19 @@ function viewTasks(){
 }
 let allF={q:'',status:'',type:''};
 function viewAll(){
-  let l=visible().sort((a,b)=>b.createdAt-a.createdAt);
+  const base=visible();
+  let l=base.slice().sort((a,b)=>b.createdAt-a.createdAt);
   if(allF.status) l=l.filter(r=>r.status===allF.status); if(allF.type) l=l.filter(r=>r.type===allF.type);
   if(allF.q){const q=allF.q.toLowerCase();l=l.filter(r=>(docTitle(r)+' '+r.ref+' '+user(r.requesterId).name+' '+(r.f.remarks||'')).toLowerCase().includes(q))}
+  // tell apart "no legacy requests at all" from "none match the filter" — the
+  // ALDS PO/WO flows render in their own section just below this one.
+  const empty = base.length===0
+    ? '<div class="card"><div class="empty"><h3>No custom-chain requests</h3><p class="hint">These filters cover REQ-I / REQ-W custom-chain requests. ALDS PO / WO flows are shown below and have their own filter.</p></div></div>'
+    : '<div class="card"><div class="empty"><h3>Nothing matches that</h3></div></div>';
   return '<div class="card pad" style="margin-bottom:16px"><div class="row filters-row" style="flex-wrap:wrap;gap:12px"><div style="flex:1;min-width:220px"><input id="a-q" type="text" placeholder="Search number, site, vendor, requester or remark" value="'+esc(allF.q)+'"></div>'+
     '<select id="a-ty" style="width:auto"><option value="">Both types</option><option value="indent" '+(allF.type==='indent'?'selected':'')+'>Indent</option><option value="workorder" '+(allF.type==='workorder'?'selected':'')+'>Work order</option></select>'+
     '<select id="a-st" style="width:auto"><option value="">Every status</option>'+['In Progress','Info Requested','Approved','Rejected'].map(s=>'<option '+(allF.status===s?'selected':'')+'>'+s+'</option>').join('')+'</select></div></div>'+
-    (l.length?'<div class="card">'+rowsHTML(l)+'</div>':'<div class="card"><div class="empty"><h3>Nothing matches that</h3></div></div>');
+    (l.length?'<div class="card">'+rowsHTML(l)+'</div>':empty);
 }
 document.addEventListener('input',e=>{if(e.target.id==='a-q'){allF.q=e.target.value;const p=e.target.selectionStart;render();const n=$('#a-q');if(n){n.focus();n.setSelectionRange(p,p)}}});
 document.addEventListener('change',e=>{if(e.target.id==='a-st'){allF.status=e.target.value;render()} if(e.target.id==='a-ty'){allF.type=e.target.value;render()}});
@@ -2600,11 +2606,19 @@ function flowSection(ctx){
   const reqIds=[...new Set(list.map(f=>f.requesterId))].sort((a,b)=>user(a).name.localeCompare(user(b).name));
   if(ft.req&&reqIds.indexOf(ft.req)<0) ft.req='';   // stale pick no longer present
   let shown=list.slice();
+  // on the All requests page, obey the page's type / status filter so it covers
+  // both engines: Indent ↔ ALDS PO flows, Work order ↔ ALDS WO flows.
+  if(ctx==='all'){
+    if(allF.type==='indent') shown=shown.filter(f=>f.head==='PO');
+    else if(allF.type==='workorder') shown=shown.filter(f=>f.head==='WO');
+    if(allF.status){ const sm={'In Progress':'running','Approved':'completed'}[allF.status];
+      shown = sm ? shown.filter(f=>f.status===sm) : []; }   // Info Requested / Rejected have no flow equivalent
+  }
   if(ft.req) shown=shown.filter(f=>f.requesterId===ft.req);
   if(ft.q){const q=ft.q.toLowerCase(); shown=shown.filter(f=>((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+f.division+' '+flowHeadLabel(f.head)).toLowerCase().includes(q));}
   shown.sort((a,b)=>b.createdAt-a.createdAt);
   const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
-  const filtered=ft.req||ft.q;
+  const filtered=ft.req||ft.q||(ctx==='all'&&(allF.type||allF.status));
   const bar=reqIds.length>1||list.length>1
     ? '<div class="row filters-row" style="gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">'+
         '<select class="fl-req" data-ctx="'+ctx+'" style="width:auto"><option value="">All requesters ('+reqIds.length+')</option>'+
@@ -2617,7 +2631,7 @@ function flowSection(ctx){
       '<span class="tag t-prog" style="margin-left:auto">'+shown.length+(filtered?' of '+list.length:'')+'</span></div>'+
     bar+
     (shown.length?'<table class="cards"><tbody>'+shown.map(flowRow).join('')+'</tbody></table>'
-      :'<div class="empty" style="padding:22px 16px"><h3>Nothing matches</h3><p class="hint">No flow matches this requester or search.</p></div>')+
+      :'<div class="empty" style="padding:22px 16px"><h3>Nothing matches</h3><p class="hint">No flow matches the current filter.</p></div>')+
     '</div>';
 }
 function wireFlowRows(v){
