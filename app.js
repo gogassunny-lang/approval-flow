@@ -2024,6 +2024,35 @@ async function selfieUpload(blob){
   if(error) throw error;
   return path;
 }
+/* shrink any picked/captured image to a <=edge jpeg (strips EXIF, caps size) */
+async function downscaleToJpeg(fileOrBlob,edge,q){
+  const url=URL.createObjectURL(fileOrBlob);
+  try{
+    const img=await new Promise((res,rej)=>{ const i=new Image(); i.onload=()=>res(i); i.onerror=()=>rej(new Error('image')); i.src=url; });
+    const w=img.naturalWidth||img.width||720, h=img.naturalHeight||img.height||720, scale=Math.min(1,(edge||1000)/Math.max(w,h));
+    const cv=document.createElement('canvas'); cv.width=Math.max(1,Math.round(w*scale)); cv.height=Math.max(1,Math.round(h*scale));
+    cv.getContext('2d').drawImage(img,0,0,cv.width,cv.height);
+    return await new Promise(res=>cv.toBlob(res,'image/jpeg',q||0.82));
+  } finally { URL.revokeObjectURL(url); }
+}
+/* fallback when the live WebView camera is blocked: take the photo with the
+   phone's own camera app via a file input. This works even when the app was
+   built without the WebRTC camera permission, because the OS camera app (not
+   SETU) takes the picture. Resolves to a jpeg Blob, or null if cancelled. */
+function nativeCameraCapture(){
+  return new Promise(resolve=>{
+    const inp=document.createElement('input');
+    inp.type='file'; inp.accept='image/*'; inp.setAttribute('capture','user');
+    inp.style.position='fixed'; inp.style.left='-9999px'; inp.style.top='0';
+    let settled=false; const done=v=>{ if(settled)return; settled=true; window.removeEventListener('focus',onFocus); try{document.body.removeChild(inp)}catch(e){}; resolve(v); };
+    inp.onchange=async()=>{ const f=inp.files&&inp.files[0]; if(!f) return done(null);
+      try{ done(await downscaleToJpeg(f,1000,0.82)); }catch(e){ done(null); } };
+    // if the picker is dismissed, the window regains focus with no file chosen
+    const onFocus=()=>setTimeout(()=>{ if(!settled && !(inp.files&&inp.files.length)) done(null); },1200);
+    window.addEventListener('focus',onFocus);
+    document.body.appendChild(inp); inp.click();
+  });
+}
 /* opens the front camera, lets you capture and confirm one frame, uploads it,
    and resolves to the stored path (or null if the person backed out) */
 function captureSelfie(title){
@@ -2038,6 +2067,22 @@ function captureSelfie(title){
         const stage=$('#sf-stage',v), msg=$('#sf-msg',v), shoot=$('#sf-shoot',v), retake=$('#sf-retake',v);
         const obs=new MutationObserver(()=>{ if(!v.isConnected){ obs.disconnect(); finish(path) } });
         obs.observe(v.parentNode||document.body,{childList:true});
+        // take the shot with the phone's camera app when the live camera can't start
+        const useNative=async()=>{
+          const blob=await nativeCameraCapture(); if(!blob) return;   // cancelled — leave the error + button up
+          shoot.style.display='none'; retake.style.display='none'; if(msg) msg.textContent='';
+          stage.innerHTML='<div class="selfie-hint"><span class="spin"></span> Saving…</div>';
+          try{ path=await selfieUpload(blob); cl(); }
+          catch(e){ showCamErr('Could not save the photo. Try again.'); }
+        };
+        // render a camera error with a one-tap fallback to the phone camera app
+        function showCamErr(html){
+          stage.innerHTML='<div class="selfie-err">'+html+'</div>'+
+            '<button class="btn primary" id="sf-native" style="margin-top:12px;width:100%">📷 Use phone camera</button>'+
+            '<div class="hint" style="margin-top:7px;text-align:center">This opens your phone’s camera to take the selfie now. To get the live circle guide back, allow Camera for SETU and reopen the app.</div>';
+          shoot.style.display='none'; retake.style.display='none';
+          const nb=$('#sf-native',stage); if(nb) nb.onclick=useNative;
+        }
         const showLive=()=>{ const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
           video.muted=true; video.className='selfie-video mirror'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
           const ring=document.createElement('div'); ring.className='selfie-ring'; stage.appendChild(ring);   // face guide: a real face fills the oval, a held-up photo won't line up
@@ -2046,10 +2091,10 @@ function captureSelfie(title){
           const md=navigator.mediaDevices;
           if(!md||!md.getUserMedia){
             const secure=window.isSecureContext!==false && location.protocol==='https:';
-            stage.innerHTML='<div class="selfie-err">The camera isn’t available to the app.'+
+            showCamErr('The live camera isn’t available to the app.'+
               '<div class="hint" style="margin-top:6px">'+(secure
-                ? 'On the mobile app this usually means the app has not been given camera permission. Open your phone’s Settings → Apps → SETU → Permissions and allow the Camera, then reopen SETU.'
-                : 'The page must be opened over a secure (https) connection for the camera to work.')+'</div></div>';
+                ? 'This app build was not given camera access, so the live view can’t start. Use the phone camera below for now; to restore the live circle, the app needs to be rebuilt with Camera enabled.'
+                : 'The page must be opened over a secure (https) connection for the live camera to work.')+'</div>');
             return;
           }
           // try the front camera; fall back to any camera if the WebView rejects the constraints
@@ -2059,11 +2104,11 @@ function captureSelfie(title){
           if(!stream){
             const name=(err&&(err.name||err.message))||'unknown';
             const why=/NotAllowed|Security|Permission/i.test(name)
-                ? 'Camera permission was blocked. On the mobile app: phone Settings → Apps → SETU → Permissions → allow Camera, then reopen. In a browser: tap the address bar’s site settings and allow the camera.'
+                ? 'The live camera was blocked for this app build. Use the phone camera below for now. To restore the live circle, the app needs Camera enabled in its build (or, if a Camera toggle shows under phone Settings → Apps → SETU → Permissions, allow it and reopen).'
               : /NotFound|Overconstrained/i.test(name) ? 'No usable camera was found on this device.'
               : /NotReadable|InUse|Track/i.test(name) ? 'The camera is busy in another app. Close other camera apps and try again.'
-              : 'The camera could not start ('+esc(String(name))+').';
-            stage.innerHTML='<div class="selfie-err">Camera didn’t open.<div class="hint" style="margin-top:6px">'+why+'</div></div>';
+              : 'The live camera could not start ('+esc(String(name))+').';
+            showCamErr('Live camera didn’t open.<div class="hint" style="margin-top:6px">'+why+'</div>');
             return;
           }
           showLive();
