@@ -551,7 +551,9 @@ async function openViewer(f){
    ============================================================ */
 let signMode='login', firstAccount=false;
 const uniqOf=k=>Array.from(new Set(DB.users.map(u=>(u[k]||'').trim()).filter(Boolean))).sort();
-const lists=()=>'<datalist id="dl-role">'+uniqOf('role').map(d=>'<option value="'+esc(d)+'">').join('')+'</datalist>';
+// standard designations offered in the Designation field (plus any already in use)
+const DESIGNATIONS=['Deputy Manager','Assistant Manager','Manager','Senior Manager','AGM','GM','State Head','AVP','VP','CMD'];
+const lists=()=>'<datalist id="dl-role">'+Array.from(new Set(DESIGNATIONS.concat(uniqOf('role')))).map(d=>'<option value="'+esc(d)+'">').join('')+'</datalist>';
 const deptOptions=sel=>'<option value="">Choose a department</option>'+DB.departments.map(d=>'<option '+(sel===d?'selected':'')+'>'+esc(d)+'</option>').join('');
 /* excludeId is the person whose entry is being edited — they cannot report to themselves.
    When creating someone new there is nobody to exclude, so every leader, including you, is offered. */
@@ -1513,7 +1515,7 @@ function viewAll(){
   const empty = base.length===0
     ? '<div class="card"><div class="empty"><h3>No custom-chain requests</h3><p class="hint">These filters cover REQ-I / REQ-W custom-chain requests. ALDS PO / WO flows are shown below and have their own filter.</p></div></div>'
     : '<div class="card"><div class="empty"><h3>Nothing matches that</h3></div></div>';
-  return '<div class="card pad" style="margin-bottom:16px"><div class="row filters-row" style="flex-wrap:wrap;gap:12px"><div style="flex:1;min-width:220px"><input id="a-q" type="text" placeholder="Search number, site, vendor, requester or remark" value="'+esc(allF.q)+'"></div>'+
+  return '<div class="card pad" style="margin-bottom:16px"><div class="row filters-row" style="flex-wrap:wrap;gap:12px"><div style="flex:1;min-width:220px"><input id="a-q" type="text" placeholder="Search any number (FLOW-, PO/WO no. e.g. 001), site, vendor, requester or remark" value="'+esc(allF.q)+'"></div>'+
     '<select id="a-ty" style="width:auto"><option value="">Both types</option><option value="indent" '+(allF.type==='indent'?'selected':'')+'>Indent</option><option value="workorder" '+(allF.type==='workorder'?'selected':'')+'>Work order</option></select>'+
     '<select id="a-st" style="width:auto"><option value="">Every status</option>'+['In Progress','Info Requested','Approved','Rejected'].map(s=>'<option '+(allF.status===s?'selected':'')+'>'+s+'</option>').join('')+'</select></div></div>'+
     (l.length?'<div class="card">'+rowsHTML(l)+'</div>':empty);
@@ -2615,16 +2617,26 @@ function flowSection(ctx){
       shown = sm ? shown.filter(f=>f.status===sm) : []; }   // Info Requested / Rejected have no flow equivalent
   }
   if(ft.req) shown=shown.filter(f=>f.requesterId===ft.req);
-  if(ft.q){const q=ft.q.toLowerCase(); shown=shown.filter(f=>((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+f.division+' '+flowHeadLabel(f.head)).toLowerCase().includes(q));}
+  // text search: on the All requests page the page's own search box drives it (so one
+  // box covers both engines); elsewhere this section's own box does. It matches the
+  // FLOW reference AND the real PO / WO / indent number (stored in the title and fields),
+  // so searching "1052" or the document number "W326O08-001" / just "001" all work.
+  const q=((ctx==='all'?allF.q:ft.q)||'').trim().toLowerCase();
+  if(q){ shown=shown.filter(f=>{
+    const extra=Object.keys(f.fields||{}).map(k=>f.fields[k]).filter(v=>typeof v==='string'||typeof v==='number').join(' ');
+    return ((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+(f.division||'')+' '+flowHeadLabel(f.head)+' '+extra).toLowerCase().includes(q); }); }
   shown.sort((a,b)=>b.createdAt-a.createdAt);
   const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
-  const filtered=ft.req||ft.q||(ctx==='all'&&(allF.type||allF.status));
+  const onAll=ctx==='all';
+  const filtered=ft.req||ft.q||(onAll&&(allF.type||allF.status||allF.q));
   const bar=reqIds.length>1||list.length>1
     ? '<div class="row filters-row" style="gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">'+
         '<select class="fl-req" data-ctx="'+ctx+'" style="width:auto"><option value="">All requesters ('+reqIds.length+')</option>'+
           reqIds.map(id=>'<option value="'+id+'" '+(ft.req===id?'selected':'')+'>'+esc(user(id).name)+'</option>').join('')+'</select>'+
-        '<input class="fl-q" data-ctx="'+ctx+'" type="text" placeholder="Search number, title or division" value="'+esc(ft.q)+'" style="flex:1;min-width:180px">'+
-        (filtered?'<button class="btn ghost sm fl-clear" data-ctx="'+ctx+'">Clear</button>':'')+
+        // the All page already has the top search box, so don't show a duplicate here
+        (onAll?'<div class="hint" style="flex:1;min-width:180px;align-self:center">Use the search box at the top to find a number, title or division.</div>'
+             :'<input class="fl-q" data-ctx="'+ctx+'" type="text" placeholder="Search number, title or division" value="'+esc(ft.q)+'" style="flex:1;min-width:180px">')+
+        ((ft.req||ft.q)?'<button class="btn ghost sm fl-clear" data-ctx="'+ctx+'">Clear</button>':'')+
       '</div>'
     : '';
   return '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>'+label+'</h3>'+
