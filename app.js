@@ -1265,10 +1265,12 @@ const area=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for=
 function orgFields(){
   const f=draft.f, divs=f.department?(DEPT_DIV[f.department]||[]):[];
   const req='<span style="color:var(--stop)">*</span>';
+  // Division is mandatory only for ALDS (it selects the fixed flow); optional elsewhere.
+  const divReq=f.department==='ALDS'?req:'<span class="hint" style="font-weight:400">optional</span>';
   return '<div class="grid g2">'+
     '<div><label for="o-dept">Department '+req+'</label><select id="o-dept"><option value="">Choose…</option>'+
       DEPTS.map(d=>'<option '+(f.department===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
-    '<div><label for="o-div">Division '+req+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?'Choose…':'Pick a department first')+'</option>'+
+    '<div><label for="o-div">Division '+divReq+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?(f.department==='ALDS'?'Choose…':'Choose… (optional)'):'Pick a department first')+'</option>'+
       divs.map(x=>'<option '+(f.division===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select></div></div>';
 }
 const uploadCard=()=>'<div class="card pad"><h3>The ERP document</h3><p class="hint" style="margin-top:5px">The indent or work order PDF the ERP generated. The fields below fill in from it — every one of them stays editable.</p><div id="n-files" style="margin-top:14px"></div></div>'+
@@ -1431,7 +1433,9 @@ function wireNew(v){
 async function submit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
   if(!f.department) return note.textContent='Choose a department.';
-  if(!f.division) return note.textContent='Choose a division.';
+  // Division is only required for ALDS (it decides the fixed PO/WO flow vs Transport).
+  // For every other department the request is a custom chain, so Division is optional.
+  if(f.department==='ALDS'&&!f.division) return note.textContent='Choose a division for the ALDS request.';
   if(isFlowDraft()) return flowRaiseSubmit(note);
   if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; if(!f.indentDate) return note.textContent='Date of indent is needed.';
     if(f.category==='Project'){ if(!f.projectName) f.projectName='ALDS Project' } else if(!f.siteName) return note.textContent='Site name is needed.'; }
