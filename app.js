@@ -889,7 +889,9 @@ function readForRequest(id){ const mine=(DB.notifs||[]).filter(x=>x.requestId===
 function pushRegister(){
   try{
     const m=window.median||window.gonative; if(!m||!m.onesignal||!ME) return;
-    if(m.onesignal.login) m.onesignal.login({externalId:ME.id});
+    // Median's login expects the external id as a plain string (not an object);
+    // passing an object stored it as {"externalId":"..."} and broke targeting.
+    if(m.onesignal.login) m.onesignal.login(ME.id);
     else if(m.onesignal.externalUserId&&m.onesignal.externalUserId.set) m.onesignal.externalUserId.set({externalId:ME.id});
     if(m.onesignal.register) m.onesignal.register();
   }catch(e){}
