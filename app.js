@@ -138,7 +138,7 @@ async function load(){
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
     const step=S[s.id]={id:s.id,userId:s.user_id,status:s.status,remark:s.remark||'',condition:s.condition||'',
-      actedAt:ts(s.acted_at),files:[],tasks:[]};
+      systemApproved:!!s.system_approved,position:s.position,actedAt:ts(s.acted_at),files:[],tasks:[]};
     r.chain[s.position]=step});
   const T={};
   tasks.forEach(t=>{const s=S[t.step_id]; if(!s) return;
@@ -169,7 +169,7 @@ async function load(){
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
-      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
       infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoTos:s.info_tos||[],infoReplies:s.info_replies||[],infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
       actors:[],files:[]}});
@@ -1563,12 +1563,15 @@ function viewDetail(id){
     if(thisDept&&prevDept&&thisDept!==prevDept) nodes+='<div class="handover"><span>'+esc(prevDept)+'</span><i></i><b>'+esc(thisDept)+'</b></div>';
     const live=(r.status==='In Progress'&&i===r.current)||(r.status==='Info Requested'&&i===r.infoStep);
     const cls=s.status==='approved'?'done':s.status==='conditional'?'done cond':s.status==='rejected'?'stop':s.status==='info'?'hold':live?'live':s.status==='waiting'?'locked':'';
-    const tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-hold">Asked for more</span>',
+    let tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-hold">Asked for more</span>',
       pending:stepBlocked(s)?'<span class="tag t-hold">Work given out</span>':'<span class="tag t-prog">Holding it now</span>',waiting:'<span class="tag t-wait">Waiting turn</span>'}[s.status]||'';
+    if(s.systemApproved) tag='<span class="tag t-ok" style="background:var(--indigo);color:#fff">System Approved — by super admin</span>';
     const dot=(s.status==='approved'||s.status==='conditional')?'✓':s.status==='rejected'?'✕':s.status==='info'?'?':String(i+2);
+    const sysBtn=(ME.owner&&(r.status==='In Progress'||r.status==='Info Requested')&&(s.status==='pending'||s.status==='waiting'||s.status==='info'))
+      ?'<div style="margin-top:8px"><button class="btn ghost sm" data-sys="'+i+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button></div>':'';
     nodes+='<div class="node '+cls+'" id="step-'+i+'"><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
-      (s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark?'<div class="said">'+esc(s.remark)+'</div>':'')+
-      (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+fileListHTML(s.files)+subBranchHTML(r,s)+'</div></div>';
+      (s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
+      (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+fileListHTML(s.files)+subBranchHTML(r,s)+sysBtn+'</div></div>';
   });
   const notes=r.notes.length?'<div class="card pad" style="margin-top:16px"><h3>Notes</h3>'+r.notes.map(n=>'<div style="display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--line)"><div class="av sm">'+inits(user(n.userId).name)+'</div><div><div style="font-size:13.5px"><b>'+esc(user(n.userId).name)+'</b> <span class="hint">'+esc(fmtDT(n.ts))+'</span></div><div style="white-space:pre-wrap">'+esc(n.text)+'</div></div></div>').join('')+'</div>':'';
 
@@ -1609,9 +1612,28 @@ function viewDetail(id){
     (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
   return '<button class="btn ghost sm" id="d-back" style="margin-bottom:12px">Back</button>'+banner+'<div class="detail-grid"><div><div class="card pad"><h3 style="margin-bottom:16px">The chain</h3><div class="rail">'+nodes+'</div></div>'+notes+'</div><div>'+facts+panel+'</div></div>';
 }
+/* Super-admin override (legacy chain): system-approve up to and including a position */
+function sysApproveTo(position){
+  const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r||!ME.owner) return;
+  const s=r.chain[position]; if(!s) return;
+  let span=0; for(let i=r.current;i<=position;i++){ const st=r.chain[i]; if(st&&(st.status==='pending'||st.status==='waiting'||st.status==='info')) span++; }
+  const next=r.chain[position+1];
+  modal({title:'System-approve as super admin',
+    body:'<p style="margin-top:0">Approve every step up to and including <b>'+esc(user(s.userId).name)+'</b> (step '+(position+2)+') in one go.</p>'+
+      '<div class="banner" style="margin-top:8px"><div class="hint"><b>'+span+' step'+(span===1?'':'s')+'</b> will be marked <b style="color:var(--indigo)">System Approved — by super admin</b> and locked. '+
+      (next?('It then sits live with <b>'+esc(user(next.userId).name)+'</b> at step '+(position+3)+', whose action buttons go active.'):'This <b>closes the request as Approved</b>.')+'</div></div>'+
+      '<p class="hint" style="margin-top:8px">The full chain stays visible to everyone. Signed with your PIN.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="sa-go">System-approve</button>',
+    onOpen:(mv,cl)=>{ $('#sa-go',mv).onclick=()=>{ cl();
+      confirmPin('system-approve '+docNo(r)+' to step '+(position+2),async pin=>{
+        await rpc('owner_approve_to',{p_request:r.id,p_position:position,p_pin:pin});
+        await load(); toast('System-approved by super admin.','ok'); go({name:'detail',id:r.id});
+      }); }; }});
+}
 function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
   $('#d-back',v).onclick=()=>go({name:'all'});
+  $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
   if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
   if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
@@ -2663,10 +2685,14 @@ function wireFlowRows(v){
 const FLOW_ST={waiting:['t-wait','Waiting'],pending:['t-prog','Now here'],done:['t-ok','Done'],skipped:['t-hold','Skipped']};
 /* read-only timeline row — the actions live in the right-hand panel */
 function flowStepRow(f,s){
-  const st=FLOW_ST[s.status]||['t-wait',s.status];
+  let st=FLOW_ST[s.status]||['t-wait',s.status];
+  if(s.systemApproved) st=['t-ok','System approved'];
   const actors=s.actors.map(id=>user(id).name).join(', ')||'—';
   let meta='';
-  if(s.status==='done'){ meta='<div class="hint">'+(s.actedBy?esc(user(s.actedBy).name):'—')+' · '+esc(fmtDT(s.actedAt))+(s.remark?' · '+esc(s.remark):'')+'</div>'; }
+  if(s.status==='done'){
+    if(s.systemApproved) meta='<div class="hint" style="color:var(--indigo)"><b>System Approved — by super admin</b> · '+esc(fmtDT(s.actedAt))+'</div>';
+    else meta='<div class="hint">'+(s.actedBy?esc(user(s.actedBy).name):'—')+' · '+esc(fmtDT(s.actedAt))+(s.remark?' · '+esc(s.remark):'')+'</div>';
+  }
   if(s.dataVal&&s.dataVal.condition) meta+='<div class="hint" style="color:var(--hold)">Condition: '+esc(s.dataVal.condition)+'</div>';
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
   if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
@@ -2676,9 +2702,11 @@ function flowStepRow(f,s){
   if(s.infoReplies&&s.infoReplies.length) meta+=s.infoReplies.map(e=>'<div class="hint">'+esc(e.name||user(e.user_id).name)+' replied: '+esc(e.text)+'</div>').join('');
   else if(s.infoReply&&!s.infoRequested) meta+='<div class="hint">Replied: '+esc(s.infoReply)+'</div>';
   const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
+  const sysBtn=(ME.owner&&f.status==='running'&&(s.status==='pending'||s.status==='waiting'))
+    ?'<div style="margin-top:6px"><button class="btn ghost sm" data-fsys="'+s.id+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button></div>':'';
   return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
     '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span></div>'+
-    '<div class="hint">'+esc(actors)+'</div>'+meta+files+'</div></div>';
+    '<div class="hint">'+esc(actors)+'</div>'+meta+files+sysBtn+'</div></div>';
 }
 const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:'Approve',confirm:'Confirm',data:'Enter details & sign',payment:'Initiate advice'})[s.action]||'Submit';
 /* left: the read-only stage/step timeline. right: the current person's options. */
@@ -2755,6 +2783,7 @@ function wireFlowDetail(v){
   $$('[data-fact]',v).forEach(b=>b.onclick=()=>flowAct(b.dataset.fact));
   $$('[data-fcond]',v).forEach(b=>b.onclick=()=>flowCondDialog(b.dataset.fcond));
   $$('[data-fask]',v).forEach(b=>b.onclick=()=>flowAskDialog(b.dataset.fask));
+  $$('[data-fsys]',v).forEach(b=>b.onclick=()=>flowSysApprove(b.dataset.fsys));
   // requester's reply panel (answer an "ask for more")
   const reply={files:[]};
   if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
@@ -2823,6 +2852,22 @@ async function flowAskCall(stepId,remark,toIds){ busy(true);
   const tos=(toIds&&toIds.length)?toIds:null;
   try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin,p_tos:tos}); await load();
     toast(tos?('Tagged '+tos.map(id=>user(id).name).join(', ')+' to check.'):'Sent to the requester.','ok'); render(); }
+  catch(e){ fail(e); } finally{ busy(false); } }
+/* Super-admin override: system-approve every step up to and including this one */
+function flowSysApprove(stepId){
+  const x=flowFindStep(stepId); if(!x||!ME.owner) return; const f=x.f, s=x.s;
+  const span=f.steps.filter(st=>st.pos>=f.currentPos&&st.pos<=s.pos&&(st.status==='pending'||st.status==='waiting')).length;
+  const next=f.steps.find(st=>st.pos===s.pos+1);
+  modal({title:'System-approve as super admin',
+    body:'<p style="margin-top:0">Approve every step up to and including <b>'+esc(s.label)+'</b> in one go.</p>'+
+      '<div class="banner" style="margin-top:8px"><div class="hint"><b>'+span+' step'+(span===1?'':'s')+'</b> will be marked <b style="color:var(--indigo)">System Approved — by super admin</b> and locked. '+
+      (next?('It then sits live with <b>'+esc(next.actors.map(id=>user(id).name).join(', ')||'—')+'</b> at “'+esc(next.label)+'”, whose action buttons go active.'):'This <b>completes</b> the request.')+'</div></div>'+
+      '<p class="hint" style="margin-top:8px">The full hierarchy stays visible to everyone. Signed with your PIN.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fsa-go">System-approve</button>',
+    onOpen:(mv,cl)=>{ $('#fsa-go',mv).onclick=()=>{ cl(); flowPinThen(()=>flowSysCall(stepId)); }; }});
+}
+async function flowSysCall(stepId){ busy(true);
+  try{ await rpc('flow_owner_approve',{p_step:stepId,p_pin:flowCall._pin}); await load(); toast('System-approved by super admin.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
