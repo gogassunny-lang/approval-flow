@@ -264,6 +264,12 @@ const DEPT_DIV={
   'CNG':['Maintenance','Logistics','Project','IT Department','Accounts','Operation','Sales & Marketing','Store','Liaison']
 };
 const DEPTS=Object.keys(DEPT_DIV);
+/* optional sub-categories under the indent Category. Leave a category's list
+   empty and no sub-category dropdown shows. Add more here any time. */
+const SUBCATEGORIES={
+  'O&M':['Marketing & Branding','Automation'],
+  'Project':[]
+};
 /* the approver chain (after the requester) for an ALDS indent/work order, keyed by who raises it */
 const ORG_HIERARCHY={
   'manish kamdi':['Sanjay Palod','Chetan Bhoskar','Jatin Vora','Hardik','Jai Singhal','Jinesh Khara','Chetan Bhoskar','Jatin Vora','Jai Singhal','Prachi Khara','Manish Kamdi','Sanjay Palod','Jai Singhal'],
@@ -1304,6 +1310,7 @@ function indentForm(){
      orgFields()+
      '<div class="grid g2">'+txt('i-no','Indent number',f.indentNo,c.indentNo,'IH26605-007')+
        '<div><label for="i-cat">Category</label><select id="i-cat">'+['O&M','Project'].map(x=>'<option '+(f.category===x?'selected':'')+'>'+x+'</option>').join('')+'</select></div></div>'+
+     '<div id="i-subcatwrap"></div>'+
      '<div id="i-sitewrap"></div>'+
      '<div class="grid g2"><div class="auto '+(c.indentDate||'')+'"><label for="i-date">Date of indent'+(c.indentDate?'<span class="flag hi">from PDF</span>':'')+'</label><input id="i-date" type="date" value="'+esc(f.indentDate||'')+'"></div>'+
        txt('i-erp','ERP prepared on (date & time)',f.erpCreated,c.erpCreated,'e.g. 05-JUN-2026 04:29 PM')+'</div>'+
@@ -1327,6 +1334,15 @@ function woForm(){
        '<div><label>GST (derived)</label><input type="text" id="w-gst" readonly style="background:var(--surface-2)"></div></div><div id="w-gstwarn" class="hint"></div>'+
      '<div><label for="w-rem">Remarks</label><textarea id="w-rem" placeholder="Why this work order needs approval.">'+esc(f.remarks||'')+'</textarea><div class="hint">Work orders carry no remark field, so this one is yours to write.</div></div>'+
    '</div></div></div><div>'+rightCol()+'</div></div>';
+}
+function paintSubcat(mount){
+  if(!mount) return;
+  const f=draft.f, opts=(SUBCATEGORIES[f.category]||[]);
+  if(!opts.length){ mount.innerHTML=''; f.subCategory=''; return; }
+  mount.innerHTML='<div><label for="i-subcat">Sub-category <span class="hint" style="font-weight:400">optional</span></label>'+
+    '<select id="i-subcat"><option value="">— none —</option>'+opts.map(x=>'<option '+(f.subCategory===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select>'+
+    '<div class="hint">Pick one only if it applies — leave as “none” otherwise.</div></div>';
+  $('#i-subcat',mount).onchange=e=>{f.subCategory=e.target.value};
 }
 function paintSite(mount){
   if(!mount) return;
@@ -1374,11 +1390,12 @@ function wireNew(v){
     if(!ok) d.textContent='Attach the ERP document above first, then add quotations, photos, Excel or Word here'; };
   syncSupport();
   paintSite($('#i-sitewrap',body)||$('#w-sitewrap',body));
+  paintSubcat($('#i-subcatwrap',body));
   const bind=(id,key,num)=>{const el=$(id,body);if(el)el.oninput=()=>{f[key]=num?(el.value===''?'':Number(el.value)):el.value}};
   bind('#i-no','indentNo');bind('#i-date','indentDate');bind('#i-rem','remarks');bind('#w-no','orderNo');bind('#w-date','woDate');bind('#w-vn','vendorName');bind('#w-va','vendorAddress');
   bind('#w-vs','vendorState');bind('#w-vsc','vendorStateCode');bind('#w-vp','vendorPan');bind('#w-vg','vendorGstin');bind('#w-vc','vendorContact');bind('#w-ba','billingAddress');bind('#w-rem','remarks');
   bind('#w-ap','amountPre',1);bind('#w-aq','amountPost',1);bind('#i-erp','erpCreated');bind('#w-erp','erpCreated');
-  const cat=$('#i-cat',body); if(cat) cat.onchange=()=>{f.category=cat.value;paintSite($('#i-sitewrap',body))};
+  const cat=$('#i-cat',body); if(cat) cat.onchange=()=>{f.category=cat.value;f.subCategory='';paintSite($('#i-sitewrap',body));paintSubcat($('#i-subcatwrap',body))};
   // preload the ALDS hierarchy for this requester (editable), at most once per draft
   const tryAutoHierarchy=()=>{
     if(f.department!=='ALDS'||draft._autoApplied||isFlowDraft()) return;
@@ -1607,7 +1624,7 @@ function viewDetail(id){
   }
   const facts='<div class="card pad" style="margin-bottom:16px">'+(r.type==='workorder'?'<div class="amount num">'+money(f.amountPost)+'</div><div class="hint">'+money(f.amountPre)+' before GST'+(f.amountPre&&f.amountPost?' · GST '+money(f.amountPost-f.amountPre):'')+'</div>':'<div class="amount num">'+esc(docNo(r))+'</div>')+
     '<div style="margin:8px 0 14px">'+tagFor(r)+'</div><dl class="kv"><dt>Reference</dt><dd class="num">'+esc(r.ref)+'</dd><dt>Type</dt><dd>'+esc(typeLabel(r))+'</dd>'+(f.department?'<dt>Department</dt><dd>'+esc(f.department)+'</dd>':'')+(f.division?'<dt>Division</dt><dd>'+esc(f.division)+'</dd>':'')+(f.erpCreated?'<dt>ERP prepared</dt><dd>'+esc(f.erpCreated)+'</dd>':'')+
-    (r.type==='indent'?'<dt>Category</dt><dd>'+esc(f.category||'—')+'</dd><dt>'+(f.category==='Project'?'Project':'Site')+'</dt><dd>'+esc(f.category==='Project'?(f.projectName||'—'):(f.siteName||'—'))+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Indent date</dt><dd>'+esc(fmtD(f.indentDate))+'</dd>'
+    (r.type==='indent'?'<dt>Category</dt><dd>'+esc(f.category||'—')+(f.subCategory?' · '+esc(f.subCategory):'')+'</dd><dt>'+(f.category==='Project'?'Project':'Site')+'</dt><dd>'+esc(f.category==='Project'?(f.projectName||'—'):(f.siteName||'—'))+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Indent date</dt><dd>'+esc(fmtD(f.indentDate))+'</dd>'
       :'<dt>Order date</dt><dd>'+esc(fmtD(f.woDate))+'</dd><dt>Site</dt><dd>'+esc(f.siteName||'—')+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Vendor</dt><dd>'+esc(f.vendorName||'—')+'</dd>'+
        (f.vendorAddress?'<dt>Address</dt><dd>'+esc(f.vendorAddress)+'</dd>':'')+(f.vendorState?'<dt>State</dt><dd>'+esc(f.vendorState)+(f.vendorStateCode?' ('+esc(f.vendorStateCode)+')':'')+'</dd>':'')+
        (f.vendorGstin?'<dt>GSTIN</dt><dd class="num">'+esc(f.vendorGstin)+'</dd>':'')+(f.vendorPan?'<dt>PAN</dt><dd class="num">'+esc(f.vendorPan)+'</dd>':'')+(f.vendorContact?'<dt>Contact</dt><dd>'+esc(f.vendorContact)+'</dd>':'')+(f.billingAddress?'<dt>Billing to</dt><dd>'+esc(f.billingAddress)+'</dd>':''))+
@@ -1872,9 +1889,9 @@ function viewReport(){
 }
 function repRows(){
   const l=repList();
-  const A=[['Reference','Type','Document No','Category','Site / Project','Site code','Date on document','Vendor','Vendor GSTIN','Amount before GST','Amount after GST','Remarks','Raised by','Department','Raised on','Status','Currently with','Approval chain','Closed on','Days taken','Documents']];
+  const A=[['Reference','Type','Document No','Category','Sub-category','Site / Project','Site code','Date on document','Vendor','Vendor GSTIN','Amount before GST','Amount after GST','Remarks','Raised by','Department','Raised on','Status','Currently with','Approval chain','Closed on','Days taken','Documents']];
   l.forEach(r=>{const u=user(r.requesterId),h=holder(r),f=r.f;
-    A.push([r.ref,typeLabel(r),docNo(r),f.category||'',f.category==='Project'?(f.projectName||''):(f.siteName||''),f.siteCode||'',fmtD(r.type==='indent'?f.indentDate:f.woDate),f.vendorName||'',f.vendorGstin||'',f.amountPre||'',f.amountPost||'',String(f.remarks||'').replace(/\n+/g,' '),u.name,u.dept||'',fmtD(r.createdAt),r.status,h?h.name:'—',r.chain.map(s=>user(s.userId).name).join(' > '),r.closedAt?fmtD(r.closedAt):'',r.closedAt?((r.closedAt-r.createdAt)/864e5).toFixed(1):'',r.files.map(x=>x.name).join('; ')])});
+    A.push([r.ref,typeLabel(r),docNo(r),f.category||'',f.subCategory||'',f.category==='Project'?(f.projectName||''):(f.siteName||''),f.siteCode||'',fmtD(r.type==='indent'?f.indentDate:f.woDate),f.vendorName||'',f.vendorGstin||'',f.amountPre||'',f.amountPost||'',String(f.remarks||'').replace(/\n+/g,' '),u.name,u.dept||'',fmtD(r.createdAt),r.status,h?h.name:'—',r.chain.map(s=>user(s.userId).name).join(' > '),r.closedAt?fmtD(r.closedAt):'',r.closedAt?((r.closedAt-r.createdAt)/864e5).toFixed(1):'',r.files.map(x=>x.name).join('; ')])});
   A.push([]); A.push(['Generated '+fmtDT(Date.now())+' by '+ME.name+' · System designed and developed by Sunny Gupta']);
   const B=[['Reference','Step','Approver','Designation','Outcome','Condition','Remarks','Acted on']];
   l.forEach(r=>r.chain.forEach((s,i)=>{const u=user(s.userId);const o={approved:'Approved',conditional:'Approved with a condition',rejected:'Rejected',info:'Asked for more details',pending:'Holding now',waiting:'Waiting turn'}[s.status]||s.status;
