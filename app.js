@@ -1567,8 +1567,12 @@ function viewDetail(id){
       pending:stepBlocked(s)?'<span class="tag t-hold">Work given out</span>':'<span class="tag t-prog">Holding it now</span>',waiting:'<span class="tag t-wait">Waiting turn</span>'}[s.status]||'';
     if(s.systemApproved) tag='<span class="tag t-ok" style="background:var(--indigo);color:#fff">System Approved — by super admin</span>';
     const dot=(s.status==='approved'||s.status==='conditional')?'✓':s.status==='rejected'?'✕':s.status==='info'?'?':String(i+2);
-    const sysBtn=(ME.owner&&(r.status==='In Progress'||r.status==='Info Requested')&&(s.status==='pending'||s.status==='waiting'||s.status==='info'))
-      ?'<div style="margin-top:8px"><button class="btn ghost sm" data-sys="'+i+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button></div>':'';
+    let ownerLegacyBtn='';
+    if(ME.owner&&(r.status==='In Progress'||r.status==='Info Requested')&&(s.status==='pending'||s.status==='waiting'||s.status==='info'))
+      ownerLegacyBtn='<button class="btn ghost sm" data-sys="'+i+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button>';
+    else if(ME.owner&&(s.status==='approved'||s.status==='conditional'||s.status==='rejected'))
+      ownerLegacyBtn='<button class="btn ghost sm" data-rwd="'+i+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
+    const sysBtn=ownerLegacyBtn?'<div style="margin-top:8px">'+ownerLegacyBtn+'</div>':'';
     nodes+='<div class="node '+cls+'" id="step-'+i+'"><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
       (s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
       (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+fileListHTML(s.files)+subBranchHTML(r,s)+sysBtn+'</div></div>';
@@ -1630,10 +1634,28 @@ function sysApproveTo(position){
         await load(); toast('System-approved by super admin.','ok'); go({name:'detail',id:r.id});
       }); }; }});
 }
+/* Super-admin step-back (legacy chain): reopen a position, clear everything onward */
+function rewindTo(position){
+  const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r||!ME.owner) return;
+  const s=r.chain[position]; if(!s) return;
+  let cleared=0; for(let i=position;i<r.chain.length;i++){ const st=r.chain[i]; if(st&&st.status!=='waiting') cleared++; }
+  modal({title:'Reopen as super admin',
+    body:'<p style="margin-top:0">Step back to <b>'+esc(user(s.userId).name)+'</b> (step '+(position+2)+') and make it live again.</p>'+
+      '<div class="banner hold" style="margin-top:8px"><div class="hint">This clears <b>'+cleared+' decision'+(cleared===1?'':'s')+'</b> from this step onward — <b>system approvals and ordinary ones alike</b> — so the chain runs again from here. '+
+      'It then sits live with <b>'+esc(user(s.userId).name)+'</b>, whose buttons go active.'+(r.status==='Approved'||r.status==='Rejected'?' The closed request reopens.':'')+'</div></div>'+
+      '<p class="hint" style="margin-top:8px">Attached documents stay in place. Signed with your PIN.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="rw-go">Reopen from here</button>',
+    onOpen:(mv,cl)=>{ $('#rw-go',mv).onclick=()=>{ cl();
+      confirmPin('reopen '+docNo(r)+' from step '+(position+2),async pin=>{
+        await rpc('owner_rewind_to',{p_request:r.id,p_position:position,p_pin:pin});
+        await load(); toast('Reopened from this step.','ok'); go({name:'detail',id:r.id});
+      }); }; }});
+}
 function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
   $('#d-back',v).onclick=()=>go({name:'all'});
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
+  $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
   if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
   if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
   if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
@@ -2702,8 +2724,12 @@ function flowStepRow(f,s){
   if(s.infoReplies&&s.infoReplies.length) meta+=s.infoReplies.map(e=>'<div class="hint">'+esc(e.name||user(e.user_id).name)+' replied: '+esc(e.text)+'</div>').join('');
   else if(s.infoReply&&!s.infoRequested) meta+='<div class="hint">Replied: '+esc(s.infoReply)+'</div>';
   const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
-  const sysBtn=(ME.owner&&f.status==='running'&&(s.status==='pending'||s.status==='waiting'))
-    ?'<div style="margin-top:6px"><button class="btn ghost sm" data-fsys="'+s.id+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button></div>':'';
+  let ownerBtn='';
+  if(ME.owner&&f.status==='running'&&(s.status==='pending'||s.status==='waiting'))
+    ownerBtn='<button class="btn ghost sm" data-fsys="'+s.id+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button>';
+  else if(ME.owner&&(f.status==='running'||f.status==='completed')&&s.status==='done')
+    ownerBtn='<button class="btn ghost sm" data-frwd="'+s.id+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
+  const sysBtn=ownerBtn?'<div style="margin-top:6px">'+ownerBtn+'</div>':'';
   return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
     '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span></div>'+
     '<div class="hint">'+esc(actors)+'</div>'+meta+files+sysBtn+'</div></div>';
@@ -2784,6 +2810,7 @@ function wireFlowDetail(v){
   $$('[data-fcond]',v).forEach(b=>b.onclick=()=>flowCondDialog(b.dataset.fcond));
   $$('[data-fask]',v).forEach(b=>b.onclick=()=>flowAskDialog(b.dataset.fask));
   $$('[data-fsys]',v).forEach(b=>b.onclick=()=>flowSysApprove(b.dataset.fsys));
+  $$('[data-frwd]',v).forEach(b=>b.onclick=()=>flowRewind(b.dataset.frwd));
   // requester's reply panel (answer an "ask for more")
   const reply={files:[]};
   if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
@@ -2868,6 +2895,21 @@ function flowSysApprove(stepId){
 }
 async function flowSysCall(stepId){ busy(true);
   try{ await rpc('flow_owner_approve',{p_step:stepId,p_pin:flowCall._pin}); await load(); toast('System-approved by super admin.','ok'); render(); }
+  catch(e){ fail(e); } finally{ busy(false); } }
+/* Super-admin step-back: reopen this step and clear every decision from here onward */
+function flowRewind(stepId){
+  const x=flowFindStep(stepId); if(!x||!ME.owner) return; const f=x.f, s=x.s;
+  const cleared=f.steps.filter(st=>st.pos>=s.pos&&st.status!=='waiting').length;
+  modal({title:'Reopen as super admin',
+    body:'<p style="margin-top:0">Step back to <b>'+esc(s.label)+'</b> and make it live again.</p>'+
+      '<div class="banner hold" style="margin-top:8px"><div class="hint">This clears <b>'+cleared+' decision'+(cleared===1?'':'s')+'</b> from this step onward — <b>system approvals and ordinary ones alike</b> — so the flow runs again from here. '+
+      'It then sits live with <b>'+esc(s.actors.map(id=>user(id).name).join(', ')||'—')+'</b>, whose buttons go active.'+(f.status==='completed'?' The completed request reopens.':'')+'</div></div>'+
+      '<p class="hint" style="margin-top:8px">Uploaded documents stay attached. Signed with your PIN.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="frw-go">Reopen from here</button>',
+    onOpen:(mv,cl)=>{ $('#frw-go',mv).onclick=()=>{ cl(); flowPinThen(()=>flowRewindCall(stepId)); }; }});
+}
+async function flowRewindCall(stepId){ busy(true);
+  try{ await rpc('flow_owner_rewind',{p_step:stepId,p_pin:flowCall._pin}); await load(); toast('Reopened from this step.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
