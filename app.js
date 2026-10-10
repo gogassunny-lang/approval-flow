@@ -155,7 +155,7 @@ async function load(){
   DB.projects=proj.map(p=>p.name);
   STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
   DB.notifs=notif.map(x=>({id:x.id,requestId:x.request_id,kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at}));
-  DB.passes=passes.map(g=>({id:g.id,ref:g.ref,kind:g.kind,employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
+  DB.passes=passes.map(g=>({id:g.id,ref:g.ref,kind:g.kind,halfPart:g.half_part||'',employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
     requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
     hodAt:ts(g.hod_at),hrAt:ts(g.hr_at),rejectBy:g.reject_by,rejectReason:g.reject_reason||'',rejectedAt:ts(g.rejected_at),
     gateBy:g.gate_by,outAt:ts(g.out_at),returnAt:ts(g.return_at),status:g.status,passDate:g.pass_date,createdAt:ts(g.created_at)}));
@@ -251,7 +251,9 @@ const GP_KINDS=[['early','Early going'],['halfday','Half day leave'],['official'
 const gpKindNote=k=>k==='early'?('Early-going passes left this month: <b>'+Math.max(0,2-gpEarlyUsed())+' of 2</b>. The gateman signs you out — you are not returning.')
   :k==='halfday'?'Half day leave — the gateman signs you out; you are not expected back today.'
   :'Outpass — the gateman records your out-time and, when you return, the time back. Not capped.';
-const gpKindLabel=g=>{const k=(typeof g==='string')?g:g.kind;const m=GP_KINDS.find(x=>x[0]===k);return m?m[1]:k;};
+const gpHalfLabel=h=>h==='1st'?'1st half':h==='2nd'?'2nd half':'';
+const gpKindLabel=g=>{const isObj=(typeof g!=='string');const k=isObj?g.kind:g;const m=GP_KINDS.find(x=>x[0]===k);let lbl=m?m[1]:k;
+  if(isObj&&k==='halfday'&&g.halfPart) lbl+=' ('+gpHalfLabel(g.halfPart)+')'; return lbl;};
 const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind==='early'&&g.status!=='rejected'&&String(g.passDate).slice(0,7)===m).length};
 const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
 const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span class="tag '+x[0]+'">'+x[1]+'</span>'};
@@ -2405,11 +2407,14 @@ function gateCreateAndMine(){
   }
 
   // create a pass
-  const d=gpDraft||(gpDraft={kind:'early',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
+  const d=gpDraft||(gpDraft={kind:'early',half:'',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
   h+='<div class="card pad"><h3>Create a pass</h3>'+
     '<div style="margin:12px 0"><label for="g-kind">Type of pass</label><select id="g-kind">'+
       GP_KINDS.map(k=>'<option value="'+k[0]+'" '+(d.kind===k[0]?'selected':'')+'>'+esc(k[1])+'</option>').join('')+'</select></div>'+
     '<div class="hint" id="g-kindnote" style="margin:-4px 0 12px">'+gpKindNote(d.kind)+'</div>'+
+    '<div id="g-halfwrap" style="margin:-4px 0 12px'+(d.kind==='halfday'?'':';display:none')+'"><label for="g-half">Which half?</label>'+
+      '<div class="seg" id="g-half"><button type="button" data-h="1st" class="'+(d.half==='1st'?'on':'')+'">1st half</button>'+
+      '<button type="button" data-h="2nd" class="'+(d.half==='2nd'?'on':'')+'">2nd half</button></div></div>'+
     '<div class="grid g2"><div><label for="g-emp">Employee ID</label><input id="g-emp" type="text" value="'+esc(d.employeeId)+'" placeholder="Your employee code"></div>'+
       '<div><label for="g-name">Name</label><input id="g-name" type="text" value="'+esc(d.name)+'"></div></div>'+
     '<div class="grid g2" style="margin-top:12px"><div><label for="g-dept">Department</label><select id="g-dept">'+deptOptions(d.dept)+'</select></div>'+
@@ -2463,8 +2468,13 @@ function wireGate(v){
     if($('#g-selfie-view',w)) $('#g-selfie-view',w).onclick=()=>showSelfie(d.selfie,'Your selfie');
   };
   paintSelfie();
-  // kind dropdown
-  const gk=$('#g-kind',v); if(gk) gk.onchange=()=>{ d.kind=gk.value; $('#g-kindnote',v).innerHTML=gpKindNote(d.kind); };
+  // kind dropdown + half-day selector (1st / 2nd half)
+  const paintHalf=()=>{ const wrap=$('#g-halfwrap',v); if(!wrap) return;
+    wrap.style.display = d.kind==='halfday' ? '' : 'none';
+    $$('#g-half button',v).forEach(b=>b.classList.toggle('on', b.dataset.h===d.half)); };
+  $$('#g-half button',v).forEach(b=>b.onclick=()=>{ d.half=b.dataset.h; paintHalf(); });
+  const gk=$('#g-kind',v); if(gk) gk.onchange=()=>{ d.kind=gk.value; if(d.kind!=='halfday') d.half=''; $('#g-kindnote',v).innerHTML=gpKindNote(d.kind); paintHalf(); };
+  paintHalf();
   const bind=(id,key)=>{const el=$(id,v); if(el) el.oninput=()=>d[key]=el.value; if(el&&el.tagName==='SELECT') el.onchange=()=>d[key]=el.value;};
   bind('#g-emp','employeeId'); bind('#g-name','name'); bind('#g-dept','dept'); bind('#g-purpose','purpose');
   if($('#g-dept',v)) $('#g-dept',v).value=d.dept||'';
@@ -2472,11 +2482,12 @@ function wireGate(v){
   $('#g-send',v).onclick=async()=>{
     const err=$('#g-err',v); err.textContent='';
     if(!d.name.trim()) return err.textContent='Enter your name.';
+    if(d.kind==='halfday'&&!d.half) return err.textContent='Choose the 1st half or the 2nd half.';
     if(!d.purpose.trim()) return err.textContent='Enter the purpose.';
     if(!d.selfie) return err.textContent='Take your live selfie — it is your signature.';
     if(d.kind==='early'&&gpEarlyUsed()>=2) return err.textContent='You have already used both early-going passes this month.';
     busy(true);
-    try{ await rpc('gp_create',{p_kind:d.kind,p_employee_id:d.employeeId.trim(),p_name:d.name.trim(),p_dept:d.dept,p_purpose:d.purpose.trim(),p_selfie:d.selfie});
+    try{ await rpc('gp_create',{p_kind:d.kind,p_employee_id:d.employeeId.trim(),p_name:d.name.trim(),p_dept:d.dept,p_purpose:d.purpose.trim(),p_selfie:d.selfie,p_half:(d.kind==='halfday'?d.half:null)});
       gpDraft=null; await load(); toast('Pass created. Now take it to an HOD for their selfie.','ok'); render(); }
     catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
     finally{ busy(false); }
@@ -2597,7 +2608,7 @@ function viewGpReport(){
   return filters+'<div id="gpr-body">'+gpRepBody()+'</div>';
 }
 function gpToObj(g){ return {
-  Ref:g.ref, Type:gpKindLabel(g), Name:g.name||user(g.requesterId).name, 'Employee ID':g.employeeId||'',
+  Ref:g.ref, Type:gpKindLabel(g), Half:(g.kind==='halfday'?gpHalfLabel(g.halfPart):''), Name:g.name||user(g.requesterId).name, 'Employee ID':g.employeeId||'',
   Department:g.dept||'', Purpose:g.purpose||'', Status:(GP_STATUS[g.status]||['',g.status])[1],
   HOD:g.hodId?user(g.hodId).name:'', HR:g.hrId?user(g.hrId).name:'', 'Cleared by':g.gateBy?user(g.gateBy).name:'',
   Created:fmtDT(g.createdAt),'HOD signed':fmtDT(g.hodAt),'HR signed':fmtDT(g.hrAt),'Out':fmtDT(g.outAt),'Return':fmtDT(g.returnAt),'Pass date':g.passDate }; }
