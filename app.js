@@ -583,7 +583,7 @@ async function paintSignIn(){
   $('#si-err').classList.add('hide');
   $('#si-title').textContent=firstAccount?'Set up the first account':(signup?'Create your account':'Sign in');
   $('#si-sub').textContent=firstAccount?'Nobody is registered yet. This first account runs the system and can register everyone else.'
-    :(signup?'Once registered, anyone raising a request can add you to their approval chain.':'Use your work email and password.');
+    :(signup?'Once registered, anyone raising a request can add you to their approval chain.':'Sign in with your Employee ID (or work email) and password.');
   $('#si-go').textContent=firstAccount?'Create account and sign in':(signup?'Create account':'Sign in');
   $('#si-swap-t').textContent=signup?'Already registered?':'New here?';
   $('#si-swap').textContent=signup?'Sign in instead':'Create an account';
@@ -596,7 +596,7 @@ async function paintSignIn(){
      '<div><label for="f-dept">Department</label><select id="f-dept"><option value="">Choose a department</option>'+depts.map(d=>'<option>'+esc(d)+'</option>').join('')+'</select></div></div>'+
      '<div><label for="f-pass">Password</label><input id="f-pass" type="password" placeholder="At least 8 characters"></div>'+
      '<div class="hint">You can pick your manager once you are in, from your directory entry.</div></div>'
-    :'<div class="grid" style="gap:12px"><div><label for="f-email">Work email</label><input id="f-email" type="email" autocomplete="username"></div>'+
+    :'<div class="grid" style="gap:12px"><div><label for="f-email">Employee ID or work email</label><input id="f-email" type="text" autocomplete="username" placeholder="e.g. 11247 or you@confidencegroup.co"></div>'+
      '<div><label for="f-pass">Password</label><input id="f-pass" type="password" autocomplete="current-password"></div>'+
      '<div style="text-align:right;margin-top:-4px"><button class="btn ghost sm" id="si-forgot" style="padding:0;font-weight:500">Forgot your password?</button></div></div>';
   $$('#si-fields input').forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#si-go').click()}));
@@ -620,8 +620,11 @@ $('#si-go').onclick=async()=>{
       if(!data.session){ siErr('Account created. Check your email for the confirmation link, then sign in.'); signMode='login'; return }
       return; // onAuthStateChange takes it from here
     }
-    const {error}=await SB.auth.signInWithPassword({email,password:pass});
-    if(error) return siErr(/invalid/i.test(error.message)?'Wrong email or password.':error.message);
+    // people created in bulk sign in with their Employee ID; approvers use their email.
+    // an identifier with no "@" is an Employee ID → map to its internal login address.
+    const loginId = email.includes('@') ? email : (email.replace(/\s+/g,'') + '@setu.local');
+    const {error}=await SB.auth.signInWithPassword({email:loginId,password:pass});
+    if(error) return siErr(/invalid/i.test(error.message)?'Wrong Employee ID / email or password.':error.message);
   } finally { btn.disabled=false }
 };
 /* Sign out that always returns to the login screen, even if the network call
