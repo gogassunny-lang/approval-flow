@@ -1011,6 +1011,9 @@ function pinDialog(){
     }});
 }
 function paintPin(){ const c=$('#pinchip'); if(!c||!ME) return;
+  // gate-pass-only / HR-head accounts never sign anything with a PIN — hide the chip entirely
+  if(restrictedAcct()){ c.style.display='none'; return; }
+  c.style.display='';
   const narrow=window.innerWidth<900;
   if(pinOK(ME)){c.classList.add('ok');$('#pinchip-txt').textContent=narrow?'PIN · '+tillMidnight():'PIN active · '+tillMidnight()+' left'}
   else{c.classList.remove('ok');$('#pinchip-txt').textContent=narrow?'Set PIN':"Set today's PIN"} }
@@ -1122,7 +1125,7 @@ function moreSheet(){
   modal({title:'More',
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
-      '<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>'+
+      (restrictedAcct()?'':'<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>')+
       '<button data-act="me">My directory entry</button><button data-act="pw">Change password</button>'+
       '<button data-act="out" style="color:var(--stop)">Sign out</button></div>'+
       '<div class="hint" style="margin-top:12px;text-align:center">'+esc(ME.name)+' · '+esc(ME.role||'')+'<br>Built by Sunny Gupta</div>',
