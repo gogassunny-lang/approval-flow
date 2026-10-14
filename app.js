@@ -652,8 +652,13 @@ async function enter(session){
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
     paintPin(); const h=routeFromHash();
-    const home=(GATE_ONLY()||HR_HEAD())?{name:'gate'}:(((h&&h.name!=='detail')||(h&&DB.requests.some(r=>r.id===h.id)))?h:{name:'dash'});
-    go(home,true); subscribe();
+    const base=(GATE_ONLY()||HR_HEAD())?{name:'gate'}:{name:'dash'};
+    // deep link (from a notification tap): open the target, but keep the home screen
+    // beneath it in history so Back returns to the app rather than exiting
+    let target=base;
+    if(h){ if(h.name==='detail') target=DB.requests.some(r=>r.id===h.id)?h:base; else target=h; }
+    if(routeHash(target)!==routeHash(base)){ go(base,true); go(target); } else { go(base,true); }
+    subscribe();
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
     // gate-only accounts don't approve anything: no PIN, no directory-completion nag, no pending-work popup
     if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
@@ -1681,7 +1686,7 @@ function rewindTo(position){
 }
 function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
-  $('#d-back',v).onclick=()=>go({name:'all'});
+  $('#d-back',v).onclick=()=>{ if(history.length>1) history.back(); else go({name:'all'}); };
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
   if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
