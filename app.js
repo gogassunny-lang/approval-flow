@@ -1087,6 +1087,7 @@ const PAGES=[
   {k:'team',label:'My team',grp:'My work',when:()=>isManager(ME),badge:()=>pendingTeam(ME.id).length},
   {k:'all',label:'Requests I can see',grp:'Records'},
   {k:'report',label:'Reports',grp:'Records'},
+  {k:'overview',label:'System overview',grp:'Records',when:()=>ME.owner},
   {k:'people',label:'People & masters',grp:'Records'},
   {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll}
 ];
@@ -1165,6 +1166,7 @@ function render(){
   if(restrictedAcct()&&!restrictedPage(ROUTE.name)) ROUTE={name:'gate'};   // restricted accounts stay within Gate Pass / Reports
   if(ROUTE.name==='gpreport'&&!canSeeReports()) ROUTE={name:GATE_ONLY()||HR_HEAD()?'gate':'dash'};
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
+  if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
   const v=$('#view');
   switch(ROUTE.name){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
@@ -1180,6 +1182,7 @@ function render(){
       head(ME.admin||ME.seeAll?'All requests':'Requests I can see',ME.admin||ME.seeAll?'You can see every chain in the system':'Only chains you raised, approve, or were given a task in'); break;
     case 'report': v.innerHTML=viewReport(); wireReport(v); head('Reports','Filter the record and download it'); break;
     case 'usage': v.innerHTML=viewUsage(); wireUsage(v); break;
+    case 'overview': v.innerHTML=viewOverview(); wireOverview(v); break;
     case 'people': v.innerHTML=viewPeople(); wirePeople(v); head('People & masters','Directory, station master and the permanence rule'); break;
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
@@ -1934,6 +1937,117 @@ function wireReport(v){
    Usage
    ============================================================ */
 let usageSort='today', storageInfo=null;
+/* ============================================================
+   System overview — owner-only analytics across the whole system
+   ============================================================ */
+function ovBars(items){
+  const max=Math.max(1,...items.map(i=>i.value||0));
+  return '<div style="display:flex;flex-direction:column;gap:10px;margin-top:4px">'+items.map(i=>
+    '<div><div class="row" style="justify-content:space-between;font-size:13px;margin-bottom:4px"><span>'+esc(i.label)+'</span><b class="num">'+(i.value||0)+'</b></div>'+
+    '<div style="height:9px;background:var(--surface-2);border-radius:999px;overflow:hidden"><div style="height:100%;width:'+Math.round((i.value||0)/max*100)+'%;background:'+(i.color||'var(--indigo)')+';border-radius:999px;min-width:'+((i.value||0)?'4px':'0')+'"></div></div></div>').join('')+'</div>';
+}
+function ovCard(title,inner){ return '<div class="card pad"><h3>'+esc(title)+'</h3>'+inner+'</div>'; }
+function viewOverview(){
+  head('System overview','Everything SETU has processed, at a glance');
+  const us=DB.users.slice(), teamMs=f=>us.reduce((t,u)=>t+f(u),0);
+  const onlineNow=us.filter(u=>{const l=statsOf(u).lastLogin;return l&&Date.now()-l<15*60000}).length;
+  const totalWork=us.reduce((t,u)=>{const w=workOf(u);return t+w.acted+w.tasks},0);
+  // ---- documents: both engines (legacy custom chain + ALDS fixed flow) ----
+  const reqs=DB.requests, flows=DB.flows;
+  const legIndent=reqs.filter(r=>r.type==='indent').length, legWO=reqs.filter(r=>r.type==='workorder').length;
+  const flowPO=flows.filter(f=>f.head==='PO').length, flowWO=flows.filter(f=>f.head==='WO').length;
+  const totalDocs=reqs.length+flows.length;
+  const indentTotal=legIndent+flowPO, woTotal=legWO+flowWO;
+  const approved=reqs.filter(r=>r.status==='Approved').length+flows.filter(f=>f.status==='completed').length;
+  const inprog =reqs.filter(r=>r.status==='In Progress'||r.status==='Info Requested').length+flows.filter(f=>f.status==='running').length;
+  const rejected=reqs.filter(r=>r.status==='Rejected').length+flows.filter(f=>f.status==='cancelled').length;
+  // ---- gate passes ----
+  const gp=DB.passes;
+  const gpBy=k=>gp.filter(g=>g.kind===k).length, gpSt=s=>gp.filter(g=>g.status===s).length;
+  const half1=gp.filter(g=>g.kind==='halfday'&&g.halfPart==='1st').length,
+        half2=gp.filter(g=>g.kind==='halfday'&&g.halfPart==='2nd').length,
+        halfNA=gpBy('halfday')-half1-half2;
+  const divCount=d=>flows.filter(f=>f.division===d).length;
+
+  const cards1='<div class="grid g4">'+
+    stat('People',us.length,us.filter(u=>u.active).length+' active · '+onlineNow+' online now','var(--indigo)')+
+    stat('Indents & work orders',totalDocs,approved+' approved · '+inprog+' in progress','var(--seal)')+
+    stat('Gate passes',gp.length,gpSt('closed')+' closed · '+(gpSt('pending_hod')+gpSt('pending_hr')+gpSt('pending_gate')+gpSt('out'))+' open','var(--cyan)')+
+    stat('Decisions & tasks',totalWork,'Actions recorded across every request','var(--hold)')+'</div>';
+  const cards2='<div class="grid g3" style="margin-top:14px">'+
+    stat('System time — today',hms(teamMs(u=>spanMs(u,1))),us.filter(activeToday).length+' people active today','var(--indigo)')+
+    stat('System time — this month',hms(teamMs(monthMs)),'Whole team, calendar month','var(--indigo)')+
+    stat('System time — all time',hms(teamMs(u=>statsOf(u).activeMs)),'Since the first sign-in','var(--indigo)')+'</div>';
+
+  const docBreak='<div class="grid g2" style="margin-top:16px;align-items:start">'+
+    ovCard('Indents & work orders — breakdown',
+      '<div class="hint" style="margin-bottom:8px">By document</div>'+ovBars([
+        {label:'Indents / PO',value:indentTotal,color:'var(--indigo)'},
+        {label:'Work orders / WO',value:woTotal,color:'var(--seal)'}])+
+      '<div class="sep"></div><div class="hint" style="margin-bottom:8px">By status</div>'+ovBars([
+        {label:'Approved / completed',value:approved,color:'var(--seal)'},
+        {label:'In progress',value:inprog,color:'var(--hold)'},
+        {label:'Rejected / cancelled',value:rejected,color:'var(--stop)'}])+
+      '<div class="sep"></div><div class="hint" style="margin-bottom:8px">By engine</div>'+ovBars([
+        {label:'Custom chain (legacy)',value:reqs.length,color:'var(--cyan)'},
+        {label:'Fixed flow (ALDS)',value:flows.length,color:'var(--indigo)'}])+
+      (flows.length?'<div class="sep"></div><div class="hint" style="margin-bottom:8px">ALDS flow by division</div>'+ovBars([
+        {label:'O&M',value:divCount('O&M'),color:'var(--indigo)'},
+        {label:'Project',value:divCount('Project'),color:'var(--seal)'},
+        {label:'Retail',value:divCount('Retail'),color:'var(--cyan)'}]):''))+
+    ovCard('Gate passes — breakdown',
+      '<div class="hint" style="margin-bottom:8px">By type</div>'+ovBars([
+        {label:'Early going',value:gpBy('early'),color:'var(--indigo)'},
+        {label:'Half day leave',value:gpBy('halfday'),color:'var(--seal)'},
+        {label:'Outpass',value:gpBy('official'),color:'var(--cyan)'}])+
+      (gpBy('halfday')?'<div class="sep"></div><div class="hint" style="margin-bottom:8px">Half-day — which half</div>'+ovBars([
+        {label:'1st half',value:half1,color:'var(--indigo)'},
+        {label:'2nd half',value:half2,color:'var(--seal)'}].concat(halfNA>0?[{label:'Not specified',value:halfNA,color:'var(--line)'}]:[])):'')+
+      '<div class="sep"></div><div class="hint" style="margin-bottom:8px">By status</div>'+ovBars([
+        {label:'With HOD',value:gpSt('pending_hod'),color:'var(--hold)'},
+        {label:'With HR',value:gpSt('pending_hr'),color:'var(--hold)'},
+        {label:'At the gate',value:gpSt('pending_gate'),color:'var(--seal)'},
+        {label:'Out',value:gpSt('out'),color:'var(--cyan)'},
+        {label:'Closed',value:gpSt('closed'),color:'var(--seal)'},
+        {label:'Declined',value:gpSt('rejected'),color:'var(--stop)'}]))+
+    '</div>';
+
+  return cards1+cards2+docBreak+
+    '<div class="row" style="margin-top:16px;gap:10px;flex-wrap:wrap"><button class="btn primary" id="ov-dl">Download overview (Excel)</button>'+
+    '<button class="btn" id="ov-usage">Open per-person usage</button>'+
+    '<span class="hint">Live figures from the whole system. Usage time counts only while the app is open and in front, added up across each person\'s devices.</span></div>';
+}
+function wireOverview(v){
+  if($('#ov-usage',v)) $('#ov-usage',v).onclick=()=>go({name:'usage'});
+  if($('#ov-dl',v)) $('#ov-dl',v).onclick=()=>{
+    if(!window.XLSX) return toast('Spreadsheet engine still loading — try again in a moment.','bad');
+    const reqs=DB.requests, flows=DB.flows, gp=DB.passes, us=DB.users, teamMs=f=>us.reduce((t,u)=>t+f(u),0);
+    const S=[['SETU — system overview','as of '+fmtDT(Date.now())],[],
+      ['People (total)',us.length],['People (active)',us.filter(u=>u.active).length],
+      ['System time — today',hms(teamMs(u=>spanMs(u,1)))],['System time — this month',hms(teamMs(monthMs))],['System time — all time',hms(teamMs(u=>statsOf(u).activeMs))],[],
+      ['Documents (total)',reqs.length+flows.length],
+      ['  Indents / PO',reqs.filter(r=>r.type==='indent').length+flows.filter(f=>f.head==='PO').length],
+      ['  Work orders / WO',reqs.filter(r=>r.type==='workorder').length+flows.filter(f=>f.head==='WO').length],
+      ['  Approved / completed',reqs.filter(r=>r.status==='Approved').length+flows.filter(f=>f.status==='completed').length],
+      ['  In progress',reqs.filter(r=>r.status==='In Progress'||r.status==='Info Requested').length+flows.filter(f=>f.status==='running').length],
+      ['  Rejected / cancelled',reqs.filter(r=>r.status==='Rejected').length+flows.filter(f=>f.status==='cancelled').length],
+      ['  Custom chain (legacy)',reqs.length],['  Fixed flow (ALDS)',flows.length],[],
+      ['Gate passes (total)',gp.length],
+      ['  Early going',gp.filter(g=>g.kind==='early').length],
+      ['  Half day leave',gp.filter(g=>g.kind==='halfday').length],
+      ['    1st half',gp.filter(g=>g.kind==='halfday'&&g.halfPart==='1st').length],
+      ['    2nd half',gp.filter(g=>g.kind==='halfday'&&g.halfPart==='2nd').length],
+      ['  Outpass',gp.filter(g=>g.kind==='official').length],
+      ['  With HOD',gp.filter(g=>g.status==='pending_hod').length],
+      ['  With HR',gp.filter(g=>g.status==='pending_hr').length],
+      ['  At the gate',gp.filter(g=>g.status==='pending_gate').length],
+      ['  Out',gp.filter(g=>g.status==='out').length],
+      ['  Closed',gp.filter(g=>g.status==='closed').length],
+      ['  Declined',gp.filter(g=>g.status==='rejected').length]];
+    const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(S),'Overview');
+    XLSX.writeFile(wb,'setu-overview-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Overview downloaded.','ok');
+  };
+}
 function viewUsage(){
   if(!storageInfo){ rpc('storage_usage').then(x=>{storageInfo=x; if(ROUTE.name==='usage') render()}).catch(()=>{}) }
   head('Usage','Who is actually using the system, and how much');
