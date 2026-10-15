@@ -2487,8 +2487,8 @@ function gpCard(g,acts){
 function gpGateCard(g){
   const req=user(g.requesterId), hod=g.hodId?user(g.hodId):null, hr=g.hrId?user(g.hrId):null;
   const label=g.status==='out'?'Record return &amp; close':(g.kind==='official'?'Sign out (records time)':'Approve &amp; close');
-  const thumb=(path,cap,sub)=>'<div class="gp-th"><div class="gp-th-img" data-selfiethumb="'+esc(path||'')+'" data-slabel="'+esc(cap)+'">'+
-      (path?'<span class="spin"></span>':'<span class="gp-th-none">no photo</span>')+'</div>'+
+  const thumb=(path,cap,sub)=>'<div class="gp-th"><div class="gp-th-img'+(path?'':' gp-th-empty')+'" data-selfiethumb="'+esc(path||'')+'" data-slabel="'+esc(cap)+'">'+
+      (path?'<span class="spin"></span>':'<span class="gp-th-none">not signed yet</span>')+'</div>'+
       '<div class="gp-th-cap"><b>'+esc(cap)+'</b>'+(sub?'<div class="hint">'+esc(sub)+'</div>':'')+'</div></div>';
   return '<div class="card gp-card"><div class="row" style="padding:13px 16px;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)">'+
     '<div style="min-width:0"><b>'+esc(g.name||req.name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
@@ -2559,7 +2559,8 @@ function gpGateBtnLabel(g){ return g.status==='out'?'Return &amp; close':(g.kind
 function gpRow(g,opts){
   opts=opts||{};
   const names=['Requester','HOD','HR'], sels=[g.reqSelfie,g.hodSelfie,g.hrSelfie];
-  const th=sels.map((p,i)=>'<span class="gp-mini" data-selfiethumb="'+esc(p||'')+'" data-slabel="'+names[i]+' — '+esc(g.name||'')+'">'+(p?'':'<span class="gp-mini-x">·</span>')+'</span>').join('');
+  const signedAt=[g.createdAt,g.hodAt,g.hrAt];
+  const th=sels.map((p,i)=>'<span class="gp-mini'+(p?'':' gp-mini-empty')+'" data-selfiethumb="'+esc(p||'')+'" data-slabel="'+names[i]+' — '+esc(g.name||'')+'" title="'+esc(names[i]+(p?' selfie':(signedAt[i]?' — photo expired':' — not signed yet')))+'">'+(p?'<span class="spin sm"></span>':'<span class="gp-mini-x">'+(signedAt[i]?'·':names[i][0])+'</span>')+'</span>').join('');
   const hodN=g.hodId?user(g.hodId).name:'', hrN=g.hrId?user(g.hrId).name:'';
   const appr=(hodN||hrN)?('HOD '+esc(hodN||'—')+' · HR '+esc(hrN||'—')):'';
   const timeline=g.outAt?(g.returnAt?('out '+fmtT(g.outAt)+' → '+fmtT(g.returnAt)+' ('+gpDuration(g.outAt,g.returnAt)+')'):('out '+fmtT(g.outAt))):'';
