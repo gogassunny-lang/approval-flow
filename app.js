@@ -46,23 +46,27 @@ let skipPop=false;   // set when a dialog rewinds its own history entry, so the 
 /* ---------- toast / modal ---------- */
 function toast(m,k){const t=document.createElement('div');t.className='toast '+(k||'');t.textContent=m;$('#toasts').appendChild(t);
   setTimeout(()=>{t.style.transition='opacity .3s';t.style.opacity='0';setTimeout(()=>t.remove(),320)},3600)}
-function modal({title,body,footer,cls,onOpen}){
+function modal({title,body,footer,cls,onOpen,sticky}){
   const v=document.createElement('div');v.className='veil';
-  v.innerHTML='<div class="modal '+(cls||'')+'"><div class="h"><h3>'+esc(title)+'</h3><button class="btn ghost sm" data-x>Close</button></div>'+
+  v.innerHTML='<div class="modal '+(cls||'')+'"><div class="h"><h3>'+esc(title)+'</h3>'+(sticky?'':'<button class="btn ghost sm" data-x>Close</button>')+'</div>'+
     '<div class="c">'+body+'</div>'+(footer?'<div class="f">'+footer+'</div>':'')+'</div>';
   $('#modal-root').appendChild(v);
   const mid=uid(); let armed=false;
   const onPop=()=>{ v.remove(); window.removeEventListener('popstate',onPop) };
   const close=()=>{ v.remove(); window.removeEventListener('popstate',onPop);
     if(armed&&history.state&&history.state.mid===mid){ skipPop=true; history.back() } };
-  /* the dialog is a history entry so the phone's back button closes it — but if another dialog
-     just closed, its rewind is still in flight; arm only after that has landed, or this dialog
-     would mistake the rewind for a back press and close itself immediately */
-  const arm=()=>{ if(!v.isConnected) return; try{ history.pushState(Object.assign({},history.state||ROUTE,{modal:true,mid}),'') }catch(e){}
-    window.addEventListener('popstate',onPop); armed=true };
-  if(skipPop) window.addEventListener('popstate',()=>setTimeout(arm,0),{once:true}); else arm();
-  v.addEventListener('click',e=>{if(e.target===v||e.target.hasAttribute('data-x'))close()});
-  document.addEventListener('keydown',function k(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',k)}});
+  // A sticky dialog cannot be dismissed — no outside-tap, no Escape, no back button, no history
+  // entry (the history/keyboard interplay on Android could otherwise drop it). It closes only in code.
+  if(!sticky){
+    /* the dialog is a history entry so the phone's back button closes it — but if another dialog
+       just closed, its rewind is still in flight; arm only after that has landed, or this dialog
+       would mistake the rewind for a back press and close itself immediately */
+    const arm=()=>{ if(!v.isConnected) return; try{ history.pushState(Object.assign({},history.state||ROUTE,{modal:true,mid}),'') }catch(e){}
+      window.addEventListener('popstate',onPop); armed=true };
+    if(skipPop) window.addEventListener('popstate',()=>setTimeout(arm,0),{once:true}); else arm();
+    v.addEventListener('click',e=>{if(e.target===v||e.target.hasAttribute('data-x'))close()});
+    document.addEventListener('keydown',function k(e){if(e.key==='Escape'){close();document.removeEventListener('keydown',k)}});
+  }
   if(onOpen)onOpen(v,close); return {el:v,close};
 }
 /* every failed call surfaces its reason; the database writes them to be read */
@@ -154,7 +158,7 @@ async function load(){
   DB.departments=dept.map(d=>d.name);
   DB.projects=proj.map(p=>p.name);
   STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
-  DB.notifs=notif.map(x=>({id:x.id,requestId:x.request_id,kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at}));
+  DB.notifs=notif.map(x=>({id:x.id,requestId:x.request_id,route:x.route||'',kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at}));
   DB.passes=passes.map(g=>({id:g.id,ref:g.ref,kind:g.kind,halfPart:g.half_part||'',employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
     requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
     hodAt:ts(g.hod_at),hrAt:ts(g.hr_at),rejectBy:g.reject_by,rejectReason:g.reject_reason||'',rejectedAt:ts(g.rejected_at),
@@ -895,10 +899,17 @@ function viewInbox(){
       (x.body?'<div class="hint" style="white-space:pre-line;margin-top:2px">'+esc(x.body)+'</div>':'')+
       '<div class="hint" style="margin-top:3px">'+esc(fmtDT(x.ts))+'</div></div></div>').join('')+'</div>';
 }
+/* turn a notification's stored route (#detail/… , #flowdetail/… , #gate) into a screen,
+   falling back to the legacy request id for older rows */
+function notifRoute(x){
+  const r=(x&&x.route)||((x&&x.requestId)?'#detail/'+x.requestId:'')||((x&&x.request_id)?'#detail/'+x.request_id:'');
+  const m=String(r).match(/^#([a-z]+)(?:\/([\w-]+))?$/); return m?{name:m[1],id:m[2]}:null;
+}
+function gotoNotif(x){ const r=notifRoute(x); if(r) go(r); else render(); }
 function wireInbox(v){
   $$('[data-n]',v).forEach(el=>el.onclick=async()=>{const x=DB.notifs.find(y=>y.id===+el.dataset.n); if(!x) return;
     if(!x.read){ x.read=true; SB.rpc('mark_read',{p_ids:[x.id]}).then(()=>paintNav()) }
-    if(x.requestId&&DB.requests.some(r=>r.id===x.requestId)) go({name:'detail',id:x.requestId}); else render()});
+    gotoNotif(x);});
   if($('#nb-all',v)) $('#nb-all',v).onclick=async()=>{ await SB.rpc('mark_all_read'); DB.notifs.forEach(x=>x.read=true); paintNav(); render() };
 }
 /* opening a request settles everything about it */
@@ -940,14 +951,14 @@ function forgotDialog(){
 /* shown when someone arrives from a reset link, and also used as "change password" from inside the app */
 function newPasswordDialog(opts){
   opts=opts||{};
-  const m=modal({title:opts.title||'Set a new password',
+  const m=modal({title:opts.title||'Set a new password', sticky:!opts.cancellable,
     body:'<p class="hint" style="margin-top:0">'+esc(opts.intro||'Choose a password of at least 8 characters. You stay signed in on this device afterwards.')+'</p>'+
-      '<div class="grid" style="gap:12px;margin-top:14px"><div><label for="np1">New password</label><input id="np1" type="password" autocomplete="new-password"></div>'+
-      '<div><label for="np2">Type it again</label><input id="np2" type="password" autocomplete="new-password"></div></div>'+
+      '<div class="grid" style="gap:12px;margin-top:14px"><div><label for="np1">New password</label><input id="np1" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>'+
+      '<div><label for="np2">Type it again</label><input id="np2" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div></div>'+
       '<div id="np-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:(opts.cancellable?'<button class="btn" data-x>Cancel</button>':'')+'<button class="btn primary" id="np-go">Save password</button>',
     onOpen:(v,close)=>{
-      $('#np1',v).focus(); $$('input',v).forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#np-go',v).click()}));
+      setTimeout(()=>{try{$('#np1',v).focus()}catch(e){}},60); $$('input',v).forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#np-go',v).click()}));
       $('#np-go',v).onclick=async()=>{
         const a=$('#np1',v).value,b=$('#np2',v).value,err=$('#np-err',v);
         if(a.length<8) return err.textContent='At least 8 characters.';
@@ -958,10 +969,6 @@ function newPasswordDialog(opts){
         close(); toast('Password saved.','ok'); if(opts.onDone) opts.onDone();
       };
     }});
-  if(!opts.cancellable){ /* a recovery session must end in a new password: no click-away, no escape */
-    m.el.onclick=e=>{ if(e.target===m.el) e.stopPropagation() };
-    const x=$('[data-x]',m.el); if(x) x.remove();
-  }
 }
 let recovering=false;
 
@@ -981,7 +988,7 @@ function subscribe(){
       const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok'); reloadSoon();
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
         try{ const nn=new Notification(x.title||'SETU',{body:(x.body||'').split('\n')[0],icon:'icon-192.png',tag:'setu-'+x.id});
-          nn.onclick=()=>{window.focus(); if(x.request_id) go({name:'detail',id:x.request_id}); nn.close()} }catch(e){}
+          nn.onclick=()=>{window.focus(); gotoNotif(x); nn.close()} }catch(e){}
       }})
     .subscribe();
   /* on the web, ask once for browser notifications so a background tab can still be tapped on the shoulder */
@@ -2535,7 +2542,8 @@ function gateCreateAndMine(){
   }
 
   // create a pass
-  const d=gpDraft||(gpDraft={kind:'early',half:'',employeeId:'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
+  const d=gpDraft||(gpDraft={kind:'early',half:'',employeeId:ME.empId||'',name:ME.name||'',dept:ME.dept||'',purpose:'',selfie:null});
+  if(!d.employeeId&&ME.empId) d.employeeId=ME.empId;   // backfill if the draft was created before we knew the emp id
   h+='<div class="card pad"><h3>Create a pass</h3>'+
     '<div style="margin:12px 0"><label for="g-kind">Type of pass</label><select id="g-kind">'+
       GP_KINDS.map(k=>'<option value="'+k[0]+'" '+(d.kind===k[0]?'selected':'')+'>'+esc(k[1])+'</option>').join('')+'</select></div>'+
