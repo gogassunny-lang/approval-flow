@@ -249,7 +249,7 @@ const gpCanDelete=g=>g.requesterId===ME.id&&['pending_hod','pending_hr','pending
 const HR_HEAD=()=>!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
 const canSeeReports=()=>!!(ME&&(ME.owner||ME.admin||ME.gateman||ME.hrHead));
 const gateViewer=()=>!!(ME&&(isGateman(ME)||ME.hrHead||ME.admin||ME.owner));   // may see every entry (gateman clears, HR head/owner view)
-const gpClearedToday=()=>DB.passes.filter(g=>g.gateBy===ME.id&&g.passDate===DAY());   // what this gateman has cleared today
+const gpClearedToday=()=>DB.passes.filter(g=>g.passDate===DAY()&&g.status==='closed');   // everything closed at the gate today (any gateman), so nothing disappears from the console
 const gpAllToday=()=>DB.passes.filter(g=>g.passDate===DAY());
 const gpAtGate=()=>isGateman(ME)?DB.passes.filter(g=>(g.status==='pending_gate'||g.status==='out')&&g.passDate===DAY()&&g.requesterId!==ME.id):[];   // a gateman clears others, never their own pass
 const gpBadge=()=>gpMyNext().length+gpAtGate().length;
