@@ -2800,8 +2800,25 @@ function gpViewPass(g){
       row('HR signed',g.hrAt?fmtDT(g.hrAt):'')+row('Out',g.outAt?fmtDT(g.outAt):'')+row('Return',g.returnAt?fmtDT(g.returnAt):'')+
       ((g.reqSelfie||g.hodSelfie||g.hrSelfie)?'<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">'+selBtn(g.reqSelfie,'Requester')+selBtn(g.hodSelfie,'HOD')+selBtn(g.hrSelfie,'HR')+'</div><div class="hint" style="margin-top:6px">Selfies auto-expire 7 days after the pass.</div>':'')+
       '</div>',
-    footer:'<button class="btn" data-x>Close</button>',
-    onOpen:(mv,cl)=>{ $$('[data-selfieview]',mv).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfieview,b.dataset.slabel)); }});
+    footer:(ME.owner?'<button class="btn bad" id="gp-admindel" style="margin-right:auto">Delete (duplicate)</button>':'')+'<button class="btn" data-x>Close</button>',
+    onOpen:(mv,cl)=>{ $$('[data-selfieview]',mv).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfieview,b.dataset.slabel));
+      if($('#gp-admindel',mv)) $('#gp-admindel',mv).onclick=()=>gpAdminDelete(g,cl); }});
+}
+/* owner-only: remove one gate pass (a duplicate or wrong entry); logged permanently */
+function gpAdminDelete(g,closeParent){
+  if(!ME.owner) return;
+  modal({title:'Delete this gate pass',
+    body:'<p style="margin-top:0">Permanently remove <b>'+esc(g.ref)+'</b> — '+esc(g.name||user(g.requesterId).name)+' · '+esc(gpKindLabel(g))+'. Use this only for a <b>duplicate or wrong entry</b>; it is recorded.</p>'+
+      '<div style="margin-top:10px"><label for="gad-why">Reason</label><input id="gad-why" type="text" placeholder="e.g. duplicate of GP-E1040"></div>'+
+      '<div id="gad-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="gad-go">Delete</button>',
+    onOpen:(mv,cl)=>{ $('#gad-go',mv).onclick=async()=>{ const why=$('#gad-why',mv).value.trim();
+      if(why.length<3) return $('#gad-err',mv).textContent='Give a short reason for the record.';
+      $('#gad-go',mv).disabled=true;
+      const paths=[g.reqSelfie,g.hodSelfie,g.hrSelfie].filter(Boolean);
+      try{ try{ await removeObjects(paths); }catch(e){}
+        await rpc('gp_admin_delete',{p_id:g.id,p_why:why}); cl(); if(closeParent) closeParent(); await load(); toast('Gate pass deleted.','ok'); render(); }
+      catch(e){ $('#gad-go',mv).disabled=false; $('#gad-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 function gpRepBody(){
   const rows=gpRepData(), byType=k=>rows.filter(g=>g.kind===k).length;
