@@ -3252,6 +3252,17 @@ function flowAct(stepId){
    ============================================================ */
 window.addEventListener('offline',()=>{if(!$('#off')){const d=document.createElement('div');d.id='off';d.className='offline';d.textContent='You are offline — changes cannot be saved until the connection is back.';document.body.appendChild(d)}});
 window.addEventListener('online',()=>{const d=$('#off');if(d)d.remove();if(ME)reload()});
+/* When the app returns to the foreground (phone unlocked, app re-opened), realtime
+   events that arrived while it was backgrounded were missed — so pull fresh data,
+   unless a dialog is open mid-action. Keeps the requester's view in step with the
+   gateman/HR after they sign. */
+let _fgT=0;
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible' && ME && navigator.onLine && !$('.veil') && !$('#busy')){
+    const now=Date.now(); if(now-_fgT<3000) return; _fgT=now;   // avoid double-firing on quick toggles
+    reload();
+  }
+});
 if('serviceWorker' in navigator&&location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 document.title=CONFIG.APP_NAME||'SETU';
 
