@@ -1097,7 +1097,7 @@ const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
-  if(ASSISTANT()) return k==='assist'||k==='detail'||k==='flowdetail';   // worklist + read-only detail
+  if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail';   // worklist + own gate passes + read-only detail
   return k==='gate'||k==='gpreport'; };
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
@@ -1630,6 +1630,7 @@ function viewDetail(id){
     let tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-hold">Asked for more</span>',
       pending:stepBlocked(s)?'<span class="tag t-hold">Work given out</span>':'<span class="tag t-prog">Holding it now</span>',waiting:'<span class="tag t-wait">Waiting turn</span>'}[s.status]||'';
     if(s.systemApproved) tag='<span class="tag t-ok" style="background:var(--indigo);color:#fff">System Approved — by super admin</span>';
+    if(s.erpDone) tag+=' <span class="tag t-ok">ERP ✓</span>';
     const dot=(s.status==='approved'||s.status==='conditional')?'✓':s.status==='rejected'?'✕':s.status==='info'?'?':String(i+2);
     let ownerLegacyBtn='';
     if(ME.owner&&(r.status==='In Progress'||r.status==='Info Requested')&&(s.status==='pending'||s.status==='waiting'||s.status==='info'))
@@ -1970,15 +1971,17 @@ let usageSort='today', storageInfo=null;
 /* ============================================================
    Assistant / proxy — read-only mirror of a principal's work + ERP stamp
    ============================================================ */
+const _legHay=r=>(r.ref+' '+docNo(r)+' '+docTitle(r)+' '+(r.type==='indent'?'ind indent':'wo work order')).toLowerCase();
+const _flowHay=(f,lbl)=>(f.ref+' '+(lbl||'')+' '+(f.title||'')+' '+f.head+' '+f.division+' '+(f.head==='PO'?'po purchase indent':'wo work order')).toLowerCase();
 function assistErpList(doneWanted){
   const pid=ME.assistsId, out=[]; if(!pid) return out;
   DB.requests.forEach(r=>r.chain.forEach(s=>{
     if(s.userId===pid && (s.status==='approved'||s.status==='conditional') && (!!s.erpDone===!!doneWanted))
-      out.push({engine:'legacy',reqId:r.id,stepId:s.id,ref:r.ref,title:docTitle(r),doc:docNo(r),when:s.actedAt,erpAt:s.erpDoneAt});
+      out.push({engine:'legacy',reqId:r.id,stepId:s.id,ref:r.ref,title:docTitle(r),doc:docNo(r),when:s.actedAt,erpAt:s.erpDoneAt,hay:_legHay(r)});
   }));
   DB.flows.forEach(f=>f.steps.forEach(s=>{
     if(s.actedBy===pid && s.status==='done' && !String(s.remark||'').startsWith('Rejected') && (s.action==='approve'||s.action==='confirm') && (!!s.erpDone===!!doneWanted))
-      out.push({engine:'flow',reqId:f.id,stepId:s.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,when:s.actedAt,erpAt:s.erpDoneAt});
+      out.push({engine:'flow',reqId:f.id,stepId:s.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,when:s.actedAt,erpAt:s.erpDoneAt,hay:_flowHay(f,s.label)});
   }));
   out.sort((a,b)=>(b.when||0)-(a.when||0));
   return out;
@@ -1987,32 +1990,42 @@ const assistErpTodo=()=>(ME&&ME.assistsId)?assistErpList(false):[];
 function assistPending(){
   const pid=ME.assistsId, out=[]; if(!pid) return out;
   DB.requests.forEach(r=>{ if(r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===pid)
-    out.push({engine:'legacy',id:r.id,ref:r.ref,title:docTitle(r),doc:docNo(r)}); });
+    out.push({engine:'legacy',id:r.id,ref:r.ref,title:docTitle(r),doc:docNo(r),hay:_legHay(r)}); });
   DB.flows.forEach(f=>{ const s=flowLive(f); if(s&&s.actors.indexOf(pid)>-1)
-    out.push({engine:'flow',id:f.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label}); });
+    out.push({engine:'flow',id:f.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,hay:_flowHay(f,s.label)}); });
   return out;
 }
+let assistQ='', assistStatus='all';
+const assistMatch=(x,q)=>!q||(x.hay||'').includes(q);
 function viewAssist(){
   const p=myPrincipal();
   head('Assisting '+(p?p.name:''), p?('See what is on '+p.name.split(' ')[0]+', and mark ERP entries once they approve'):'');
   if(!p) return '<div class="card pad"><h3>No principal set</h3><p class="hint" style="margin-top:6px">Your assistant link has not been set up. Ask an administrator to set who you assist.</p></div>';
   const fn=p.name.split(' ')[0];
-  const pending=assistPending(), todo=assistErpList(false), done=assistErpList(true);
+  const allPending=assistPending(), allTodo=assistErpList(false), allDone=assistErpList(true);
+  const q=assistQ.trim().toLowerCase();
+  const pending=allPending.filter(x=>assistMatch(x,q)), todo=allTodo.filter(x=>assistMatch(x,q)), done=allDone.filter(x=>assistMatch(x,q));
+  const showApproved=assistStatus==='all'||assistStatus==='approved';
+  const showPending =assistStatus==='all'||assistStatus==='pending';
   const openAttr=x=>'data-open="'+x.engine+':'+(x.reqId||x.id)+'"';
   let h='<div class="grid g3">'+
-    stat('Pending on '+fn,pending.length,'Waiting for their decision','var(--hold)')+
-    stat('To enter in ERP',todo.length,'Approved — do the ERP entry','var(--indigo)')+
-    stat('ERP entries done',done.length,'Marked by you','var(--seal)')+'</div>';
-  h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>To enter in ERP</h3><span class="hint" style="margin-left:auto">'+todo.length+'</span></div>'+
+    stat('Pending on '+fn,allPending.length,'Waiting for their decision','var(--hold)')+
+    stat('To enter in ERP',allTodo.length,'Approved — do the ERP entry','var(--indigo)')+
+    stat('ERP entries done',allDone.length,'Marked by you','var(--seal)')+'</div>';
+  h+='<div class="row" style="gap:10px;flex-wrap:wrap;margin:16px 0 0">'+
+    '<input id="as-q" type="text" placeholder="Search number or type — e.g. WW26O03-001, PO, WO, advice" value="'+esc(assistQ)+'" style="flex:1;min-width:220px">'+
+    '<select id="as-status" style="max-width:280px">'+[['all','All'],['approved','Approved by '+fn],['pending','Pending with '+fn]].map(o=>'<option value="'+o[0]+'" '+(assistStatus===o[0]?'selected':'')+'>'+esc(o[1])+'</option>').join('')+'</select>'+
+    (q||assistStatus!=='all'?'<button class="btn ghost sm" id="as-clear">Clear</button>':'')+'</div>';
+  if(showApproved) h+='<div class="card" style="margin-top:14px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>To enter in ERP</h3><span class="hint" style="margin-left:auto">'+todo.length+'</span></div>'+
     (todo.length?todo.map(x=>'<div class="filerow"><div style="min-width:0;flex:1;cursor:pointer" class="assist-open" '+openAttr(x)+'><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+' · approved '+esc(fmtDT(x.when))+(x.engine==='flow'?' · Fixed flow':' · Custom chain')+'</div></div>'+
       '<button class="btn ok sm" data-erp="'+x.engine+':'+x.stepId+'">ERP entry done</button></div>').join('')
-     :'<div class="empty" style="padding:24px 12px"><h3>Nothing to enter</h3><p class="hint">When '+esc(fn)+' approves something, it appears here to enter in ERP.</p></div>')+'</div>';
-  h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>Waiting on '+esc(p.name)+'</h3><span class="hint" style="margin-left:auto">'+pending.length+'</span></div>'+
+     :'<div class="empty" style="padding:24px 12px"><h3>'+(q?'No match':'Nothing to enter')+'</h3><p class="hint">'+(q?'No approved item matches your search.':'When '+esc(fn)+' approves something, it appears here to enter in ERP.')+'</p></div>')+'</div>';
+  if(showPending) h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>Waiting on '+esc(p.name)+'</h3><span class="hint" style="margin-left:auto">'+pending.length+'</span></div>'+
     (pending.length?pending.map(x=>'<div class="filerow assist-open" style="cursor:pointer" '+openAttr(x)+'><div style="min-width:0;flex:1"><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+(x.engine==='flow'?' · Fixed flow':' · Custom chain')+'</div></div><span class="tag t-prog">With '+esc(fn)+'</span></div>').join('')
-     :'<div class="empty" style="padding:24px 12px"><h3>Nothing pending</h3><p class="hint">Nothing is sitting on '+esc(fn)+' right now.</p></div>')+'</div>';
-  if(done.length) h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>ERP entries done</h3></div>'+
-    done.slice(0,40).map(x=>'<div class="filerow assist-open" style="cursor:pointer" '+openAttr(x)+'><div style="min-width:0;flex:1"><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+' · entered '+esc(fmtDT(x.erpAt))+'</div></div><span class="tag t-ok">ERP done</span></div>').join('')+'</div>';
-  h+='<p class="hint" style="margin-top:14px">You can open any item to read it, but only '+esc(fn)+' can approve. “ERP entry done” just records that you entered it in ERP — it never changes the approval.</p>';
+     :'<div class="empty" style="padding:24px 12px"><h3>'+(q?'No match':'Nothing pending')+'</h3><p class="hint">'+(q?'No pending item matches your search.':'Nothing is sitting on '+esc(fn)+' right now.')+'</p></div>')+'</div>';
+  if(showApproved&&done.length) h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>ERP entries done</h3><span class="hint" style="margin-left:auto">'+done.length+'</span></div>'+
+    done.slice(0,60).map(x=>'<div class="filerow assist-open" style="cursor:pointer" '+openAttr(x)+'><div style="min-width:0;flex:1"><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+' · entered '+esc(fmtDT(x.erpAt))+'</div></div><span class="tag t-ok">ERP done</span></div>').join('')+'</div>';
+  h+='<p class="hint" style="margin-top:14px">You can open any item to read it, but only '+esc(fn)+' can approve. “ERP entry done” just records that you entered it in ERP — it never changes the approval. You can also raise your own gate passes from the Gate Pass page.</p>';
   return h;
 }
 function wireAssist(v){
@@ -2020,6 +2033,9 @@ function wireAssist(v){
   $$('[data-erp]',v).forEach(b=>b.onclick=async()=>{ const parts=b.dataset.erp.split(':'); b.disabled=true;
     try{ await rpc(parts[0]==='flow'?'flow_erp_mark':'erp_mark',{p_step:parts[1],p_done:true}); await load(); toast('Marked as entered in ERP.','ok'); render(); }
     catch(e){ b.disabled=false; fail(e); } });
+  if($('#as-q',v)) $('#as-q',v).oninput=()=>{ assistQ=$('#as-q',v).value; const pos=$('#as-q',v).selectionStart; render(); const n=$('#as-q'); if(n){ n.focus(); try{n.setSelectionRange(pos,pos)}catch(e){} } };
+  if($('#as-status',v)) $('#as-status',v).onchange=()=>{ assistStatus=$('#as-status',v).value; render(); };
+  if($('#as-clear',v)) $('#as-clear',v).onclick=()=>{ assistQ=''; assistStatus='all'; render(); };
 }
 /* ============================================================
    System overview — owner-only analytics across the whole system
@@ -2976,7 +2992,7 @@ function flowStepRow(f,s){
     ownerBtn='<button class="btn ghost sm" data-frwd="'+s.id+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
   const sysBtn=ownerBtn?'<div style="margin-top:6px">'+ownerBtn+'</div>':'';
   return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
-    '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span></div>'+
+    '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span>'+(s.erpDone?'<span class="tag t-ok" style="font-size:11px">ERP ✓</span>':'')+'</div>'+
     '<div class="hint">'+esc(actors)+'</div>'+meta+files+sysBtn+'</div></div>';
 }
 const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:'Approve',confirm:'Confirm',data:'Enter details & sign',payment:'Initiate advice'})[s.action]||'Submit';
