@@ -2506,11 +2506,23 @@ function gpGateCard(g){
 }
 async function loadSelfieThumbs(v){
   for(const el of $$('[data-selfiethumb]',v)){
-    const path=el.dataset.selfiethumb; if(!path){ continue; }
-    try{ const blob=await fetchFile({path}); const url=URL.createObjectURL(blob);
+    const path=el.dataset.selfiethumb; if(!path){ continue; }   // no path = step not signed yet; keep its placeholder
+    el.classList.remove('gp-th-retry');
+    // a real photo exists at this path. try twice before showing anything scary —
+    // with hundreds of users live a single storage call can blip.
+    let blob=null;
+    for(let a=0;a<2&&!blob;a++){
+      try{ blob=await fetchFile({path}); }
+      catch(e){ if(a===0) await new Promise(r=>setTimeout(r,500)); }
+    }
+    if(blob){ const url=URL.createObjectURL(blob);
       el.innerHTML='<img src="'+url+'" alt="selfie">'; el.classList.add('has');
       el.onclick=()=>showSelfie(path,el.dataset.slabel||'Selfie'); }
-    catch(e){ el.innerHTML='<span class="gp-th-none">expired</span>'; }
+    else {   // the photo is really there in the record, it just didn't load — let them retry, don't imply it's gone
+      el.classList.add('gp-th-retry'); el.classList.remove('has');
+      el.innerHTML='<span class="gp-th-none">tap to retry</span>';
+      el.onclick=()=>{ el.innerHTML='<span class="spin sm"></span>'; loadSelfieThumbs(el.parentElement||v); };
+    }
   }
 }
 /* the requester collects one signature: pick whoever is available for this step,
