@@ -960,13 +960,26 @@ function newPasswordDialog(opts){
     onOpen:(v,close)=>{
       setTimeout(()=>{try{$('#np1',v).focus()}catch(e){}},60); $$('input',v).forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#np-go',v).click()}));
       $('#np-go',v).onclick=async()=>{
-        const a=$('#np1',v).value,b=$('#np2',v).value,err=$('#np-err',v);
+        const a=$('#np1',v).value,b=$('#np2',v).value,err=$('#np-err',v),btn=$('#np-go',v);
         if(a.length<8) return err.textContent='At least 8 characters.';
         if(a!==b) return err.textContent='The two entries do not match.';
-        $('#np-go',v).disabled=true;
-        const {error}=await SB.auth.updateUser({password:a});
-        if(error){ $('#np-go',v).disabled=false; return err.textContent=/same/i.test(error.message)?'That is already your password. Pick a different one.':error.message }
-        close(); toast('Password saved.','ok'); if(opts.onDone) opts.onDone();
+        btn.disabled=true; btn.textContent='Saving…'; err.textContent='';
+        let res;
+        try{
+          // the auth call can stall inside the app's webview; cap it so the screen never freezes
+          res=await Promise.race([ SB.auth.updateUser({password:a}),
+            new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),15000)) ]);
+          if(res&&res.error) throw res.error;
+        }catch(e){
+          btn.disabled=false; btn.textContent='Save password';
+          const m=(e&&e.message)||'';
+          return err.textContent=/timeout/i.test(m)?'That took too long — check your connection and tap Save again.'
+            :/same/i.test(m)?'That is already your password. Pick a different one.'
+            :(m||'Could not save the password. Please try again.');
+        }
+        // success: close the dialog and let the app proceed, whatever the follow-ups do
+        close(); toast('Password saved.','ok');
+        try{ if(opts.onDone) opts.onDone(); }catch(e){}
       };
     }});
 }
