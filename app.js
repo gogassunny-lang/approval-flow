@@ -128,7 +128,7 @@ async function load(){
     pageAll('flow_audit','created_at',false)
   ]);
 
-  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',
+  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
@@ -142,7 +142,8 @@ async function load(){
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
     const step=S[s.id]={id:s.id,userId:s.user_id,status:s.status,remark:s.remark||'',condition:s.condition||'',
-      systemApproved:!!s.system_approved,position:s.position,actedAt:ts(s.acted_at),files:[],tasks:[]};
+      systemApproved:!!s.system_approved,position:s.position,actedAt:ts(s.acted_at),
+      erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),files:[],tasks:[]};
     r.chain[s.position]=step});
   const T={};
   tasks.forEach(t=>{const s=S[t.step_id]; if(!s) return;
@@ -174,6 +175,7 @@ async function load(){
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
       canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
       infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoTos:s.info_tos||[],infoReplies:s.info_replies||[],infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
       actors:[],files:[]}});
@@ -656,7 +658,7 @@ async function enter(session){
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
     paintPin(); const h=routeFromHash();
-    const base=(GATE_ONLY()||HR_HEAD())?{name:'gate'}:{name:'dash'};
+    const base=ASSISTANT()?{name:'assist'}:(GATE_ONLY()||HR_HEAD())?{name:'gate'}:{name:'dash'};
     // deep link (from a notification tap): open the target, but keep the home screen
     // beneath it in history so Back returns to the app rather than exiting
     let target=base;
@@ -1090,11 +1092,16 @@ function allowedPages(u){
 }
 const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
 const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only accounts see only the Gate Pass page
-// restricted accounts (gate-only or HR head) are limited to the Gate Pass page and, if allowed, the Reports page
-const restrictedAcct=()=>GATE_ONLY()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
-const restrictedPage=k=>!restrictedAcct()||k==='gate'||k==='gpreport';
+const ASSISTANT=()=>!!(ME&&ME.assistsId&&!ME.admin&&!ME.owner);  // a proxy who assists one principal
+const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
+// restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
+const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
+const restrictedPage=k=>{ if(!restrictedAcct()) return true;
+  if(ASSISTANT()) return k==='assist'||k==='detail'||k==='flowdetail';   // worklist + read-only detail
+  return k==='gate'||k==='gpreport'; };
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
+  {k:'assist',label:'Assisting',grp:'Overview',when:()=>ASSISTANT(),badge:()=>assistErpTodo().length},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
@@ -1183,7 +1190,7 @@ function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
 function render(){
   if(!ME) return;
-  if(restrictedAcct()&&!restrictedPage(ROUTE.name)) ROUTE={name:'gate'};   // restricted accounts stay within Gate Pass / Reports
+  if(restrictedAcct()&&!restrictedPage(ROUTE.name)) ROUTE=ASSISTANT()?{name:'assist'}:{name:'gate'};   // restricted accounts stay within their own pages
   if(ROUTE.name==='gpreport'&&!canSeeReports()) ROUTE={name:GATE_ONLY()||HR_HEAD()?'gate':'dash'};
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
@@ -1203,6 +1210,7 @@ function render(){
     case 'report': v.innerHTML=viewReport(); wireReport(v); head('Reports','Filter the record and download it'); break;
     case 'usage': v.innerHTML=viewUsage(); wireUsage(v); break;
     case 'overview': v.innerHTML=viewOverview(); wireOverview(v); break;
+    case 'assist': v.innerHTML=viewAssist(); wireAssist(v); break;
     case 'people': v.innerHTML=viewPeople(); wirePeople(v); head('People & masters','Directory, station master and the permanence rule'); break;
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
@@ -1631,7 +1639,9 @@ function viewDetail(id){
     const sysBtn=ownerLegacyBtn?'<div style="margin-top:8px">'+ownerLegacyBtn+'</div>':'';
     nodes+='<div class="node '+cls+'" id="step-'+i+'"><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
       (s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
-      (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+fileListHTML(s.files)+subBranchHTML(r,s)+sysBtn+'</div></div>';
+      (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+
+      (s.erpDone?'<div class="meta" style="margin-top:6px;color:var(--seal)">ERP entered'+(s.erpDoneBy?' by '+esc(user(s.erpDoneBy).name):'')+(s.erpDoneAt?' · '+esc(fmtDT(s.erpDoneAt)):'')+'</div>':'')+
+      fileListHTML(s.files)+subBranchHTML(r,s)+sysBtn+'</div></div>';
   });
   const notes=r.notes.length?'<div class="card pad" style="margin-top:16px"><h3>Notes</h3>'+r.notes.map(n=>'<div style="display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--line)"><div class="av sm">'+inits(user(n.userId).name)+'</div><div><div style="font-size:13.5px"><b>'+esc(user(n.userId).name)+'</b> <span class="hint">'+esc(fmtDT(n.ts))+'</span></div><div style="white-space:pre-wrap">'+esc(n.text)+'</div></div></div>').join('')+'</div>':'';
 
@@ -1958,6 +1968,60 @@ function wireReport(v){
    ============================================================ */
 let usageSort='today', storageInfo=null;
 /* ============================================================
+   Assistant / proxy — read-only mirror of a principal's work + ERP stamp
+   ============================================================ */
+function assistErpList(doneWanted){
+  const pid=ME.assistsId, out=[]; if(!pid) return out;
+  DB.requests.forEach(r=>r.chain.forEach(s=>{
+    if(s.userId===pid && (s.status==='approved'||s.status==='conditional') && (!!s.erpDone===!!doneWanted))
+      out.push({engine:'legacy',reqId:r.id,stepId:s.id,ref:r.ref,title:docTitle(r),doc:docNo(r),when:s.actedAt,erpAt:s.erpDoneAt});
+  }));
+  DB.flows.forEach(f=>f.steps.forEach(s=>{
+    if(s.actedBy===pid && s.status==='done' && !String(s.remark||'').startsWith('Rejected') && (s.action==='approve'||s.action==='confirm') && (!!s.erpDone===!!doneWanted))
+      out.push({engine:'flow',reqId:f.id,stepId:s.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,when:s.actedAt,erpAt:s.erpDoneAt});
+  }));
+  out.sort((a,b)=>(b.when||0)-(a.when||0));
+  return out;
+}
+const assistErpTodo=()=>(ME&&ME.assistsId)?assistErpList(false):[];
+function assistPending(){
+  const pid=ME.assistsId, out=[]; if(!pid) return out;
+  DB.requests.forEach(r=>{ if(r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===pid)
+    out.push({engine:'legacy',id:r.id,ref:r.ref,title:docTitle(r),doc:docNo(r)}); });
+  DB.flows.forEach(f=>{ const s=flowLive(f); if(s&&s.actors.indexOf(pid)>-1)
+    out.push({engine:'flow',id:f.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label}); });
+  return out;
+}
+function viewAssist(){
+  const p=myPrincipal();
+  head('Assisting '+(p?p.name:''), p?('See what is on '+p.name.split(' ')[0]+', and mark ERP entries once they approve'):'');
+  if(!p) return '<div class="card pad"><h3>No principal set</h3><p class="hint" style="margin-top:6px">Your assistant link has not been set up. Ask an administrator to set who you assist.</p></div>';
+  const fn=p.name.split(' ')[0];
+  const pending=assistPending(), todo=assistErpList(false), done=assistErpList(true);
+  const openAttr=x=>'data-open="'+x.engine+':'+(x.reqId||x.id)+'"';
+  let h='<div class="grid g3">'+
+    stat('Pending on '+fn,pending.length,'Waiting for their decision','var(--hold)')+
+    stat('To enter in ERP',todo.length,'Approved — do the ERP entry','var(--indigo)')+
+    stat('ERP entries done',done.length,'Marked by you','var(--seal)')+'</div>';
+  h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>To enter in ERP</h3><span class="hint" style="margin-left:auto">'+todo.length+'</span></div>'+
+    (todo.length?todo.map(x=>'<div class="filerow"><div style="min-width:0;flex:1;cursor:pointer" class="assist-open" '+openAttr(x)+'><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+' · approved '+esc(fmtDT(x.when))+(x.engine==='flow'?' · Fixed flow':' · Custom chain')+'</div></div>'+
+      '<button class="btn ok sm" data-erp="'+x.engine+':'+x.stepId+'">ERP entry done</button></div>').join('')
+     :'<div class="empty" style="padding:24px 12px"><h3>Nothing to enter</h3><p class="hint">When '+esc(fn)+' approves something, it appears here to enter in ERP.</p></div>')+'</div>';
+  h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>Waiting on '+esc(p.name)+'</h3><span class="hint" style="margin-left:auto">'+pending.length+'</span></div>'+
+    (pending.length?pending.map(x=>'<div class="filerow assist-open" style="cursor:pointer" '+openAttr(x)+'><div style="min-width:0;flex:1"><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+(x.engine==='flow'?' · Fixed flow':' · Custom chain')+'</div></div><span class="tag t-prog">With '+esc(fn)+'</span></div>').join('')
+     :'<div class="empty" style="padding:24px 12px"><h3>Nothing pending</h3><p class="hint">Nothing is sitting on '+esc(fn)+' right now.</p></div>')+'</div>';
+  if(done.length) h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>ERP entries done</h3></div>'+
+    done.slice(0,40).map(x=>'<div class="filerow assist-open" style="cursor:pointer" '+openAttr(x)+'><div style="min-width:0;flex:1"><b>'+esc(x.doc||x.title)+'</b><div class="hint">'+esc(x.ref)+' · '+esc(x.title)+' · entered '+esc(fmtDT(x.erpAt))+'</div></div><span class="tag t-ok">ERP done</span></div>').join('')+'</div>';
+  h+='<p class="hint" style="margin-top:14px">You can open any item to read it, but only '+esc(fn)+' can approve. “ERP entry done” just records that you entered it in ERP — it never changes the approval.</p>';
+  return h;
+}
+function wireAssist(v){
+  $$('.assist-open',v).forEach(el=>el.onclick=()=>{ const parts=el.dataset.open.split(':'); go({name:parts[0]==='flow'?'flowdetail':'detail',id:parts[1]}); });
+  $$('[data-erp]',v).forEach(b=>b.onclick=async()=>{ const parts=b.dataset.erp.split(':'); b.disabled=true;
+    try{ await rpc(parts[0]==='flow'?'flow_erp_mark':'erp_mark',{p_step:parts[1],p_done:true}); await load(); toast('Marked as entered in ERP.','ok'); render(); }
+    catch(e){ b.disabled=false; fail(e); } });
+}
+/* ============================================================
    System overview — owner-only analytics across the whole system
    ============================================================ */
 function ovBars(items){
@@ -2144,6 +2208,7 @@ function viewPeople(){
 function accessLabel(u){
   const t=[]; if(u.owner)t.push('Owner'); if(u.admin)t.push('Admin'); if(u.manager)t.push('Manager');
   if(u.seeAll)t.push('Sees all'); if(u.gateman)t.push('Gateman'); if(u.hrHead)t.push('HR Head'); if(u.gateOnly)t.push('Gate only');
+  if(u.assistsId){const pr=DB.users.find(x=>x.id===u.assistsId); t.push('Assistant to '+(pr?pr.name:'—'));}
   return t.join(', ')||'User';
 }
 function exportUsersXlsx(){
@@ -2187,6 +2252,7 @@ function wirePeople(v){
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
+        '<div><label for="e-assist">Assistant to (proxy) <span class="hint" style="font-weight:400">optional</span></label><select id="e-assist"><option value="">— nobody —</option>'+DB.users.filter(x=>x.active&&x.id!==u.id&&!x.owner).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>'<option value="'+x.id+'" '+(u.assistsId===x.id?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select><div class="hint">Makes this a proxy for that person: a read-only view of their pending and approved items, no approval buttons, plus an “ERP entry done” button. Restricted to the Assisting page.</div></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
         (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
@@ -2203,6 +2269,7 @@ function wirePeople(v){
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
           if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
+          if($('#e-assist',mv)){ const av=$('#e-assist',mv).value||null; if((av||null)!==(u.assistsId||null)) await rpc('set_assists',{p_user:u.id,p_principal:av}); }
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
@@ -2892,6 +2959,7 @@ function flowStepRow(f,s){
     if(s.systemApproved) meta='<div class="hint" style="color:var(--indigo)"><b>System Approved — by super admin</b> · '+esc(fmtDT(s.actedAt))+'</div>';
     else meta='<div class="hint">'+(s.actedBy?esc(user(s.actedBy).name):'—')+' · '+esc(fmtDT(s.actedAt))+(s.remark?' · '+esc(s.remark):'')+'</div>';
   }
+  if(s.erpDone) meta+='<div class="hint" style="color:var(--seal)">ERP entered'+(s.erpDoneBy?' by '+esc(user(s.erpDoneBy).name):'')+(s.erpDoneAt?' · '+esc(fmtDT(s.erpDoneAt)):'')+'</div>';
   if(s.dataVal&&s.dataVal.condition) meta+='<div class="hint" style="color:var(--hold)">Condition: '+esc(s.dataVal.condition)+'</div>';
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
   if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
