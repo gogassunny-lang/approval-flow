@@ -621,7 +621,9 @@ $('#si-go').onclick=async()=>{
       if(role.length<2) return siErr('Enter your designation.');
       if(!dept) return siErr('Choose your department.');
       if(pass.length<8) return siErr('Password needs at least 8 characters.');
-      const {data,error}=await SB.auth.signUp({email,password:pass,options:{data:{name,role,dept}}});
+      // self_signup marks this as a public "Create an account" so the database
+      // starts it Gate-Pass-only (admins upgrade later); admin/seed accounts omit it.
+      const {data,error}=await SB.auth.signUp({email,password:pass,options:{data:{name,role,dept,self_signup:true}}});
       if(error) return siErr(error.message);
       if(!data.session){ siErr('Account created. Check your email for the confirmation link, then sign in.'); signMode='login'; return }
       return; // onAuthStateChange takes it from here
