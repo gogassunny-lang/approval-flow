@@ -1342,10 +1342,10 @@ function render(){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
     case 'inbox': v.innerHTML=viewInbox(); wireInbox(v); break;
     case 'new': v.innerHTML=viewNew(); wireNew(v); break;
-    case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.')+flowSection('turn')+legacyAwaitingSection()+flowSection('awaiting'); wireList(v); wireFlowRows(v); break;
+    case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.',(flowMyTurn().length+legacyAwaiting().length+flowAwaitingReply().length)>0)+flowSection('turn')+legacyAwaitingSection()+flowSection('awaiting'); wireList(v); wireFlowRows(v); break;
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
-    case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.')+flowSection('tagged'); wireList(v); wireFlowRows(v); break;
-    case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.')+flowSection('mine'); wireList(v); wireFlowRows(v); break;
+    case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.',flowTagged().length>0)+flowSection('tagged'); wireList(v); wireFlowRows(v); break;
+    case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.',flowMine().length>0)+flowSection('mine'); wireList(v); wireFlowRows(v); break;
     case 'tpl': v.innerHTML=viewTpl(); wireTpl(v); break;
     case 'team': v.innerHTML=viewTeam(); wireTeam(v); break;
     case 'all': v.innerHTML=viewAll()+flowSection('all'); wireList(v); wireFlowRows(v);
@@ -1729,8 +1729,9 @@ function rowsHTML(list){
    list.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b> <span class="tag t-wait" style="font-size:10.5px">Custom chain</span><div class="hint">'+esc(r.ref)+' · '+esc(user(r.requesterId).name)+'</div></td><td class="hint meta">'+esc(typeLabel(r))+'</td>'+
    '<td class="num meta">'+(r.type==='workorder'?money(r.f.amountPost):'—')+'</td><td class="hint num meta">'+esc(fmtD(r.createdAt))+'</td><td class="meta">'+tagFor(r)+'</td><td class="hint pos">'+esc(stepLabel(r))+'</td></tr>').join('')+'</tbody></table>';
 }
-function viewList(list,t,s,et,es){ head(t,s);
-  if(!list.length) return '<div class="card"><div class="empty"><h3>'+esc(et)+'</h3><p class="hint">'+esc(es)+'</p></div></div>';
+function viewList(list,t,s,et,es,hideEmpty){ head(t,s);
+  // hideEmpty: the page has ALDS flow items below, so an "empty" message here would be misleading
+  if(!list.length) return hideEmpty?'':'<div class="card"><div class="empty"><h3>'+esc(et)+'</h3><p class="hint">'+esc(es)+'</p></div></div>';
   return '<div class="card">'+rowsHTML(list.slice().sort((a,b)=>b.createdAt-a.createdAt))+'</div>'; }
 const wireList=v=>$$('tr[data-r]',v).forEach(t=>t.onclick=()=>go({name:'detail',id:t.dataset.r}));
 function viewTasks(){
@@ -1792,8 +1793,12 @@ function viewDetail(id){
     const u=user(s.userId), prevDept=deptAt(r,i-1), thisDept=deptAt(r,i);
     if(thisDept&&prevDept&&thisDept!==prevDept) nodes+='<div class="handover"><span>'+esc(prevDept)+'</span><i></i><b>'+esc(thisDept)+'</b></div>';
     const live=(r.status==='In Progress'&&i===r.current)||(r.status==='Info Requested'&&i===r.infoStep);
-    const cls=s.status==='approved'?'done':s.status==='conditional'?'done cond':s.status==='rejected'?'stop':s.status==='info'?'hold':live?'live':s.status==='waiting'?'locked':'';
-    let tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-hold">Asked for more</span>',
+    // 'info' = this approver asked for more: it's with the tagged person / requester now, so
+    // show this node muted ("parked") and say clearly who it's pending with
+    const cls=s.status==='approved'?'done':s.status==='conditional'?'done cond':s.status==='rejected'?'stop':s.status==='info'?'parked':live?'live':s.status==='waiting'?'locked':'';
+    let parkedWith='';
+    if(s.status==='info'){ const h=holder(r); parkedWith='<div class="pending-with tagged" style="margin-top:7px">Pending with <b>'+esc(h?h.name:'the requester')+'</b> <span class="pw-sub">· asked by '+esc(u.name)+'</span></div>'; }
+    let tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-wait">Asked for more — waiting</span>',
       pending:stepBlocked(s)?'<span class="tag t-hold">Work given out</span>':'<span class="tag t-prog">Holding it now</span>',waiting:'<span class="tag t-wait">Waiting turn</span>'}[s.status]||'';
     if(s.systemApproved) tag='<span class="tag t-ok" style="background:var(--indigo);color:#fff">System Approved — by super admin</span>';
     if(s.erpDone) tag+=' <span class="tag t-ok">ERP ✓</span>';
@@ -1805,7 +1810,7 @@ function viewDetail(id){
       ownerLegacyBtn='<button class="btn ghost sm" data-rwd="'+i+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
     const sysBtn=ownerLegacyBtn?'<div style="margin-top:8px">'+ownerLegacyBtn+'</div>':'';
     nodes+='<div class="node '+cls+'" id="step-'+i+'"><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
-      (s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
+      parkedWith+(s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
       (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+
       (s.erpDone?'<div class="meta" style="margin-top:6px;color:var(--seal)">ERP entered'+(s.erpDoneBy?' by '+esc(user(s.erpDoneBy).name):'')+(s.erpDoneAt?' · '+esc(fmtDT(s.erpDoneAt)):'')+'</div>':'')+
       fileListHTML(s.files)+subBranchHTML(r,s)+sysBtn+'</div></div>';
@@ -3221,6 +3226,10 @@ const FLOW_ST={waiting:['t-wait','Waiting'],pending:['t-prog','Now here'],done:[
 function flowStepRow(f,s){
   let st=FLOW_ST[s.status]||['t-wait',s.status];
   if(s.systemApproved) st=['t-ok','System approved'];
+  // parked on an ask: the step is NOT with its approver right now — it's with the tagged
+  // people. Show the approver's row muted and put the highlight on whoever has it.
+  const parked=s.status==='pending'&&s.infoRequested;
+  if(parked) st=['t-wait','Asked for more — waiting'];
   const actors=s.actors.map(id=>user(id).name).join(', ')||'—';
   let meta='';
   if(s.status==='done'){
@@ -3232,9 +3241,9 @@ function flowStepRow(f,s){
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
   if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
   if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
-  if(s.infoRequested){ const tg=infoTargets(s), act=flowActiveTag(s), who=tg.length?user(act||tg[0]).name:'the requester', done=(s.infoReplies||[]).length;
-    meta+='<div class="hint" style="color:var(--hold)">Waiting on '+esc(who)+(tg.length>1?' ('+Math.min(done+1,tg.length)+' of '+tg.length+', in turn)':'')+(s.infoBy?' — asked by '+esc(user(s.infoBy).name):'')+'</div>';
-    if(tg.length>1) meta+='<div style="margin-top:5px">'+flowTagChain(s)+'</div>'; }
+  // (who it's pending with is shown by the highlighted "Pending with" pill below; with
+  //  several people tagged, the order chain shows who has it now and who is next)
+  if(s.infoRequested){ const tg=infoTargets(s); if(tg.length>1) meta+='<div style="margin-top:6px">'+flowTagChain(s)+'</div>'; }
   meta+=flowCommentThread(s);
   // item 7: the people on this step, the raiser (and admins) can attach a file at ANY stage of a running flow
   const canAttach=f.status==='running'&&(s.actors.indexOf(ME.id)>-1||f.requesterId===ME.id||ME.admin||ME.owner);
@@ -3252,9 +3261,9 @@ function flowStepRow(f,s){
     let holder;
     if(s.infoRequested){ const tg=infoTargets(s); holder=tg.length?user(flowActiveTag(s)||tg[0]).name:'the requester'; }
     else holder=actors;
-    pendingWith='<div class="pending-with">Pending with <b>'+esc(holder)+'</b>'+(s.infoRequested&&s.infoBy?' <span class="pw-sub">· asked by '+esc(user(s.infoBy).name)+'</span>':'')+'</div>';
+    pendingWith='<div class="pending-with'+(s.infoRequested?' tagged':'')+'">Pending with <b>'+esc(holder)+'</b>'+(s.infoRequested&&s.infoBy?' <span class="pw-sub">· asked by '+esc(user(s.infoBy).name)+'</span>':'')+'</div>';
   }
-  return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
+  return '<div class="flow-step '+(parked?'parked':s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
     '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span>'+(s.erpDone?'<span class="tag t-ok" style="font-size:11px">ERP ✓</span>':'')+'</div>'+
     '<div class="hint">'+esc(actors)+'</div>'+pendingWith+meta+files+sysBtn+'</div></div>';
 }
@@ -3291,7 +3300,8 @@ function viewFlowDetail(id){
   flowStageList(f).forEach(stage=>{
     const steps=f.steps.filter(s=>s.stage===stage);
     const anyLive=steps.some(s=>s.status==='pending');
-    left+='<div class="card" style="margin-bottom:12px'+(anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(stage)+'</h3></div>'+
+    const anyParked=steps.some(s=>s.status==='pending'&&s.infoRequested);   // with tagged people, not the approver
+    left+='<div class="card" style="margin-bottom:12px'+(anyParked?';border-color:var(--hold)':anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(stage)+'</h3></div>'+
       '<div style="padding:10px 16px">'+steps.map(s=>flowStepRow(f,s)).join('')+'</div></div>';
   });
   if(f.audit.length) left+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
