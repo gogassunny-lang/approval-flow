@@ -97,44 +97,78 @@ async function pageAll(table,orderCol,ascending){
   }
   return out;
 }
-async function load(){
-  const q=[
+/* ---------- data loading, in slices (keeps Supabase data-transfer low) ----------
+   Every phone used to re-download EVERYTHING (all profiles, all flows, all gate
+   passes) on every change anyone made, and again each time the app came to the
+   front — that pushed the project over its free data-transfer quota. Now:
+     people : profiles, departments, projects, stations, templates (+usage for admins)
+     legacy : chain requests, steps, tasks, files, notes, audit
+     flows  : ALDS flows — or only the flows that changed
+     gate   : gate passes            notif : my notifications
+   A full load happens at sign-in and after your own edits. A live change touches
+   only its slice, and gate passes / notifications are applied straight from the
+   live event with no download at all. */
+const LOAD_PARTS=['people','legacy','flows','gate','notif'];
+const DATA_PARTS=['legacy','flows','gate','notif'];
+let lastLoadAt=0;
+const gateScopeOnly=()=>!!(ME&&ME.name&&(GATE_ONLY()||HR_HEAD()));   // sees only the gate pages
+async function load(parts,flowIds){
+  const P=new Set(parts&&parts.length?parts:LOAD_PARTS);
+  if(P.has('people')){ P.delete('people'); await loadPeople(); const me=DB.users.find(u=>u.id===(ME&&ME.id)); if(me) ME=me; }
+  // Gate-Pass-only and HR-Head accounts only ever see the gate pages — don't download
+  // every flow and request for them (500+ such accounts)
+  if(gateScopeOnly()){ P.delete('legacy'); P.delete('flows'); DB.requests=[]; DB.flows=[]; DB.audit=[]; }
+  const jobs=[];
+  if(P.has('legacy')) jobs.push(loadLegacy());
+  if(P.has('flows'))  jobs.push((flowIds&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):loadFlows());
+  if(P.has('gate'))   jobs.push(loadGate());
+  if(P.has('notif'))  jobs.push(loadNotifs());
+  await Promise.all(jobs);
+  lastLoadAt=Date.now();
+  const me=DB.users.find(u=>u.id===(ME&&ME.id));
+  if(me) ME=me;
+  // wipe gate selfies older than a week: remove my own old selfie files, then drop the references
+  if(!load._expired){ load._expired=true; gpExpireSweep(); }
+}
+async function loadPeople(){
+  const r=await Promise.all([
     SB.from('profiles').select('*'),
+    SB.from('templates').select('*').order('name'),
+    SB.from('departments').select('name').order('name'),
+    SB.from('projects').select('name').order('name'),
+    SB.from('stations').select('*').order('name')
+  ]);
+  const bad=r.find(x=>x.error); if(bad) throw bad.error;
+  const [prof,tpl,dept,proj,st]=r.map(x=>x.data||[]);
+  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
+    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
+    managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
+    stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
+  DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
+  DB.departments=dept.map(d=>d.name);
+  DB.projects=proj.map(p=>p.name);
+  STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
+  // the day-by-day usage history is only shown on Usage / System overview (admins): last ~3 months
+  const meRow=prof.find(p=>p.id===(ME&&ME.id));
+  if(meRow&&(meRow.is_admin||meRow.see_all||meRow.is_owner)){
+    const since=new Date(Date.now()-92*864e5).toISOString().slice(0,10);
+    const {data:usage,error}=await SB.from('usage_daily').select('*').gte('day',since);
+    if(error) throw error;
+    const U={}; DB.users.forEach(u=>U[u.id]=u);
+    (usage||[]).forEach(x=>{const u=U[x.user_id]; if(u) u.stats.daily[x.day]=Number(x.active_ms)||0});
+  }
+}
+async function loadLegacy(){
+  const r=await Promise.all([
     SB.from('requests').select('*').order('created_at',{ascending:false}),
     SB.from('steps').select('*').order('position'),
     SB.from('tasks').select('*').order('assigned_at'),
     SB.from('files').select('*').order('created_at'),
     SB.from('notes').select('*').order('created_at'),
-    SB.from('audit').select('*').order('created_at',{ascending:false}).limit(500),
-    SB.from('templates').select('*').order('name'),
-    SB.from('departments').select('name').order('name'),
-    SB.from('projects').select('name').order('name'),
-    SB.from('stations').select('*').order('name'),
-    SB.from('usage_daily').select('*'),
-    SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60),
-    SB.from('gate_passes').select('*').order('created_at',{ascending:false}).limit(3000)
-  ];
-  const r=await Promise.all(q);
-  const bad=r.find(x=>x.error); if(bad) throw bad.error;
-  const [prof,req,steps,tasks,files,notes,audit,tpl,dept,proj,st,usage,notif,passes]=r.map(x=>x.data||[]);
-  // Flow sub-tables grow with every flow (steps × actors), so a single request
-  // hits the API's 1000-row cap and newer flows come back with no actors — which
-  // leaves their live step with no approver and no action button. Page through them.
-  const [freq,fsteps,factors,ffiles,faudit]=await Promise.all([
-    pageAll('flow_requests','created_at',false),
-    pageAll('flow_steps','pos',true),
-    pageAll('flow_step_actors','step_id',true),
-    pageAll('flow_files','created_at',true),
-    pageAll('flow_audit','created_at',false)
+    SB.from('audit').select('*').order('created_at',{ascending:false}).limit(500)
   ]);
-
-  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
-    admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
-    stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
-  const U={}; DB.users.forEach(u=>U[u.id]=u);
-  usage.forEach(x=>{const u=U[x.user_id]; if(u) u.stats.daily[x.day]=Number(x.active_ms)||0});
-
+  const bad=r.find(x=>x.error); if(bad) throw bad.error;
+  const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
   DB.requests=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
     current:x.current_step,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
@@ -155,19 +189,28 @@ async function load(){
     else if(R[f.request_id]) R[f.request_id].files.push(rec)});
   notes.forEach(n=>{const r=R[n.request_id]; if(r) r.notes.push({id:n.id,userId:n.user_id,ts:ts(n.created_at),text:n.text})});
   DB.audit=audit.map(a=>({id:a.id,ts:ts(a.created_at),reqId:a.request_id,ref:a.ref,actorId:a.actor_id,actorName:a.actor_name,action:a.action,detail:a.detail||''}));
-  DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
-  DB.departments=dept.map(d=>d.name);
-  DB.projects=proj.map(p=>p.name);
-  STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
-  DB.notifs=notif.map(x=>({id:x.id,requestId:x.request_id,route:x.route||'',kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at}));
-  DB.passes=passes.map(g=>({id:g.id,ref:g.ref,kind:g.kind,halfPart:g.half_part||'',employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
+}
+const mapPass=g=>({id:g.id,ref:g.ref,kind:g.kind,halfPart:g.half_part||'',employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
     requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
     hodAt:ts(g.hod_at),hrAt:ts(g.hr_at),rejectBy:g.reject_by,rejectReason:g.reject_reason||'',rejectedAt:ts(g.rejected_at),
-    gateBy:g.gate_by,outAt:ts(g.out_at),returnAt:ts(g.return_at),status:g.status,passDate:g.pass_date,createdAt:ts(g.created_at)}));
-
-  // ALDS PO/WO flows
+    gateBy:g.gate_by,outAt:ts(g.out_at),returnAt:ts(g.return_at),status:g.status,passDate:g.pass_date,createdAt:ts(g.created_at)});
+const mapNotif=x=>({id:x.id,requestId:x.request_id,route:x.route||'',kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at});
+async function loadGate(){
+  // gate passes from the last 120 days (reports default to 30; selfies expire after 7)
+  const since=new Date(Date.now()-120*864e5).toISOString();
+  const {data,error}=await SB.from('gate_passes').select('*').gte('created_at',since).order('created_at',{ascending:false}).limit(3000);
+  if(error) throw error;
+  DB.passes=(data||[]).map(mapPass);
+}
+async function loadNotifs(){
+  const {data,error}=await SB.from('notifications').select('*').order('created_at',{ascending:false}).limit(60);
+  if(error) throw error;
+  DB.notifs=(data||[]).map(mapNotif);
+}
+/* ALDS PO/WO flows: build the flow objects from their rows */
+function buildFlows(freq,fsteps,factors,ffiles,faudit){
   const FR={};
-  DB.flows=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,requesterId:x.requester_id,
+  const list=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,requesterId:x.requester_id,
     title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     steps:[],audit:[]});
   const FS={};
@@ -183,24 +226,94 @@ async function load(){
   ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by};
     if(s) s.files.push(rec); else if(FR[f.request_id]) FR[f.request_id]._files=(FR[f.request_id]._files||[]).concat(rec)});
   faudit.forEach(a=>{const f=FR[a.request_id]; if(f) f.audit.push({ts:ts(a.created_at),actorName:a.actor_name,action:a.action,detail:a.detail||''})});
-  DB.flows.forEach(f=>f.steps=f.steps.filter(Boolean));
-
-  const me=DB.users.find(u=>u.id===(ME&&ME.id));
-  if(me) ME=me;
-  // wipe gate selfies older than a week: remove my own old selfie files, then drop the references
-  if(!load._expired){ load._expired=true; gpExpireSweep(); }
+  list.forEach(f=>f.steps=f.steps.filter(Boolean));
+  return list;
+}
+async function loadFlows(){
+  // Flow sub-tables grow with every flow (steps × actors), so a single request
+  // hits the API's 1000-row cap and newer flows come back with no actors — which
+  // leaves their live step with no approver and no action button. Page through them.
+  const [freq,fsteps,factors,ffiles,faudit]=await Promise.all([
+    pageAll('flow_requests','created_at',false),
+    pageAll('flow_steps','pos',true),
+    pageAll('flow_step_actors','step_id',true),
+    pageAll('flow_files','created_at',true),
+    pageAll('flow_audit','created_at',false)
+  ]);
+  DB.flows=buildFlows(freq,fsteps,factors,ffiles,faudit);
+}
+/* re-fetch just these flows (a live change or your own action on one flow) and
+   swap them into the list, instead of re-downloading every flow */
+async function loadFlowsSome(ids){
+  const r=await Promise.all([
+    SB.from('flow_requests').select('*').in('id',ids),
+    SB.from('flow_steps').select('*').in('request_id',ids).order('pos'),
+    SB.from('flow_files').select('*').in('request_id',ids).order('created_at'),
+    SB.from('flow_audit').select('*').in('request_id',ids).order('created_at',{ascending:false})
+  ]);
+  const bad=r.find(x=>x.error); if(bad) throw bad.error;
+  const [freq,fsteps,ffiles,faudit]=r.map(x=>x.data||[]);
+  const stepIds=fsteps.map(s=>s.id); let factors=[];
+  if(stepIds.length){ const {data,error}=await SB.from('flow_step_actors').select('*').in('step_id',stepIds); if(error) throw error; factors=data||[]; }
+  const fresh=buildFlows(freq,fsteps,factors,ffiles,faudit);
+  DB.flows=DB.flows.filter(f=>ids.indexOf(f.id)<0).concat(fresh).sort((a,b)=>b.createdAt-a.createdAt);
 }
 async function gpExpireSweep(){
   try{
     const cut=Date.now()-7*864e5, paths=[];
     DB.passes.forEach(g=>{ if(g.requesterId===ME.id&&g.createdAt<cut){ [g.reqSelfie,g.hodSelfie,g.hrSelfie].forEach(p=>{ if(p) paths.push(p) }) } });
-    if(paths.length){ try{ await SB.storage.from('documents').remove(paths) }catch(e){} }
+    if(paths.length){ try{ await SB.storage.from('documents').remove(withThumbs(paths)) }catch(e){} }
     await SB.rpc('gp_expire_photos');
   }catch(e){}
 }
-let reloadT=null;
-async function reload(){ try{ await load(); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
-function reloadSoon(){ clearTimeout(reloadT); reloadT=setTimeout(reload,600) }
+let reloadT=null, renderT=null, hiddenAt=0;
+const pendingParts=new Set(), pendingFlowIds=new Set(); let pendingFlowsAll=false;
+async function reload(parts,flowIds){ try{ await load(parts,flowIds); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
+/* live changes are batched (2 s) and fetched only for the slice they touched; while
+   the app is in the background nothing is fetched — it catches up when it returns */
+function reloadSoon(parts,scopedFlows){
+  (parts&&parts.length?parts:DATA_PARTS).forEach(p=>pendingParts.add(p));
+  if(pendingParts.has('flows')&&!scopedFlows) pendingFlowsAll=true;
+  if(document.hidden) return;
+  clearTimeout(reloadT); reloadT=setTimeout(flushReload,2000);
+}
+function flushReload(){
+  clearTimeout(reloadT);
+  if(!ME||!pendingParts.size) return;
+  if($('.veil')||$('#busy')){ reloadT=setTimeout(flushReload,3000); return; }   // don't redraw under an open dialog; retry shortly
+  const parts=[...pendingParts]; pendingParts.clear();
+  const ids=(!pendingFlowsAll&&pendingFlowIds.size)?[...pendingFlowIds]:null;
+  pendingFlowIds.clear(); pendingFlowsAll=false;
+  reload(parts,ids);
+}
+/* redraw without any download (a live event that carried its own data) */
+function renderSoon(){
+  if(document.hidden){ renderSoon._due=true; return; }
+  clearTimeout(renderT);
+  renderT=setTimeout(()=>{ if(!ME) return; if($('.veil')){ renderSoon(); return; } render(); paintNav(); paintPin(); },400);
+}
+/* live gate-pass change: the event already carries the row — apply it, no download */
+function applyPassChange(p){
+  try{
+    if(p.eventType==='DELETE'){ const id=p.old&&p.old.id; if(!id) return reloadSoon(['gate']); DB.passes=DB.passes.filter(g=>g.id!==id); }
+    else { const row=p.new; if(!row||!row.id||!row.status) return reloadSoon(['gate']);
+      const g=mapPass(row), i=DB.passes.findIndex(x=>x.id===g.id);
+      if(i>-1) DB.passes[i]=g; else DB.passes.unshift(g); }
+    renderSoon();
+  }catch(e){ reloadSoon(['gate']); }
+}
+/* live flow change: re-fetch only the flow it belongs to (a new flow, or anything
+   we can't place, refreshes the whole flow list once) */
+function flowChanged(p,table){
+  const row=(p.new&&Object.keys(p.new).length)?p.new:(p.old||{});
+  let fid=null;
+  if(table==='flow_requests'&&p.eventType!=='INSERT') fid=row.id||null;
+  else if(table==='flow_steps') fid=row.request_id||null;
+  else if(table==='flow_step_actors'){ const x=row.step_id?flowFindStep(row.step_id):null; fid=x?x.f.id:null; }
+  if(fid&&DB.flows.some(f=>f.id===fid)){ pendingFlowIds.add(fid); reloadSoon(['flows'],true); }
+  else reloadSoon(['flows']);
+}
+const flowIdsOfStep=stepId=>{ const x=flowFindStep(stepId); return x?[x.f.id]:null; };
 
 /* ---------- model helpers (read-only views over what was loaded) ---------- */
 const user=id=>DB.users.find(u=>u.id===id)||{name:'Unknown',role:'',email:'',id:'',dept:''};
@@ -849,7 +962,8 @@ function tempPasswordDialog(name,email,pw){
 
 /* ---------- owner deletion (testing, and the go-live reset) ---------- */
 async function removeObjects(paths){ if(!paths||!paths.length) return 0;
-  const {error}=await SB.storage.from('documents').remove(paths); if(error) throw error; return paths.length }
+  // gate selfies also have a small list thumbnail — remove it with the photo
+  const {error}=await SB.storage.from('documents').remove(withThumbs(paths)); if(error) throw error; return paths.length }
 function purgeRequestDialog(r){
   modal({title:'Delete this request',
     body:'<p style="margin-top:0"><b>'+esc(docTitle(r))+'</b> — '+esc(r.ref)+', raised by '+esc(user(r.requesterId).name)+'.</p>'+
@@ -1005,22 +1119,34 @@ let recovering=false;
 /* ---------- realtime: refresh when something visible changes ---------- */
 let channel=null;
 function subscribe(){
-  unsubscribe();
-  channel=SB.channel('setu-live')
-    .on('postgres_changes',{event:'*',schema:'public',table:'requests'},reloadSoon)
-    .on('postgres_changes',{event:'*',schema:'public',table:'steps'},reloadSoon)
-    .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},reloadSoon)
-    .on('postgres_changes',{event:'*',schema:'public',table:'gate_passes'},reloadSoon)
-    .on('postgres_changes',{event:'*',schema:'public',table:'flow_requests'},reloadSoon)
-    .on('postgres_changes',{event:'*',schema:'public',table:'flow_steps'},reloadSoon)
-    .on('postgres_changes',{event:'*',schema:'public',table:'flow_step_actors'},reloadSoon)
+  unsubscribe(); subscribe._gap=false;
+  // each live change refreshes only its own slice (see load()); gate passes and my
+  // notifications are applied straight from the event with no download
+  channel=SB.channel('setu-live');
+  // gate-only / HR-Head accounts don't listen to request & flow changes at all
+  if(!gateScopeOnly()) channel
+    .on('postgres_changes',{event:'*',schema:'public',table:'requests'},()=>reloadSoon(['legacy']))
+    .on('postgres_changes',{event:'*',schema:'public',table:'steps'},()=>reloadSoon(['legacy']))
+    .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},()=>reloadSoon(['legacy']))
+    .on('postgres_changes',{event:'*',schema:'public',table:'flow_requests'},p=>flowChanged(p,'flow_requests'))
+    .on('postgres_changes',{event:'*',schema:'public',table:'flow_steps'},p=>flowChanged(p,'flow_steps'))
+    .on('postgres_changes',{event:'*',schema:'public',table:'flow_step_actors'},p=>flowChanged(p,'flow_step_actors'));
+  channel
+    .on('postgres_changes',{event:'*',schema:'public',table:'gate_passes'},applyPassChange)
     .on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:'user_id=eq.'+ME.id},p=>{
-      const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok'); reloadSoon();
+      const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok');
+      if(x.id){ DB.notifs=[mapNotif(x)].concat(DB.notifs.filter(n=>n.id!==x.id)).slice(0,60); renderSoon(); }
+      else reloadSoon(['notif']);
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
         try{ const nn=new Notification(x.title||'SETU',{body:(x.body||'').split('\n')[0],icon:'icon-192.png',tag:'setu-'+x.id});
           nn.onclick=()=>{window.focus(); gotoNotif(x); nn.close()} }catch(e){}
       }})
-    .subscribe();
+    .subscribe(status=>{
+      // if the live connection dropped (phone asleep, network blip) we may have missed
+      // changes — catch up once when it reconnects, instead of on every app switch
+      if(status==='SUBSCRIBED'){ if(subscribe._gap){ subscribe._gap=false; pendingFlowsAll=true; reloadSoon(DATA_PARTS); } }
+      else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'||status==='CLOSED'){ subscribe._gap=true; }
+    });
   /* on the web, ask once for browser notifications so a background tab can still be tapped on the shoulder */
   if('Notification' in window&&Notification.permission==='default'&&!(window.median||window.gonative)) setTimeout(()=>{try{Notification.requestPermission()}catch(e){}},4000);
 }
@@ -2387,6 +2513,10 @@ async function selfieUpload(blob){
   const path=ME.id+'/gate-'+uid()+'.jpg';
   const {error}=await SB.storage.from('documents').upload(path,blob,{contentType:'image/jpeg',upsert:false});
   if(error) throw error;
+  // a small copy (~240px, ~10 KB) for the lists, so every list view doesn't pull the
+  // full photo. Best-effort: if it fails, lists simply fall back to the full photo.
+  try{ const tb=await downscaleToJpeg(blob,240,0.7);
+    if(tb) await SB.storage.from('documents').upload(thumbOf(path),tb,{contentType:'image/jpeg',upsert:false}); }catch(e){}
   return path;
 }
 /* shrink any picked/captured image to a <=edge jpeg (strips EXIF, caps size) */
@@ -2501,7 +2631,7 @@ async function showSelfie(path,label){
   if(!path){ toast('That photo was kept for 7 days and has since been wiped.','hold'); return; }
   const {el}=modal({title:label||'Selfie',cls:'selfie',body:'<div id="sv-stage" class="selfie-stage"><span class="spin"></span></div>'+
     '<div class="hint" style="margin-top:8px;text-align:center">Selfies are removed 7 days after the pass; the approval record stays.</div>'});
-  try{ const blob=await fetchFile({path}); const url=URL.createObjectURL(blob);
+  try{ const url=await imgURL(path);   // full photo, downloaded once per session
     if($('#sv-stage',el)) $('#sv-stage',el).innerHTML='<img class="selfie-video" src="'+url+'" alt="selfie">'; }
   catch(e){ if($('#sv-stage',el)) $('#sv-stage',el).innerHTML='<div class="selfie-err">This photo is no longer available.</div>'; }
 }
@@ -2555,18 +2685,38 @@ function gpGateCard(g){
     (g.status==='out'?'<div class="hint" style="margin-top:7px">Out since '+esc(fmtDT(g.outAt))+'</div>':'')+
     '</div></div>';
 }
+/* ---- photo data-transfer: each gate photo is downloaded at most ONCE per session
+   (not on every screen refresh), and lists use a ~10 KB thumbnail instead of the
+   full photo. Passes from before thumbnails existed fall back to the full photo. ---- */
+function thumbOf(p){ return String(p||'').replace(/\.jpg$/i,'.t.jpg'); }
+function withThumbs(paths){ const out=[]; (paths||[]).forEach(p=>{ if(!p) return; out.push(p); if(/\/gate-[^/]+\.jpg$/i.test(p)&&!/\.t\.jpg$/i.test(p)) out.push(thumbOf(p)); }); return out; }
+const IMG_CACHE=new Map();   // storage path -> Promise<object URL>
+const IMG_MISS=new Set();    // thumbnail paths known not to exist (older passes)
+function imgURL(path){
+  if(!IMG_CACHE.has(path)){
+    const pr=fetchFile({path}).then(b=>URL.createObjectURL(b));
+    pr.catch(()=>IMG_CACHE.delete(path));
+    IMG_CACHE.set(path,pr);
+  }
+  return IMG_CACHE.get(path);
+}
+async function thumbURL(path){
+  const t=thumbOf(path);
+  if(t!==path&&!IMG_MISS.has(t)){ try{ return await imgURL(t); }catch(e){ IMG_MISS.add(t); } }
+  return imgURL(path);
+}
 async function loadSelfieThumbs(v){
   for(const el of $$('[data-selfiethumb]',v)){
     const path=el.dataset.selfiethumb; if(!path){ continue; }   // no path = step not signed yet; keep its placeholder
     el.classList.remove('gp-th-retry');
     // a real photo exists at this path. try twice before showing anything scary —
     // with hundreds of users live a single storage call can blip.
-    let blob=null;
-    for(let a=0;a<2&&!blob;a++){
-      try{ blob=await fetchFile({path}); }
+    let url=null;
+    for(let a=0;a<2&&!url;a++){
+      try{ url=await thumbURL(path); }
       catch(e){ if(a===0) await new Promise(r=>setTimeout(r,500)); }
     }
-    if(blob){ const url=URL.createObjectURL(blob);
+    if(url){
       el.innerHTML='<img src="'+url+'" alt="selfie">'; el.classList.add('has');
       el.onclick=()=>showSelfie(path,el.dataset.slabel||'Selfie'); }
     else {   // the photo is really there in the record, it just didn't load — let them retry, don't imply it's gone
@@ -2603,7 +2753,7 @@ function getSignFlow(g){
       '<div id="gs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
     $('[data-change]',b).onclick=()=>{picked=null;renderPick(mv,cl)};
     $('#gs-selfie',b).onclick=async()=>{ const p=await captureSelfie(picked.name+' — '+role+' approval selfie'); if(!p) return;
-      busy(true); try{ await rpc('gp_sign',{p_id:g.id,p_person:picked.id,p_selfie:p}); await load(); cl(); toast(role+' signed.','ok'); render(); }
+      busy(true); try{ await rpc('gp_sign',{p_id:g.id,p_person:picked.id,p_selfie:p}); await load(['gate','notif']); cl(); toast(role+' signed.','ok'); render(); }
       catch(e){ $('#gs-err',b).textContent=(e.message||'').replace(/^.*?: /,''); }finally{ busy(false); } };
     $('#gs-decline',b).onclick=()=>renderDecline(mv,cl);
   }
@@ -2613,7 +2763,7 @@ function getSignFlow(g){
       '<div class="row" style="gap:9px;margin-top:12px"><button class="btn" id="gs-back">Back</button><button class="btn bad" id="gs-do">Confirm decline</button></div><div id="gs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
     $('#gs-back',b).onclick=()=>renderHandoff(mv,cl);
     $('#gs-do',b).onclick=async()=>{ busy(true);
-      try{ await rpc('gp_reject',{p_id:g.id,p_person:picked.id,p_reason:$('#gs-reason',b).value.trim()}); await load(); cl(); toast('Pass declined.','ok'); render(); }
+      try{ await rpc('gp_reject',{p_id:g.id,p_person:picked.id,p_reason:$('#gs-reason',b).value.trim()}); await load(['gate','notif']); cl(); toast('Pass declined.','ok'); render(); }
       catch(e){ $('#gs-err',b).textContent=(e.message||'').replace(/^.*?: /,''); }finally{ busy(false); } };
   }
 }
@@ -2790,7 +2940,7 @@ function wireGate(v){
     if(d.kind==='early'&&gpEarlyUsed()>=2) return err.textContent='You have already used both early-going passes this month.';
     busy(true);
     try{ await rpc('gp_create',{p_kind:d.kind,p_employee_id:d.employeeId.trim(),p_name:d.name.trim(),p_dept:d.dept,p_purpose:d.purpose.trim(),p_selfie:d.selfie,p_half:(d.kind==='halfday'?d.half:null)});
-      gpDraft=null; await load(); toast('Pass created. Now take it to an HOD for their selfie.','ok'); render(); }
+      gpDraft=null; await load(['gate','notif']); toast('Pass created. Now take it to an HOD for their selfie.','ok'); render(); }
     catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
     finally{ busy(false); }
   };
@@ -2812,7 +2962,7 @@ function wireGate(v){
           await load(); cl(); toast('Pass deleted.','ok'); render(); }
         catch(e){ busy(false); cl(); fail(e); }finally{ busy(false); } }}}); });
   $$('[data-gate]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.gate); if(!g) return;
-    busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
+    busy(true); try{ const r=await rpc('gp_gate',{p_id:g.id}); await load(['gate','notif']); toast(r==='out'?'Out-time recorded.':'Closed.','ok'); render(); }catch(e){ fail(e); }finally{ busy(false); } });
   // selfie view buttons inside timelines
   $$('[data-selfie]',v).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfie||null,b.dataset.slabel||'Selfie'));
   loadSelfieThumbs(v);   // gateman console: load the side-by-side approval selfies
@@ -2880,7 +3030,7 @@ function gpAdminDelete(g,closeParent){
       $('#gad-go',mv).disabled=true;
       const paths=[g.reqSelfie,g.hodSelfie,g.hrSelfie].filter(Boolean);
       try{ try{ await removeObjects(paths); }catch(e){}
-        await rpc('gp_admin_delete',{p_id:g.id,p_why:why}); cl(); if(closeParent) closeParent(); await load(); toast('Gate pass deleted.','ok'); render(); }
+        await rpc('gp_admin_delete',{p_id:g.id,p_why:why}); cl(); if(closeParent) closeParent(); await load(['gate','notif']); toast('Gate pass deleted.','ok'); render(); }
       catch(e){ $('#gad-go',mv).disabled=false; $('#gad-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 function gpRepBody(){
@@ -3233,7 +3383,7 @@ function wireFlowDetail(v){
     const flow=DB.flows.find(x=>x.id===ROUTE.id); const oldPaths=(rep&&flow&&flow.steps[0])?flow.steps[0].files.map(fl=>fl.path).filter(Boolean):[];
     try{ await rpc('flow_reply',{p_request:ROUTE.id,p_text:t,p_files:filesPayload(reply.files),p_replace:rep});
       if(oldPaths.length){ try{ await removeObjects(oldPaths); }catch(e){} }
-      await load(); toast(rep?'New document sent and the original replaced.':'Sent to the approver.','ok'); render(); }
+      await load(['flows','notif'],[ROUTE.id]); toast(rep?'New document sent and the original replaced.':'Sent to the approver.','ok'); render(); }
     catch(e){ $('#fr-go',v).disabled=false; $('#fr-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
 }
 /* item 7: attach supporting documents to ANY step (step's people, raiser, admins) */
@@ -3247,7 +3397,7 @@ function flowAttachDialog(stepId){
     onOpen:(mv,cl)=>{ uploader($('#fat-files',mv),local.files,{mode:'support',single:false,label:'Add photos, PDF, Excel or Word — several at once is fine'});
       $('#fat-go',mv).onclick=async()=>{ if(!local.files.length) return $('#fat-err',mv).textContent='Pick at least one file.';
         $('#fat-go',mv).disabled=true;
-        try{ await rpc('flow_add_file',{p_step:stepId,p_files:filesPayload(local.files)}); cl(); await load(); toast('File attached.','ok'); render(); }
+        try{ await rpc('flow_add_file',{p_step:stepId,p_files:filesPayload(local.files)}); cl(); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('File attached.','ok'); render(); }
         catch(e){ $('#fat-go',mv).disabled=false; $('#fat-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 /* Approve with a condition — a normal approve whose condition rides in data_val */
@@ -3304,7 +3454,7 @@ function flowAskDialog(stepId){
 }
 async function flowAskCall(stepId,remark,toIds){ busy(true);
   const tos=(toIds&&toIds.length)?toIds:null;
-  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin,p_tos:tos}); await load();
+  try{ await rpc('flow_ask',{p_step:stepId,p_remark:remark,p_pin:flowCall._pin,p_tos:tos}); await load(['flows','notif'],flowIdsOfStep(stepId));
     toast(tos?('Tagged '+tos.map(id=>user(id).name).join(', ')+' to check.'):'Sent to the requester.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 /* Super-admin override: system-approve every step up to and including this one */
@@ -3321,7 +3471,7 @@ function flowSysApprove(stepId){
     onOpen:(mv,cl)=>{ $('#fsa-go',mv).onclick=()=>{ cl(); flowPinThen(()=>flowSysCall(stepId)); }; }});
 }
 async function flowSysCall(stepId){ busy(true);
-  try{ await rpc('flow_owner_approve',{p_step:stepId,p_pin:flowCall._pin}); await load(); toast('System-approved by super admin.','ok'); render(); }
+  try{ await rpc('flow_owner_approve',{p_step:stepId,p_pin:flowCall._pin}); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('System-approved by super admin.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 /* Super-admin step-back: reopen this step and clear every decision from here onward */
 function flowRewind(stepId){
@@ -3336,13 +3486,13 @@ function flowRewind(stepId){
     onOpen:(mv,cl)=>{ $('#frw-go',mv).onclick=()=>{ cl(); flowPinThen(()=>flowRewindCall(stepId)); }; }});
 }
 async function flowRewindCall(stepId){ busy(true);
-  try{ await rpc('flow_owner_rewind',{p_step:stepId,p_pin:flowCall._pin}); await load(); toast('Reopened from this step.','ok'); render(); }
+  try{ await rpc('flow_owner_rewind',{p_step:stepId,p_pin:flowCall._pin}); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('Reopened from this step.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
   busy(true);
   try{ await rpc('flow_act',{p_step:stepId,p_kind:kind,p_remark:remark||'',p_pin:flowCall._pin,p_files:files||null,p_datetime:datetime||null,p_data:data||null});
-    await load(); toast(okMsg||'Done.','ok'); render(); }
+    await load(['flows','notif'],flowIdsOfStep(stepId)); toast(okMsg||'Done.','ok'); render(); }
   catch(e){ fail(e); }
   finally{ busy(false); }
 }
@@ -3380,7 +3530,7 @@ function flowCancelDialog(id){
       $('#fc-go',mv).disabled=true;
       const paths=[]; f.steps.forEach(s=>s.files.forEach(fl=>fl.path&&paths.push(fl.path))); (f._files||[]).forEach(fl=>fl.path&&paths.push(fl.path));
       try{ try{ await removeObjects(paths); }catch(e){}
-        await rpc('flow_cancel',{p_request:id,p_why:why}); cl(); await load(); toast('Request deleted.','ok'); go({name:'mine'}); }
+        await rpc('flow_cancel',{p_request:id,p_why:why}); cl(); await load(['flows','notif'],[id]); toast('Request deleted.','ok'); go({name:'mine'}); }
       catch(e){ $('#fc-go',mv).disabled=false; $('#fc-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 function flowAct(stepId){
@@ -3433,17 +3583,20 @@ function flowAct(stepId){
    Boot
    ============================================================ */
 window.addEventListener('offline',()=>{if(!$('#off')){const d=document.createElement('div');d.id='off';d.className='offline';d.textContent='You are offline — changes cannot be saved until the connection is back.';document.body.appendChild(d)}});
-window.addEventListener('online',()=>{const d=$('#off');if(d)d.remove();if(ME)reload()});
-/* When the app returns to the foreground (phone unlocked, app re-opened), realtime
-   events that arrived while it was backgrounded were missed — so pull fresh data,
-   unless a dialog is open mid-action. Keeps the requester's view in step with the
-   gateman/HR after they sign. */
-let _fgT=0;
+window.addEventListener('online',()=>{const d=$('#off');if(d)d.remove();if(ME){ pendingFlowsAll=true; reloadSoon(DATA_PARTS); }});
+/* When the app returns to the foreground: apply anything that arrived while it was
+   in the background. It no longer re-downloads everything on every app switch (that
+   was a big share of the data transfer) — only if the live connection dropped (the
+   subscribe() handler catches that) or the app was away for more than 10 minutes.
+   Keeps the requester's view in step with the gateman/HR after they sign. */
 document.addEventListener('visibilitychange',()=>{
-  if(document.visibilityState==='visible' && ME && navigator.onLine && !$('.veil') && !$('#busy')){
-    const now=Date.now(); if(now-_fgT<3000) return; _fgT=now;   // avoid double-firing on quick toggles
-    reload();
-  }
+  if(document.visibilityState==='hidden'){ hiddenAt=Date.now(); return; }
+  if(!ME) return;
+  const away=hiddenAt?Date.now()-hiddenAt:0; hiddenAt=0;
+  if(away>10*60000){ DATA_PARTS.forEach(p=>pendingParts.add(p)); pendingFlowsAll=true; }
+  if(away>60*60000) pendingParts.add('people');
+  if(pendingParts.size&&navigator.onLine){ clearTimeout(reloadT); reloadT=setTimeout(flushReload,300); }
+  else if(renderSoon._due){ renderSoon._due=false; renderSoon(); }
 });
 if('serviceWorker' in navigator&&location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 document.title=CONFIG.APP_NAME||'SETU';
