@@ -420,6 +420,17 @@ tr.row-await>td:first-child{box-shadow:inset 4px 0 0 var(--line-2)}
 .tchain-chip.tc-next{color:var(--hold);border:1px dashed var(--hold);background:var(--surface)}
 .tchain-chip.tc-back{border-style:dashed;color:var(--steel)}
 .tchain-arr{color:var(--steel);font-size:12px}
+/* item 14: site photos — tag each with station + date, and show them grouped by station */
+.site-tags{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--surface-2)}
+.site-tag-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) 150px;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
+.site-tag-row:first-of-type{border-top:none}
+.site-tag-row .st-name{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:560px){.site-tag-row{grid-template-columns:1fr 1fr}.site-tag-row .st-name{grid-column:1/-1}}
+.site-photos{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--surface-2)}
+.site-photos .sp-head{font-size:12.5px;font-weight:600;margin-bottom:4px}
+.site-photos .sp-group{padding:5px 0;border-top:1px solid var(--line)}
+.site-photos .sp-group:first-of-type{border-top:none}
+.site-photos .sp-st{font-size:13px;font-weight:600;margin-bottom:4px}
 .gp-picked{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface-2)}
 .gp-selfie-wrap{margin-top:6px}
 .gp-selfie-done{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
