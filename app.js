@@ -707,6 +707,29 @@ const mgrOptions=(sel,excludeId)=>{
 };
 const siErr=m=>{const e=$('#si-err');e.textContent=m;e.classList.remove('hide')};
 
+/* Password boxes. Inside the Android app a real <input type="password"> wakes the
+   phone's password manager (Chrome ignores autocomplete="off" on password fields), and
+   on many phones that closes and reopens the keyboard after EVERY letter. Where the
+   browser can mask a normal text box (Android WebView, Chrome, Safari) we use that
+   instead: it shows dots but is not a "password field" to Android, so the keyboard
+   stays up. Browsers that can't mask keep a normal password box. "Show" reveals it. */
+const PW_MASK=(()=>{ try{ return !!(window.CSS&&CSS.supports&&CSS.supports('-webkit-text-security','disc')); }catch(e){ return false; } })();
+function pwInput(id,ph){
+  return '<span class="pw-wrap"><input id="'+id+'" name="f'+uid()+'" '+(PW_MASK?'type="text" class="pw-mask"':'type="password"')+
+    ' autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-lpignore="true" data-1p-ignore="true" data-form-type="other"'+
+    (ph?' placeholder="'+esc(ph)+'"':'')+'><button type="button" class="pw-eye" data-pweye="'+id+'" tabindex="-1">Show</button></span>';
+}
+function wirePwEyes(root){
+  $$('[data-pweye]',root||document).forEach(b=>{
+    // pressing Show must not take focus from the box, or the keyboard would close
+    b.addEventListener('pointerdown',e=>e.preventDefault()); b.addEventListener('mousedown',e=>e.preventDefault());
+    b.onclick=e=>{ e.preventDefault(); const i=document.getElementById(b.dataset.pweye); if(!i) return;
+      const showing=b.textContent==='Hide';
+      if(PW_MASK) i.classList.toggle('pw-show',!showing); else i.type=showing?'password':'text';
+      b.textContent=showing?'Show':'Hide'; };
+  });
+}
+
 async function paintSignIn(){
   try{ const st=await rpc('system_state'); firstAccount=(st&&st.users===0) }catch(e){ firstAccount=false }
   if(firstAccount) signMode='signup';
@@ -726,12 +749,13 @@ async function paintSignIn(){
      '<div><label for="f-email">Work email</label><input id="f-email" type="email" placeholder="neha@confidencegroup.in"></div>'+
      '<div class="grid g2"><div><label for="f-role">Designation</label><input id="f-role" type="text" placeholder="Accounts Executive"></div>'+
      '<div><label for="f-dept">Department</label><select id="f-dept"><option value="">Choose a department</option>'+depts.map(d=>'<option>'+esc(d)+'</option>').join('')+'</select></div></div>'+
-     '<div><label for="f-pass">Password</label><input id="f-pass" type="password" placeholder="At least 8 characters"></div>'+
+     '<div><label for="f-pass">Password</label>'+pwInput('f-pass','At least 8 characters')+'</div>'+
      '<div class="hint">You can pick your manager once you are in, from your directory entry.</div></div>'
     :'<div class="grid" style="gap:12px"><div><label for="f-email">Employee ID or work email</label><input id="f-email" name="setu-login-id" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="email" placeholder="e.g. 11247 or you@confidencegroup.co"></div>'+
-     '<div><label for="f-pass">Password</label><input id="f-pass" name="setu-login-pass" type="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"></div>'+
+     '<div><label for="f-pass">Password</label>'+pwInput('f-pass')+'</div>'+
      '<div style="text-align:right;margin-top:-4px"><button class="btn ghost sm" id="si-forgot" style="padding:0;font-weight:500">Forgot your password?</button></div></div>';
   $$('#si-fields input').forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#si-go').click()}));
+  wirePwEyes($('#si-fields'));
   if($('#si-forgot')) $('#si-forgot').onclick=forgotDialog;
 }
 $('#si-swap').onclick=()=>{signMode=signMode==='signup'?'login':'signup';paintSignIn()};
@@ -1084,12 +1108,13 @@ function newPasswordDialog(opts){
   opts=opts||{};
   const m=modal({title:opts.title||'Set a new password', sticky:!opts.cancellable,
     body:'<p class="hint" style="margin-top:0">'+esc(opts.intro||'Choose a password of at least 8 characters. You stay signed in on this device afterwards.')+'</p>'+
-      '<div class="grid" style="gap:12px;margin-top:14px"><div><label for="np1">New password</label><input id="np1" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div>'+
-      '<div><label for="np2">Type it again</label><input id="np2" type="password" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></div></div>'+
+      '<div class="grid" style="gap:12px;margin-top:14px"><div><label for="np1">New password</label>'+pwInput('np1')+'</div>'+
+      '<div><label for="np2">Type it again</label>'+pwInput('np2')+'</div></div>'+
       '<div id="np-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:(opts.cancellable?'<button class="btn" data-x>Cancel</button>':'')+'<button class="btn primary" id="np-go">Save password</button>',
     onOpen:(v,close)=>{
       setTimeout(()=>{try{$('#np1',v).focus()}catch(e){}},60); $$('input',v).forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#np-go',v).click()}));
+      wirePwEyes(v);
       $('#np-go',v).onclick=async()=>{
         const a=$('#np1',v).value,b=$('#np2',v).value,err=$('#np-err',v),btn=$('#np-go',v);
         if(a.length<8) return err.textContent='At least 8 characters.';
