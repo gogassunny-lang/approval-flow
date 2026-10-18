@@ -370,9 +370,16 @@ tbody tr:last-child td{border-bottom:0}
 .flow-step.live .flow-dot{background:var(--indigo);border-color:var(--indigo);box-shadow:0 0 0 4px var(--indigo-soft)}
 /* item 9: make the live (pending) step unmistakable in the timeline */
 .flow-step.live{background:var(--indigo-soft);border-left:3px solid var(--indigo);border-radius:8px;padding-left:9px;margin-left:-9px}
-.pending-with{margin-top:5px;font-size:12.5px;font-weight:600;color:var(--indigo);display:inline-flex;align-items:center;gap:5px}
-.pending-with:before{content:"\25CF";font-size:9px}
+.pending-with{margin-top:5px;font-size:12.5px;font-weight:600;color:var(--indigo);display:inline-block;line-height:1.45;max-width:100%}
+.pending-with:before{content:"\25CF";font-size:9px;margin-right:6px;vertical-align:1px}
 .pending-with .pw-sub{font-weight:400;color:var(--steel)}
+/* parked on an ask: the approver's row goes quiet; the highlight moves to the tagged people */
+.flow-step.parked{background:var(--surface-2);border-left:3px dashed var(--line-2);border-radius:8px;padding-left:9px;margin-left:-9px}
+.flow-step.parked .flow-dot{background:var(--surface);border-color:var(--steel)}
+.pending-with.tagged{color:var(--hold);background:var(--hold-soft);border:1px solid var(--hold);border-radius:12px;padding:4px 11px}
+.pending-with.tagged:before{color:var(--hold)}
+.node.parked .dot{background:var(--surface);border-color:var(--steel);color:var(--steel)}
+.node.parked .body{background:var(--surface-2);border-style:dashed}
 /* items 5/6: step comment thread — Facebook-style, dated and attributed */
 .cmt-thread{margin-top:7px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
 .cmt-thread>summary{cursor:pointer;padding:6px 10px;font-size:12.5px;font-weight:600;color:var(--indigo);list-style:none;user-select:none}
@@ -402,7 +409,7 @@ tr.row-await>td:first-child{box-shadow:inset 4px 0 0 var(--line-2)}
 .tchain-chip{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:var(--surface)}
 .tchain-chip.tc-done{background:#E7F5EC;border-color:#BFE3CB;color:var(--seal)}
 .tchain-chip.tc-now{background:var(--hold-soft,#FFF6E5);border-color:var(--hold);color:var(--hold);font-weight:700}
-.tchain-chip.tc-next{color:var(--steel)}
+.tchain-chip.tc-next{color:var(--hold);border:1px dashed var(--hold);background:var(--surface)}
 .tchain-chip.tc-back{border-style:dashed;color:var(--steel)}
 .tchain-arr{color:var(--steel);font-size:12px}
 .gp-picked{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface-2)}
