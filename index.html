@@ -186,6 +186,14 @@ label{display:block;font-size:13px;color:var(--ink-soft);font-weight:500;margin-
 .hint{color:var(--steel);font-size:12.5px;margin-top:5px}
 input[type=text],input[type=number],input[type=password],input[type=email],input[type=date],select,textarea{width:100%;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r);padding:9px 11px}
 input:focus,select:focus,textarea:focus{border-color:var(--indigo);outline:none;box-shadow:0 0 0 3px var(--indigo-soft)}
+/* masked password box (a text box showing dots — see pwInput() in app.js) + Show/Hide */
+.pw-wrap{position:relative;display:block}
+.pw-wrap>input{padding-right:64px}
+.pw-mask{-webkit-text-security:disc}
+.pw-mask.pw-show{-webkit-text-security:none}
+.pw-eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:0;background:transparent;box-shadow:none;color:var(--indigo);font-weight:600;font-size:12.5px;padding:7px 9px;cursor:pointer;width:auto;min-height:0}
+.pw-eye:active,.pw-eye:focus{background:transparent;outline:none;box-shadow:none}
+.pw-eye{-webkit-tap-highlight-color:transparent}
 textarea{min-height:80px;resize:vertical}
 .btn{border:1px solid var(--line-2);background:var(--surface);border-radius:999px;padding:7px 16px;cursor:pointer;font-weight:600;font-size:14px}
 .btn:hover{background:#EFF3F4;border-color:var(--ink-soft)}
