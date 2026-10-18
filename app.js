@@ -205,7 +205,9 @@ function reloadSoon(){ clearTimeout(reloadT); reloadT=setTimeout(reload,600) }
 /* ---------- model helpers (read-only views over what was loaded) ---------- */
 const user=id=>DB.users.find(u=>u.id===id)||{name:'Unknown',role:'',email:'',id:'',dept:''};
 function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
-  if(r.status==='Info Requested')return user(r.requesterId);
+  if(r.status==='Info Requested'){   // parked on an ask: it's with the tagged person (first not yet replied), else the requester
+    const tg=infoTargets(r), pend=tg.filter(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id));
+    return tg.length?user((pend.length?pend:tg)[0]):user(r.requesterId); }
   const s=r.chain[r.current]; return s?user(s.userId):null }
 const isMyTurn=r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;
 // one reply per tagged person — did I already answer this ask?
@@ -229,6 +231,17 @@ const inChain=r=>r.requesterId===ME.id||r.chain.some(s=>s.userId===ME.id)||assig
 const visible=()=>DB.requests.slice();          // the database already filtered to what this person may see
 const myQueue=()=>DB.requests.filter(isMyTurn);
 const myStuck=()=>DB.requests.filter(needsMyInfo);
+// item 8 (legacy): requests I parked by asking someone — off my "Waiting on me", shown here until they reply
+const legacyAwaiting=()=>DB.requests.filter(r=>r.status==='Info Requested'&&r.chain[r.infoStep]&&r.chain[r.infoStep].userId===ME.id&&!needsMyInfo(r));
+function legacyAwaitingSection(){
+  const list=legacyAwaiting(); if(!list.length) return '';
+  return '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Awaiting reply — you asked someone</h3><span class="tag t-wait" style="margin-left:auto">'+list.length+'</span></div><table class="cards"><tbody>'+
+    list.map(r=>{ const tg=infoTargets(r), pend=tg.filter(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id)),
+        who=tg.length?(pend.length?pend:tg).map(id=>user(id).name).join(', '):user(r.requesterId).name;
+      return '<tr data-r="'+r.id+'" class="row-await"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(typeLabel(r))+' · '+esc(r.ref)+'</div>'+
+        '<div class="hint">Waiting on <b>'+esc(who)+'</b></div></td><td class="meta"><span class="tag t-wait">Awaiting reply</span></td></tr>'; }).join('')+
+    '</tbody></table></div>';
+}
 const deptAt=(r,i)=>i<0?(user(r.requesterId).dept||''):(user(r.chain[i].userId).dept||'');
 const docNo=r=>(r.type==='indent'?r.f.indentNo:r.f.orderNo)||'—';
 const typeLabel=r=>r.type==='indent'?'Indent':'Work order';
@@ -602,8 +615,8 @@ async function paintSignIn(){
      '<div><label for="f-dept">Department</label><select id="f-dept"><option value="">Choose a department</option>'+depts.map(d=>'<option>'+esc(d)+'</option>').join('')+'</select></div></div>'+
      '<div><label for="f-pass">Password</label><input id="f-pass" type="password" placeholder="At least 8 characters"></div>'+
      '<div class="hint">You can pick your manager once you are in, from your directory entry.</div></div>'
-    :'<div class="grid" style="gap:12px"><div><label for="f-email">Employee ID or work email</label><input id="f-email" type="text" autocomplete="username" placeholder="e.g. 11247 or you@confidencegroup.co"></div>'+
-     '<div><label for="f-pass">Password</label><input id="f-pass" type="password" autocomplete="current-password"></div>'+
+    :'<div class="grid" style="gap:12px"><div><label for="f-email">Employee ID or work email</label><input id="f-email" name="setu-login-id" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="email" placeholder="e.g. 11247 or you@confidencegroup.co"></div>'+
+     '<div><label for="f-pass">Password</label><input id="f-pass" name="setu-login-pass" type="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"></div>'+
      '<div style="text-align:right;margin-top:-4px"><button class="btn ghost sm" id="si-forgot" style="padding:0;font-weight:500">Forgot your password?</button></div></div>';
   $$('#si-fields input').forEach(i=>i.addEventListener('keydown',e=>{if(e.key==='Enter')$('#si-go').click()}));
   if($('#si-forgot')) $('#si-forgot').onclick=forgotDialog;
@@ -692,7 +705,7 @@ function pendingPopup(){
         '<button data-go="'+k+'" style="display:flex;align-items:center;gap:10px"><span>'+esc(label)+'</span><span class="pill" style="margin-left:auto">'+n+'</span></button>').join('')+'</div>'+
       '<div class="hint" style="margin-top:10px">These are also under Notifications and on your dashboard'+(unread().length?' — '+unread().length+' unread alert'+(unread().length>1?'s':''):'')+'.</div>',
     footer:'<button class="btn primary" data-x>Got it</button>',
-    onOpen:(v,close)=>{ $$('[data-go]',v).forEach(b=>b.onclick=()=>{close();go({name:b.dataset.go})}); }});
+    onOpen:(v,close)=>{ $$('[data-go]',v).forEach(b=>b.onclick=()=>{const k=b.dataset.go;close();setTimeout(()=>go({name:k}),0)}); }});
 }
 function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
@@ -1110,7 +1123,7 @@ const PAGES=[
   {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length+flowMyTurn().length},
   {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
-  {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length},
+  {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length+flowTagged().length},
   {k:'mine',label:'My requests',grp:'My work'},
   {k:'tpl',label:'Saved hierarchies',grp:'My work',badge:()=>myTemplates().length},
   {k:'team',label:'My team',grp:'My work',when:()=>isManager(ME),badge:()=>pendingTeam(ME.id).length},
@@ -1147,7 +1160,7 @@ function paintTabbar(){
     $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
     return;
   }
-  const desk=myQueue().length+myTasks().length+myStuck().length+flowMyTurn().length, un=unread().length;
+  const desk=myQueue().length+myTasks().length+myStuck().length+flowMyTurn().length+flowTagged().length, un=unread().length;
   const inDesk=['queue','tasks','stuck'].includes(ROUTE.name);
   const inMore=!['dash','queue','tasks','stuck','new','inbox'].includes(ROUTE.name);
   bar.innerHTML=
@@ -1168,7 +1181,7 @@ function moreSheet(){
       '<button data-act="out" style="color:var(--stop)">Sign out</button></div>'+
       '<div class="hint" style="margin-top:12px;text-align:center">'+esc(ME.name)+' · '+esc(ME.role||'')+'<br>Built by Sunny Gupta</div>',
     onOpen:(v,close)=>{
-      $$('[data-go]',v).forEach(b=>b.onclick=()=>{close();go({name:b.dataset.go})});
+      $$('[data-go]',v).forEach(b=>b.onclick=()=>{const k=b.dataset.go;close();setTimeout(()=>go({name:k}),0)});
       $$('[data-act]',v).forEach(b=>b.onclick=()=>{close();const a=b.dataset.act;
         if(a==='pin')pinDialog(); else if(a==='me')profileDialog(); else if(a==='pw')newPasswordDialog({title:'Change your password',cancellable:true}); else if(a==='out')doSignOut()});
     }});
@@ -1178,6 +1191,8 @@ function moreSheet(){
 const routeHash=r=>'#'+r.name+(r.id?'/'+r.id:'');
 const go=(r,replace)=>{
   ROUTE=r;
+  // navigating always dismisses any open dialog so we never leave a stuck overlay
+  try{ $$('.veil').forEach(x=>x.remove()); }catch(e){}
   try{ const url=location.pathname+location.search+routeHash(r);
     if(replace||!history.state) history.replaceState(r,'',url); else if(routeHash(history.state)!==routeHash(r)) history.pushState(r,'',url) }catch(e){}
   paintNav();paintPin();render();window.scrollTo(0,0);
@@ -1201,9 +1216,9 @@ function render(){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
     case 'inbox': v.innerHTML=viewInbox(); wireInbox(v); break;
     case 'new': v.innerHTML=viewNew(); wireNew(v); break;
-    case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.')+flowSection('turn'); wireList(v); wireFlowRows(v); break;
+    case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.')+flowSection('turn')+legacyAwaitingSection()+flowSection('awaiting'); wireList(v); wireFlowRows(v); break;
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
-    case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you for more before they will sign.','No one has asked you for anything','If an approver needs a clarification, it comes back here.'); wireList(v); break;
+    case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.')+flowSection('tagged'); wireList(v); wireFlowRows(v); break;
     case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.')+flowSection('mine'); wireList(v); wireFlowRows(v); break;
     case 'tpl': v.innerHTML=viewTpl(); wireTpl(v); break;
     case 'team': v.innerHTML=viewTeam(); wireTeam(v); break;
@@ -1224,7 +1239,7 @@ function render(){
 /* ============================================================
    Dashboard
    ============================================================ */
-const stat=(k,v,s,acc)=>'<div class="card stat" style="--acc:'+(acc||'var(--indigo)')+'"><div class="k">'+esc(k)+'</div><div class="v num">'+esc(String(v))+'</div><div class="hint">'+esc(s||'')+'</div></div>';
+const stat=(k,v,s,acc,nav)=>'<div class="card stat'+(nav?' tap':'')+'"'+(nav?' data-navk="'+esc(nav)+'" role="button" tabindex="0"':'')+' style="--acc:'+(acc||'var(--indigo)')+'"><div class="k">'+esc(k)+'</div><div class="v num">'+esc(String(v))+'</div><div class="hint">'+esc(s||'')+'</div></div>';
 function tagFor(r){
   const m={'In Progress':['t-prog','In progress'],'Approved':['t-ok','Approved'],'Rejected':['t-bad','Rejected'],'Info Requested':['t-hold','More details needed']};
   const x=m[r.status]||['t-wait',r.status]; return '<span class="tag '+x[0]+'">'+x[1]+'</span>';
@@ -1248,11 +1263,12 @@ function viewDash(){
   const feed=DB.audit.map(a=>({ts:a.ts,actorName:a.actorName,action:a.action,detail:a.detail,ref:a.ref,reqId:a.reqId}))
     .concat(flowFeed).sort((a,b)=>b.ts-a.ts).slice(0,16);
   return warn+'<div class="grid g4">'+
-    stat('Waiting on me',q.length+flowTurn,(q.length+flowTurn)?'Act to unblock the chain':'You are all clear','var(--indigo)')+
-    stat('Tasks given to me',tk.length,tk.length?'Close these to unblock a manager':'No task assigned to you','var(--cyan)')+
-    stat('Needs my input',st.length,st.length?'Someone asked you for more':'Nothing sent back to you','var(--hold)')+
-    stat('Open beyond 7 days',aged,'Out of '+open.length+' open requests',aged?'var(--stop)':'var(--seal)')+'</div>'+
+    stat('Waiting on me',q.length+flowTurn,(q.length+flowTurn)?'Act to unblock the chain':'You are all clear','var(--indigo)','queue')+
+    stat('Tasks given to me',tk.length,tk.length?'Close these to unblock a manager':'No task assigned to you','var(--cyan)','tasks')+
+    stat('Needs my input',st.length+flowTagged().length,(st.length+flowTagged().length)?'Someone asked or tagged you':'Nothing sent back to you','var(--hold)','stuck')+
+    stat('Open beyond 7 days',aged,'Out of '+open.length+' open requests',aged?'var(--stop)':'var(--seal)','all')+'</div>'+
   flowDashCard()+
+  flowSection('tagged')+legacyAwaitingSection()+flowSection('awaiting')+
   (q.length||st.length
     ?'<div class="grid g2" style="margin-top:14px;align-items:start">'+
       (q.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on me</h3><span class="tag t-prog" style="margin-left:auto">'+q.length+'</span></div><table class="cards"><tbody>'+q.map(line).join('')+'</tbody></table></div>':'')+
@@ -1270,15 +1286,17 @@ function viewDash(){
 }
 /* ALDS flows on the dashboard — visible to everyone, so the landing page reflects
    live flow activity even for people not sitting in a legacy approval chain. */
+let dashQ='';   // dashboard quick-search text (flows + legacy by any number / file no.)
 function flowDashCard(){
   const running=DB.flows.filter(f=>f.status==='running').sort((a,b)=>b.createdAt-a.createdAt);
   const turn=flowMyTurn().length, recent=running.slice(0,8);
   return '<div class="card" style="margin-top:14px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>ALDS PO / WO flows</h3>'+
     '<span class="tag t-prog" style="margin-left:auto">'+running.length+' in progress</span>'+(turn?'<span class="tag t-wait" style="margin-left:6px">'+turn+' waiting on you</span>':'')+'</div>'+
+    '<div class="row" style="padding:10px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><input id="d-flowq" type="search" placeholder="Search a number — indent / PO / WO / uploaded file no." style="flex:1;min-width:200px" value="'+esc(dashQ||'')+'"><span class="hint" id="d-flowcount" style="align-self:center"></span></div><div id="d-flowres"></div>'+
     (recent.length?'<table class="cards"><tbody>'+recent.map(f=>{
       return '<tr data-flowgo="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
         '<div class="hint">'+esc(f.title||'(no number)')+' · by '+esc(user(f.requesterId).name)+'</div></td>'+
-        '<td class="hint meta">'+esc(flowWhere(f))+'</td><td class="meta">'+(flowIsMine(f)?'<span class="tag t-prog">Your turn</span>':(flowCanEscalate(f)?'<span class="tag t-hold">Can escalate</span>':'<span class="tag t-wait">In progress</span>'))+'</td></tr>';}).join('')+'</tbody></table>'+
+        '<td class="hint meta">'+esc(flowWhere(f))+'</td><td class="meta">'+(flowActionableByMe(f)?'<span class="tag t-prog">Your turn</span>':flowTaggedToMe(f)?'<span class="tag t-hold">Your input needed</span>':flowAwaitingMyReply(f)?'<span class="tag t-wait">Awaiting reply</span>':(flowCanEscalate(f)?'<span class="tag t-hold">Can escalate</span>':'<span class="tag t-wait">In progress</span>'))+'</td></tr>';}).join('')+'</tbody></table>'+
       (running.length>recent.length?'<div class="row" style="padding:10px 18px"><button class="btn ghost sm" id="d-flows" style="margin-left:auto">See all '+running.length+' flows</button></div>':'')
     :'<div class="empty" style="padding:22px 16px"><h3>No active flows</h3><p class="hint">ALDS indents and work orders appear here as they are raised — everyone can see them.</p></div>')+'</div>';
 }
@@ -1286,10 +1304,30 @@ function wireDash(v){
   if($('#d-pin',v)) $('#d-pin',v).onclick=pinDialog;
   if($('#d-all',v)) $('#d-all',v).onclick=()=>go({name:'all'});
   if($('#d-flows',v)) $('#d-flows',v).onclick=()=>go({name:'all'});
+  // tappable summary tiles jump straight into their list
+  $$('[data-navk]',v).forEach(b=>{ b.onclick=()=>go({name:b.dataset.navk});
+    b.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); go({name:b.dataset.navk}); } }; });
+  // quick search on the flows card — find any flow or request by number/file, jump straight to it
+  const fq=$('#d-flowq',v), fres=$('#d-flowres',v);
+  if(fq&&fres){
+    const run=()=>{ const s=fq.value.trim().toLowerCase(); dashQ=fq.value; const c=$('#d-flowcount',v);
+      if(s.length<2){ fres.innerHTML=''; if(c)c.textContent=''; return; }
+      const fl=DB.flows.filter(f=>_flowHay(f).includes(s)).slice(0,8)
+        .map(f=>({k:'flowdetail',id:f.id,ref:f.ref,sub:flowHeadLabel(f.head)+' · '+(f.title||'(no number)')+' · '+flowWhere(f)}));
+      const lg=DB.requests.filter(r=>_legHay(r).includes(s)).slice(0,6)
+        .map(r=>({k:'detail',id:r.id,ref:r.ref,sub:typeLabel(r)+' · '+docTitle(r)}));
+      const hits=fl.concat(lg).slice(0,10);
+      if(c) c.textContent=hits.length?(hits.length+' match'+(hits.length===1?'':'es')):'No match';
+      fres.innerHTML=hits.length?'<div class="results" style="padding:6px 10px;gap:4px">'+hits.map(h=>'<button data-gk="'+h.k+'" data-gid="'+esc(h.id)+'" style="text-align:left;width:100%"><div style="min-width:0"><b>'+esc(h.ref)+'</b><div class="hint">'+esc(h.sub)+'</div></div></button>').join('')+'</div>':'';
+      $$('[data-gk]',fres).forEach(b=>b.onclick=()=>go({name:b.dataset.gk,id:b.dataset.gid}));
+    };
+    fq.oninput=run; if(dashQ) run();
+  }
   $$('tr[data-r]',v).forEach(t=>t.onclick=()=>go({name:'detail',id:t.dataset.r}));
   $$('a[data-r]',v).forEach(a=>a.onclick=e=>{e.preventDefault();go({name:'detail',id:a.dataset.r})});
   $$('tr[data-flowgo]',v).forEach(t=>t.onclick=()=>go({name:'flowdetail',id:t.dataset.flowgo}));
   $$('a[data-flowgo]',v).forEach(a=>a.onclick=e=>{e.preventDefault();go({name:'flowdetail',id:a.dataset.flowgo})});
+  wireFlowRows(v);   // the tagged / awaiting-reply flow sections on the dashboard
 }
 
 /* ============================================================
@@ -1969,7 +2007,7 @@ function wireReport(v){
 /* ============================================================
    Usage
    ============================================================ */
-let usageSort='today', storageInfo=null;
+let usageSort='today', usageQ='', storageInfo=null;
 /* ============================================================
    Assistant / proxy — read-only mirror of a principal's work + ERP stamp
    ============================================================ */
@@ -2171,13 +2209,21 @@ function viewUsage(){
       stat('Average per file',storageInfo.files?kb(storageInfo.bytes/storageInfo.files):'—','Photos are shrunk to ~1600px before upload','var(--cyan)')+'</div>':'')+
     '<div class="grid g3" style="margin-top:14px">'+stat('Today, whole team',hms(teamMs(u=>spanMs(u,1))),us.filter(activeToday).length+' people active today','var(--indigo)')+stat('This month, whole team',hms(teamMs(monthMs)),'Calendar month to date','var(--indigo)')+stat('All time, whole team',hms(teamMs(u=>statsOf(u).activeMs)),'Since the first sign-in','var(--indigo)')+'</div>'+
     '<div class="tabs" style="margin-top:20px">'+[['today','Today'],['week','Last 7 days'],['month','This month'],['all','All time'],['last','Last seen'],['name','Name']].map(t=>'<button data-s="'+t[0]+'" class="'+(usageSort===t[0]?'on':'')+'">'+t[1]+'</button>').join('')+'</div>'+
-    '<div class="card scroll-x"><table style="min-width:980px"><thead><tr><th>Person</th><th>Department</th><th>Last signed in</th><th>Today</th><th>7 days</th><th>This month</th><th>All time</th><th>Sign-ins</th><th>Raised</th><th>Decisions</th><th>Tasks</th></tr></thead><tbody>'+
-    us.map(u=>{const st=statsOf(u),w=workOf(u);return '<tr><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(activeToday(u)?' <span class="tag t-ok">active today</span>':'')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="hint">'+esc(u.dept||'')+'</td><td class="hint">'+(st.lastLogin?esc(fmtDT(st.lastLogin)):'Never signed in')+'</td>'+
+    '<div class="row" style="margin:10px 0 0;gap:10px;flex-wrap:wrap"><input id="us-q" type="search" placeholder="Search a person — name, employee code, email or department" style="max-width:380px" value="'+esc(usageQ||'')+'"><span class="hint" id="us-count"></span></div>'+
+    '<div class="card scroll-x"><table style="min-width:980px"><thead><tr><th>Person</th><th>Employee code</th><th>Department</th><th>Last signed in</th><th>Today</th><th>7 days</th><th>This month</th><th>All time</th><th>Sign-ins</th><th>Raised</th><th>Decisions</th><th>Tasks</th></tr></thead><tbody>'+
+    us.map(u=>{const st=statsOf(u),w=workOf(u);return '<tr data-q="'+esc((u.name+' '+(u.empId||'')+' '+(u.email||'')+' '+(u.dept||'')).toLowerCase())+'"><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(activeToday(u)?' <span class="tag t-ok">active today</span>':'')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="hint">'+esc(u.empId||'—')+'</td><td class="hint">'+esc(u.dept||'')+'</td><td class="hint">'+(st.lastLogin?esc(fmtDT(st.lastLogin)):'Never signed in')+'</td>'+
       '<td class="num">'+hms(spanMs(u,1))+'</td><td class="num">'+hms(spanMs(u,7))+'</td><td class="num">'+hms(monthMs(u))+'</td><td class="num">'+hms(st.activeMs)+'</td><td class="num">'+(st.logins||0)+'</td><td class="num">'+w.raised+'</td><td class="num">'+w.acted+'</td><td class="num">'+w.tasks+'</td></tr>'}).join('')+'</tbody></table></div>'+
     '<div class="row" style="margin-top:16px;gap:10px;flex-wrap:wrap"><button class="btn primary" id="ux-dl">Download usage</button><span class="hint">Time counts only while the tab is open and in front, so it reflects attention rather than a window left running. Recorded on the server, so phone and laptop add up to one figure per person.</span></div>';
 }
 function wireUsage(v){
   $$('.tabs button',v).forEach(b=>b.onclick=()=>{usageSort=b.dataset.s;render()});
+  // live person search — filter rows in place so the box keeps focus as you type
+  const q=$('#us-q',v);
+  const applyQ=()=>{ const s=(usageQ||'').trim().toLowerCase(); let n=0, total=0;
+    $$('tbody tr',v).forEach(tr=>{ total++; const hit=!s||(tr.dataset.q||'').includes(s); tr.style.display=hit?'':'none'; if(hit)n++; });
+    const c=$('#us-count',v); if(c) c.textContent=s?(n+' of '+total+' '+(n===1?'person':'people')):''; };
+  if(q){ q.oninput=()=>{ usageQ=q.value; applyQ(); }; }
+  applyQ();
   $('#ux-dl',v).onclick=()=>{const A=[['Person','Email','Department','Designation','Last signed in','Sign-ins','Today','Last 7 days','This month','All time','Requests raised','Decisions made','Tasks closed','Account active','PIN set today']];
     DB.users.forEach(u=>{const st=statsOf(u),w=workOf(u);A.push([u.name,u.email,u.dept||'',u.role||'',st.lastLogin?fmtDT(st.lastLogin):'Never',st.logins||0,hms(spanMs(u,1)),hms(spanMs(u,7)),hms(monthMs(u)),hms(st.activeMs),w.raised,w.acted,w.tasks,u.active?'Yes':'No',pinOK(u)?'Yes':'No'])});
     const B=[['Date'].concat(DB.users.map(u=>u.name))]; const days={}; DB.users.forEach(u=>Object.keys(statsOf(u).daily).forEach(d=>days[d]=1));
@@ -2269,6 +2315,7 @@ function wirePeople(v){
   $$('[data-ed]',v).forEach(b=>b.onclick=()=>{const u=user(b.dataset.ed);
     modal({title:'Edit '+u.name,body:'<div class="grid" style="gap:13px">'+
         '<div><label for="e-name">Full name</label><input id="e-name" type="text" value="'+esc(u.name||'')+'"'+((u.owner&&u.id!==ME.id)?' disabled':'')+'>'+((u.owner&&u.id!==ME.id)?'<div class="hint">Only the system owner can rename their own account.</div>':'<div class="hint">Used across the app and to match ALDS flow approvers — spelling matters.</div>')+'</div>'+
+        '<div><label for="e-emp">Employee code</label><input id="e-emp" type="text" value="'+esc(u.empId||'')+'" autocomplete="off" placeholder="e.g. CPIL1234"><div class="hint">Used to sign in (Employee ID or email) and shown on the People and Usage pages. Leave blank if none.</div></div>'+
         '<div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
@@ -2288,7 +2335,9 @@ function wirePeople(v){
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         const nameEl=$('#e-name',mv), newName=nameEl?nameEl.value.trim():u.name;
         if(nameEl&&!nameEl.disabled&&newName.length<2) return $('#e-err',mv).textContent='Enter a name of at least 2 characters.';
+        const empEl=$('#e-emp',mv), empNew=empEl?empEl.value.trim():(u.empId||'');
         try{ if(nameEl&&!nameEl.disabled&&newName&&newName!==u.name) await rpc('admin_rename_user',{p_user:u.id,p_name:newName});
+          if(empEl&&empNew!==(u.empId||'')) await rpc('set_emp_id',{p_user:u.id,p_emp:empNew});
           await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
@@ -2924,9 +2973,22 @@ const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowF
 // delete a flow: the requester may, but only before any approval; an admin/owner may anytime
 const flowApprovedYet=f=>(f.steps||[]).some(s=>s.action==='approve'&&s.status==='done');
 const flowCanDelete=f=>f.status!=='cancelled'&&((f.requesterId===ME.id&&!flowApprovedYet(f))||ME.admin||ME.owner);
-const flowNeedsMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
-  const tg=infoTargets(s); return tg.length?(tg.includes(ME.id)&&!iReplied(s.infoReplies)):(f.requesterId===ME.id)};
-const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowIsMine(f)||flowCanEscalate(f)||flowNeedsMyReply(f)));
+// the person a parked step is CURRENTLY on (sequential: first tagged, in order, not yet replied)
+const flowActiveTag=s=>{ if(!s||!s.infoRequested) return null; const tg=infoTargets(s); if(!tg.length) return null;
+  return tg.find(id=>!(s.infoReplies||[]).some(e=>(e.user_id||e.userId)===id))||null; };
+// item 8 — three buckets for a running flow's live step:
+//   actionable  : it's with me and I can act now (not parked on an ask)
+//   taggedToMe  : I'm the person it's currently parked on (my input needed)
+//   awaitingMine: I asked / own the step but it's parked on someone else right now
+const flowActionableByMe=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
+const flowTaggedToMe=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false; const tg=infoTargets(s);
+  return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
+const flowAwaitingMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
+  return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
+const flowNeedsMyReply=flowTaggedToMe;   // kept name for existing callers
+const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowActionableByMe(f)||flowCanEscalate(f)));
+const flowTagged=()=>DB.flows.filter(f=>f.status==='running'&&flowTaggedToMe(f));
+const flowAwaitingReply=()=>DB.flows.filter(f=>f.status==='running'&&flowAwaitingMyReply(f));
 const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
 const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const s=flowLive(f); return s?(s.stage+' · '+s.label):'—'; };
@@ -2934,10 +2996,10 @@ const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed<
 
 function flowRow(f){
   const s=flowLive(f), withWho=s?s.actors.map(id=>user(id).name).slice(0,3).join(', ')+(s.actors.length>3?' +'+(s.actors.length-3):''):'';
-  return '<tr data-flow="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
+  return '<tr data-flow="'+f.id+'"'+(flowTaggedToMe(f)?' class="row-tagme"':flowAwaitingMyReply(f)?' class="row-await"':'')+'><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
     '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
     '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
-    '<td class="meta">'+flowStatusTag(f)+(flowIsMine(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':flowNeedsMyReply(f)?'<div class="hint" style="color:var(--hold)">Needs your reply</div>':'')+'</td></tr>';
+    '<td class="meta">'+flowStatusTag(f)+(flowActionableByMe(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':flowTaggedToMe(f)?'<div class="hint tag-me">Your input needed</div>':flowAwaitingMyReply(f)?'<div class="hint" style="color:var(--steel)">Awaiting reply</div>':'')+'</td></tr>';
 }
 /* ALDS flows surfaced inside the normal lists (Waiting on me / My requests / All).
    They are raised from the Raise-a-request page, so there is no separate raise tab.
@@ -2947,6 +3009,8 @@ let flowFilter={turn:{req:'',q:''},mine:{req:'',q:''},all:{req:'',q:''}};
 function flowSection(ctx){
   let list;
   if(ctx==='turn') list=flowMyTurn();
+  else if(ctx==='tagged') list=flowTagged();
+  else if(ctx==='awaiting') list=flowAwaitingReply();
   else if(ctx==='mine') list=flowMine();
   else list=DB.flows.slice();
   if(!list.length) return '';
@@ -2974,7 +3038,7 @@ function flowSection(ctx){
     const extra=Object.keys(f.fields||{}).map(k=>f.fields[k]).filter(v=>typeof v==='string'||typeof v==='number').join(' ');
     return ((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+(f.division||'')+' '+flowHeadLabel(f.head)+' '+extra).toLowerCase().includes(q); }); }
   shown.sort((a,b)=>b.createdAt-a.createdAt);
-  const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
+  const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='tagged'?'Tagged to you — your input needed':ctx==='awaiting'?'Awaiting reply — you asked someone':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
   const onAll=ctx==='all';
   const filtered=ft.req||ft.q||(onAll&&(allF.type||allF.status||allF.q));
   const bar=reqIds.length>1||list.length>1
@@ -3018,20 +3082,53 @@ function flowStepRow(f,s){
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
   if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
   if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
-  if(s.infoRequested){ const tg=infoTargets(s), who=tg.length?tg.map(id=>user(id).name).join(', '):'requester', done=(s.infoReplies||[]).length;
-    meta+='<div class="hint" style="color:var(--hold)">Waiting on '+esc(who)+(tg.length>1?' ('+done+' of '+tg.length+' replied)':'')+(s.infoBy?' — '+esc(user(s.infoBy).name)+' asked':'')+': '+esc(s.infoText)+'</div>'; }
-  if(s.infoReplies&&s.infoReplies.length) meta+=s.infoReplies.map(e=>'<div class="hint">'+esc(e.name||user(e.user_id).name)+' replied: '+esc(e.text)+'</div>').join('');
-  else if(s.infoReply&&!s.infoRequested) meta+='<div class="hint">Replied: '+esc(s.infoReply)+'</div>';
-  const files=s.files.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'">'+esc(fl.name)+'</button>').join('')+'</div>':'';
+  if(s.infoRequested){ const tg=infoTargets(s), act=flowActiveTag(s), who=tg.length?user(act||tg[0]).name:'the requester', done=(s.infoReplies||[]).length;
+    meta+='<div class="hint" style="color:var(--hold)">Waiting on '+esc(who)+(tg.length>1?' ('+Math.min(done+1,tg.length)+' of '+tg.length+', in turn)':'')+(s.infoBy?' — asked by '+esc(user(s.infoBy).name):'')+'</div>';
+    if(tg.length>1) meta+='<div style="margin-top:5px">'+flowTagChain(s)+'</div>'; }
+  meta+=flowCommentThread(s);
+  // item 7: the people on this step, the raiser (and admins) can attach a file at ANY stage of a running flow
+  const canAttach=f.status==='running'&&(s.actors.indexOf(ME.id)>-1||f.requesterId===ME.id||ME.admin||ME.owner);
+  const attachBtn=canAttach?'<button class="btn ghost sm" data-fattach="'+s.id+'" style="padding:2px 9px">📎 Attach a file</button>':'';
+  const files=(s.files.length||attachBtn)?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'" title="'+esc(fl.name)+'">'+esc(fl.name)+'</button>').join('')+attachBtn+'</div>':'';
   let ownerBtn='';
   if(ME.owner&&f.status==='running'&&(s.status==='pending'||s.status==='waiting'))
     ownerBtn='<button class="btn ghost sm" data-fsys="'+s.id+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button>';
   else if(ME.owner&&(f.status==='running'||f.status==='completed')&&s.status==='done')
     ownerBtn='<button class="btn ghost sm" data-frwd="'+s.id+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
   const sysBtn=ownerBtn?'<div style="margin-top:6px">'+ownerBtn+'</div>':'';
+  // item 9: show clearly WHO the live step is pending with (the tagged person when parked, else the actors)
+  let pendingWith='';
+  if(s.status==='pending'){
+    let holder;
+    if(s.infoRequested){ const tg=infoTargets(s); holder=tg.length?user(flowActiveTag(s)||tg[0]).name:'the requester'; }
+    else holder=actors;
+    pendingWith='<div class="pending-with">Pending with <b>'+esc(holder)+'</b>'+(s.infoRequested&&s.infoBy?' <span class="pw-sub">· asked by '+esc(user(s.infoBy).name)+'</span>':'')+'</div>';
+  }
   return '<div class="flow-step '+(s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
     '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span>'+(s.erpDone?'<span class="tag t-ok" style="font-size:11px">ERP ✓</span>':'')+'</div>'+
-    '<div class="hint">'+esc(actors)+'</div>'+meta+files+sysBtn+'</div></div>';
+    '<div class="hint">'+esc(actors)+'</div>'+pendingWith+meta+files+sysBtn+'</div></div>';
+}
+/* item 10: the order an ask travels — "1. A ✓ → 2. B (now) → 3. C → back to asker" */
+function flowTagChain(s){
+  const tg=infoTargets(s); if(!tg.length) return '';
+  const active=flowActiveTag(s), rep=s.infoReplies||[];
+  const done=id=>rep.some(e=>(e.user_id||e.userId)===id);
+  const chips=tg.map((id,i)=>{ const st=done(id)?'done':(id===active?'now':'next');
+    return '<span class="tchain-chip tc-'+st+'">'+(i+1)+'. '+esc(user(id).name)+(st==='done'?' ✓':st==='now'?' · now':'')+'</span>'; });
+  chips.push('<span class="tchain-chip tc-back">back to '+esc(s.infoBy?user(s.infoBy).name:'the approver')+'</span>');
+  return '<div class="tchain">'+chips.join('<span class="tchain-arr">→</span>')+'</div>';
+}
+/* a step's comment thread: the ask + every reply, each with author and date/time,
+   one below the other (Facebook-style). Everyone who can see the flow can read it;
+   only tagged people can reply (that box lives in the right-hand panel). */
+function flowCommentThread(s){
+  const items=[];
+  if(s.infoText) items.push({name:s.infoBy?user(s.infoBy).name:'Approver', at:s.infoAt, text:s.infoText, ask:true, to:infoTargets(s).map(id=>user(id).name).join(', ')});
+  (s.infoReplies||[]).forEach(e=>items.push({name:e.name||user(e.user_id||e.userId).name, at:e.at?ts(e.at):0, text:e.text, ask:false}));
+  if(!items.length && s.infoReply) items.push({name:'Reply', at:s.infoReplyAt, text:s.infoReply, ask:false});
+  if(!items.length) return '';
+  const rows=items.map(it=>'<div class="cmt"><div class="cmt-h"><b>'+esc(it.name)+'</b>'+(it.ask&&it.to?' <span class="cmt-to">asked '+esc(it.to)+'</span>':'')+(it.at?'<span class="cmt-t">'+esc(fmtDT(it.at))+'</span>':'')+'</div><div class="cmt-b">'+esc(it.text)+'</div></div>').join('');
+  return '<details class="cmt-thread"><summary>Comments · '+items.length+'</summary><div class="cmt-list">'+rows+'</div></details>';
 }
 const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:'Approve',confirm:'Confirm',data:'Enter details & sign',payment:'Initiate advice'})[s.action]||'Submit';
 /* left: the read-only stage/step timeline. right: the current person's options. */
@@ -3059,22 +3156,36 @@ function flowSidePanel(f){
   const canEsc=s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
   const withWho=s.actors.map(id=>user(id).name).join(', ')||'—';
   const tg=infoTargets(s);
-  const amRecipient = s.infoRequested && (tg.length?(tg.indexOf(ME.id)>-1 && !iReplied(s.infoReplies)):isReq);
+  // item 10: with several people tagged it travels in order — only the CURRENT one may reply
+  const active=flowActiveTag(s);
+  const amRecipient = s.infoRequested && (tg.length?(active===ME.id):isReq);
+  const prevReplies=(s.infoReplies||[]);
   if(amRecipient){
     const asReq = !tg.length && isReq;
-    return '<div class="card pad"><h3>'+(tg.length?'You were tagged to check':'The approver needs more')+'</h3>'+
+    return '<div class="card pad tagme-panel"><h3>'+(tg.length?'You were tagged to check':'The approver needs more')+'</h3>'+
       '<p class="hint" style="margin-top:6px">'+(s.infoBy?esc(user(s.infoBy).name):'An approver')+' asked on <b>'+esc(s.label)+'</b>:</p>'+
       '<div class="banner hold" style="margin-top:8px"><div>'+esc(s.infoText)+'</div></div>'+
+      (tg.length>1?'<div style="margin-top:10px">'+flowTagChain(s)+'</div>':'')+
+      (prevReplies.length?'<div style="margin-top:10px"><div class="hint" style="font-weight:600">Replied before you</div>'+prevReplies.map(e=>'<div class="banner" style="margin-top:6px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b>'+(e.at?' · '+esc(fmtDT(ts(e.at))):'')+': '+esc(e.text)+'</div></div>').join('')+'</div>':'')+
       '<div style="margin-top:12px"><label for="fr-text">Your response</label><textarea id="fr-text" placeholder="Answer, or note what you changed"></textarea></div>'+
       '<div style="margin-top:10px"><label>Attach <span class="hint">optional'+(asReq?' — e.g. the corrected indent':'')+'</span></label><div id="fr-files"></div></div>'+
       (asReq?'<label style="display:flex;align-items:center;gap:9px;margin:10px 0 0"><input type="checkbox" id="fr-replace" style="width:auto"> <span><b>This replaces the original indent document</b><div class="hint">The attached file becomes the new indent at step 1.</div></span></label>':'')+
       '<div id="fr-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
       '<button class="btn primary" id="fr-go" style="margin-top:12px;width:100%">Send response</button></div>';
   }
+  // tagged, but someone earlier in the sequence still has to reply first
+  if(s.infoRequested && tg.indexOf(ME.id)>-1 && !iReplied(s.infoReplies) && active && active!==ME.id){
+    return '<div class="card pad"><h3>You are tagged — not your turn yet</h3>'+
+      '<p class="hint" style="margin-top:6px">'+(s.infoBy?esc(user(s.infoBy).name):'An approver')+' asked: <b>'+esc(s.infoText)+'</b></p>'+
+      '<div style="margin-top:10px">'+flowTagChain(s)+'</div>'+
+      '<p class="hint" style="margin-top:10px">It comes to you after <b>'+esc(user(active).name)+'</b> replies. You will get a notification.</p></div>';
+  }
   if(mine){
-    if(s.infoRequested){ const who=tg.length?tg.map(id=>user(id).name).join(', '):'the requester', done=(s.infoReplies||[]).length, tot=tg.length;
-      let w='<div class="card pad"><h3>Waiting on '+esc(who)+'</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>.'+(tot>1?' '+done+' of '+tot+' have replied.':'')+' You can act once '+(tot>1?'everyone has':'they have')+' responded.</p>';
-      if((s.infoReplies||[]).length) w+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b>: '+esc(e.text)+'</div></div>').join('');
+    if(s.infoRequested){ const who=tg.length?user(active||tg[0]).name:'the requester', tot=tg.length;
+      let w='<div class="card pad"><h3>Waiting on '+esc(who)+'</h3><p class="hint" style="margin-top:6px">You asked: <b>'+esc(s.infoText)+'</b>. '+
+        (tot>1?'It goes to each person in turn, then comes back to you.':'It comes back to you once they respond.')+' It is off your “Waiting on me” until then.</p>';
+      if(tot>1) w+='<div style="margin-top:10px">'+flowTagChain(s)+'</div>';
+      if((s.infoReplies||[]).length) w+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b>'+(e.at?' · '+esc(fmtDT(ts(e.at))):'')+': '+esc(e.text)+'</div></div>').join('');
       return w+'</div>'; }
     const approving=(s.action==='approve'||s.action==='confirm');
     let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</p>';
@@ -3109,6 +3220,7 @@ function wireFlowDetail(v){
   $$('[data-fcond]',v).forEach(b=>b.onclick=()=>flowCondDialog(b.dataset.fcond));
   $$('[data-fask]',v).forEach(b=>b.onclick=()=>flowAskDialog(b.dataset.fask));
   $$('[data-fsys]',v).forEach(b=>b.onclick=()=>flowSysApprove(b.dataset.fsys));
+  $$('[data-fattach]',v).forEach(b=>b.onclick=()=>flowAttachDialog(b.dataset.fattach));
   $$('[data-frwd]',v).forEach(b=>b.onclick=()=>flowRewind(b.dataset.frwd));
   // requester's reply panel (answer an "ask for more")
   const reply={files:[]};
@@ -3123,6 +3235,20 @@ function wireFlowDetail(v){
       if(oldPaths.length){ try{ await removeObjects(oldPaths); }catch(e){} }
       await load(); toast(rep?'New document sent and the original replaced.':'Sent to the approver.','ok'); render(); }
     catch(e){ $('#fr-go',v).disabled=false; $('#fr-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
+}
+/* item 7: attach supporting documents to ANY step (step's people, raiser, admins) */
+function flowAttachDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]};
+  modal({title:'Attach a file',
+    body:'<p style="margin-top:0">Attach supporting documents to <b>'+esc(s.label)+'</b>. Everyone who can see this flow will see them on this step.</p>'+
+      '<div style="margin-top:8px"><div id="fat-files"></div></div>'+
+      '<div id="fat-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fat-go">Attach</button>',
+    onOpen:(mv,cl)=>{ uploader($('#fat-files',mv),local.files,{mode:'support',single:false,label:'Add photos, PDF, Excel or Word — several at once is fine'});
+      $('#fat-go',mv).onclick=async()=>{ if(!local.files.length) return $('#fat-err',mv).textContent='Pick at least one file.';
+        $('#fat-go',mv).disabled=true;
+        try{ await rpc('flow_add_file',{p_step:stepId,p_files:filesPayload(local.files)}); cl(); await load(); toast('File attached.','ok'); render(); }
+        catch(e){ $('#fat-go',mv).disabled=false; $('#fat-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 /* Approve with a condition — a normal approve whose condition rides in data_val */
 function flowCondDialog(stepId){
@@ -3145,11 +3271,13 @@ function flowCondDialog(stepId){
 }
 /* Ask the requester for more — soft send-back, nothing downstream resets */
 /* @-mention autocomplete: type @ to tag one or MANY people. state={text,tagIds:[]}. */
-function wireMention(mv, taSel, sugSel, tagsSel, state){
+function wireMention(mv, taSel, sugSel, tagsSel, state, opts){
   const ta=$(taSel,mv), sug=$(sugSel,mv), tags=$(tagsSel,mv);
   if(!Array.isArray(state.tagIds)) state.tagIds=[];
   const paintTags=()=>{ if(!tags) return;
-    tags.innerHTML=state.tagIds.map(id=>'<span class="tag t-prog">@'+esc(user(id).name)+' <button class="btn ghost sm" data-untag="'+id+'" style="padding:0 5px">×</button></span>').join(' ');
+    const ordered=!!(opts&&opts.ordered)&&state.tagIds.length>1;   // item 10: show the travel order
+    tags.innerHTML=state.tagIds.map((id,i)=>'<span class="tag t-prog">'+(ordered?(i+1)+'. ':'@')+esc(user(id).name)+' <button class="btn ghost sm" data-untag="'+id+'" style="padding:0 5px">×</button></span>').join(ordered?' <span class="hint" style="align-self:center">→</span> ':' ')+
+      (ordered?'<div class="hint" style="width:100%;margin-top:4px">It goes to them one at a time in this order, then comes back to you. Remove and re-add someone to change the order.</div>':'');
     $$('[data-untag]',tags).forEach(b=>b.onclick=()=>{ state.tagIds=state.tagIds.filter(x=>x!==b.dataset.untag); paintTags(); }); };
   const token=()=>{ const v=ta.value, c=ta.selectionStart, up=v.slice(0,c), m=up.match(/@([A-Za-z0-9 .]*)$/); return m?{q:m[1],start:c-m[0].length}:null; };
   ta.oninput=()=>{ state.text=ta.value; const t=token(); if(!t||!sug){ if(sug)sug.style.display='none'; return; }
@@ -3164,13 +3292,13 @@ function wireMention(mv, taSel, sugSel, tagsSel, state){
 function flowAskDialog(stepId){
   const x=flowFindStep(stepId); if(!x) return; const s=x.s; const state={text:'',tagIds:[]};
   modal({title:'Ask for more / tag people',
-    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag one or more people to check it (it parks until everyone tagged replies); leave it untagged to send to the requester.</p>'+
+    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag one or more people to check it. With several people it goes to them <b>one at a time, in the order you tag them</b>, then comes back to you; it leaves your “Waiting on me” meanwhile. Leave it untagged to send to the requester.</p>'+
       '<div style="margin-top:8px"><label for="fask">What do you need? <span class="hint">type @ to tag — add as many as you like</span></label>'+
       '<div style="position:relative"><textarea id="fask" placeholder="e.g. @T Rao @Jai Singhal please re-check the amount"></textarea><div id="fask-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
       '<div id="fask-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
       '<div id="fask-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fask-go">Send</button>',
-    onOpen:(mv,cl)=>{ wireMention(mv,'#fask','#fask-sug','#fask-tags',state);
+    onOpen:(mv,cl)=>{ wireMention(mv,'#fask','#fask-sug','#fask-tags',state,{ordered:true});
       $('#fask-go',mv).onclick=()=>{ const t=(state.text||$('#fask',mv).value).trim(); if(t.length<3) return $('#fask-err',mv).textContent='Say what you need.'; cl();
         flowPinThen(()=>flowAskCall(stepId,t,state.tagIds)); }; }});
 }
