@@ -3455,14 +3455,26 @@ function flowCondDialog(stepId){
         flowPinThen(()=>flowCall(stepId,'act','Condition: '+cond, files.length?files:null, dt?new Date(dt).toISOString():null, {condition:cond}, 'Approved with a condition.')); }; }});
 }
 /* Ask the requester for more — soft send-back, nothing downstream resets */
+/* Several tagged people travel in REPORTING ORDER: whoever reports (directly or
+   indirectly) to another tagged person goes first; unrelated people keep the order
+   they were tagged. Mirrors tag_order() in the database (which has the final say). */
+function hierOrder(ids){
+  ids=(ids||[]).slice(); if(ids.length<2) return ids;
+  const under=(a,b)=>{ let u=user(a); const seen=new Set();
+    for(let k=0;k<15&&u&&u.managerId&&!seen.has(u.managerId);k++){ if(u.managerId===b) return true; seen.add(u.managerId); u=DB.users.find(x=>x.id===u.managerId); }
+    return false; };
+  const below=id=>ids.filter(x=>x!==id&&under(x,id)).length;
+  return ids.map((id,i)=>({id,i,n:below(id)})).sort((a,b)=>a.n-b.n||a.i-b.i).map(x=>x.id);
+}
 /* @-mention autocomplete: type @ to tag one or MANY people. state={text,tagIds:[]}. */
 function wireMention(mv, taSel, sugSel, tagsSel, state, opts){
   const ta=$(taSel,mv), sug=$(sugSel,mv), tags=$(tagsSel,mv);
   if(!Array.isArray(state.tagIds)) state.tagIds=[];
   const paintTags=()=>{ if(!tags) return;
     const ordered=!!(opts&&opts.ordered)&&state.tagIds.length>1;   // item 10: show the travel order
-    tags.innerHTML=state.tagIds.map((id,i)=>'<span class="tag t-prog">'+(ordered?(i+1)+'. ':'@')+esc(user(id).name)+' <button class="btn ghost sm" data-untag="'+id+'" style="padding:0 5px">×</button></span>').join(ordered?' <span class="hint" style="align-self:center">→</span> ':' ')+
-      (ordered?'<div class="hint" style="width:100%;margin-top:4px">It goes to them one at a time in this order, then comes back to you. Remove and re-add someone to change the order.</div>':'');
+    const shown=ordered?hierOrder(state.tagIds):state.tagIds;          // reporting order, same as the server uses
+    tags.innerHTML=shown.map((id,i)=>'<span class="tag t-prog">'+(ordered?(i+1)+'. ':'@')+esc(user(id).name)+' <button class="btn ghost sm" data-untag="'+id+'" style="padding:0 5px">×</button></span>').join(ordered?' <span class="hint" style="align-self:center">→</span> ':' ')+
+      (ordered?'<div class="hint" style="width:100%;margin-top:4px">It goes to them one at a time in <b>reporting order</b> — whoever reports to the other goes first, their manager checks after — then comes back to you. People with no “Reports to” link keep the order you tagged them.</div>':'');
     $$('[data-untag]',tags).forEach(b=>b.onclick=()=>{ state.tagIds=state.tagIds.filter(x=>x!==b.dataset.untag); paintTags(); }); };
   const token=()=>{ const v=ta.value, c=ta.selectionStart, up=v.slice(0,c), m=up.match(/@([A-Za-z0-9 .]*)$/); return m?{q:m[1],start:c-m[0].length}:null; };
   ta.oninput=()=>{ state.text=ta.value; const t=token(); if(!t||!sug){ if(sug)sug.style.display='none'; return; }
@@ -3477,7 +3489,7 @@ function wireMention(mv, taSel, sugSel, tagsSel, state, opts){
 function flowAskDialog(stepId){
   const x=flowFindStep(stepId); if(!x) return; const s=x.s; const state={text:'',tagIds:[]};
   modal({title:'Ask for more / tag people',
-    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag one or more people to check it. With several people it goes to them <b>one at a time, in the order you tag them</b>, then comes back to you; it leaves your “Waiting on me” meanwhile. Leave it untagged to send to the requester.</p>'+
+    body:'<p style="margin-top:0">Send <b>'+esc(s.label)+'</b> back without rejecting — nothing already approved changes. Type <b>@</b> to tag one or more people to check it. With several people it goes to them <b>one at a time, in reporting order</b> (whoever reports to the other goes first, their manager checks after), then comes back to you; it leaves your “Waiting on me” meanwhile. Leave it untagged to send to the requester.</p>'+
       '<div style="margin-top:8px"><label for="fask">What do you need? <span class="hint">type @ to tag — add as many as you like</span></label>'+
       '<div style="position:relative"><textarea id="fask" placeholder="e.g. @T Rao @Jai Singhal please re-check the amount"></textarea><div id="fask-sug" style="position:absolute;z-index:6;left:0;right:0;display:none"></div></div>'+
       '<div id="fask-tags" class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"></div></div>'+
@@ -3485,7 +3497,7 @@ function flowAskDialog(stepId){
     footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fask-go">Send</button>',
     onOpen:(mv,cl)=>{ wireMention(mv,'#fask','#fask-sug','#fask-tags',state,{ordered:true});
       $('#fask-go',mv).onclick=()=>{ const t=(state.text||$('#fask',mv).value).trim(); if(t.length<3) return $('#fask-err',mv).textContent='Say what you need.'; cl();
-        flowPinThen(()=>flowAskCall(stepId,t,state.tagIds)); }; }});
+        flowPinThen(()=>flowAskCall(stepId,t,hierOrder(state.tagIds))); }; }});
 }
 async function flowAskCall(stepId,remark,toIds){ busy(true);
   const tos=(toIds&&toIds.length)?toIds:null;
