@@ -1058,7 +1058,17 @@ function viewInbox(){
    falling back to the legacy request id for older rows */
 function notifRoute(x){
   const r=(x&&x.route)||((x&&x.requestId)?'#detail/'+x.requestId:'')||((x&&x.request_id)?'#detail/'+x.request_id:'');
+  // safety net: a notification with no real destination ("#dash") that names an ALDS
+  // PO/WO ("Reminder: ALDS PO IH26O07-011 needs you") opens that flow
+  if((!r||r==='#dash')&&x&&x.title){ const f=flowFromText(x.title); if(f) return {name:'flowdetail',id:f.id}; }
   const m=String(r).match(/^#([a-z]+)(?:\/([\w-]+))?$/); return m?{name:m[1],id:m[2]}:null;
+}
+function flowFromText(t){
+  const m=String(t||'').match(/ALDS (PO|WO) (.+?)(?: needs you| is fully approved| was cancelled)?$/); if(!m) return null;
+  const hits=(DB.flows||[]).filter(f=>f.head===m[1]&&(f.title===m[2]||f.ref===m[2]));
+  if(!hits.length) return null;
+  // prefer one that's on my desk, then a running one, then the newest
+  return hits.slice().sort((a,b)=>(flowIsMine(b)-flowIsMine(a))||((b.status==='running')-(a.status==='running'))||(b.createdAt-a.createdAt))[0];
 }
 function gotoNotif(x){ const r=notifRoute(x); if(r) go(r); else render(); }
 function wireInbox(v){
