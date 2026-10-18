@@ -223,7 +223,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
       infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoTos:s.info_tos||[],infoReplies:s.info_replies||[],infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
       actors:[],files:[]}});
   factors.forEach(a=>{const s=FS[a.step_id]; if(s) s.actors.push(a.user_id)});
-  ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by};
+  ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by,station:f.station||'',photoDate:f.photo_date||''};
     if(s) s.files.push(rec); else if(FR[f.request_id]) FR[f.request_id]._files=(FR[f.request_id]._files||[]).concat(rec)});
   faudit.forEach(a=>{const f=FR[a.request_id]; if(f) f.audit.push({ts:ts(a.created_at),actorName:a.actor_name,action:a.action,detail:a.detail||''})});
   list.forEach(f=>f.steps=f.steps.filter(Boolean));
@@ -601,7 +601,7 @@ function uploader(mount,list,opts){
   const paint=()=>{
     const total=list.reduce((t,f)=>t+f.size,0);
     mount.innerHTML='<div class="drop" tabindex="0" role="button">'+(opts.label||(support?'Add quotations, photos, Excel or Word — several at once is fine':'Attach the ERP document — PDF, Excel or Word'))+'</div>'+
-      '<input type="file" class="hide" '+(opts.single?'':'multiple ')+'accept="'+accept+'"'+(support?' capture="environment"':'')+'>'+
+      '<input type="file" class="hide" '+(opts.single?'':'multiple ')+'accept="'+accept+'"'+(support&&!opts.gallery?' capture="environment"':'')+'>'+
       '<div class="filelist">'+list.map(f=>'<div class="filerow"><span class="ft '+kindOf(f.name)+'">'+esc(kindOf(f.name)==='img'?'IMG':extOf(f.name).slice(0,4).toUpperCase())+'</span>'+
         '<div style="min-width:0;flex:1"><div style="font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(f.name)+'</div>'+
         '<div class="hint">'+kb(f.size)+(f.original&&f.original>f.size*1.5?' · shrunk from '+kb(f.original):'')+' · uploaded</div></div>'+
@@ -1363,6 +1363,10 @@ window.addEventListener('popstate',e=>{
   if($('.veil')) return;                            // back pressed with a dialog open: the dialog handles it, the screen stays
   if(ME&&e.state&&e.state.name){ ROUTE=e.state; paintNav(); paintPin(); render(); window.scrollTo(0,0) }
 });
+/* A link opened while the app is already running (e.g. tapping a push notification)
+   may only change the #address. Follow it. Back/forward between our own screens is
+   handled by popstate above, which runs first, so this is then a no-op. */
+window.addEventListener('hashchange',()=>{ if(!ME) return; const h=routeFromHash(); if(h&&routeHash(h)!==routeHash(ROUTE)) go(h,true); });
 /* deep links: opening .../#detail/<id> lands on that request once signed in */
 function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?$/); return m?{name:m[1],id:m[2]}:null }
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
@@ -2325,11 +2329,41 @@ function viewOverview(){
     '</div>';
 
   return cards1+cards2+docBreak+
+    // item 11: gate photo 7-day deletion — what's stored, and a log of every cleanup run
+    '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><h3>Gate photos — 7-day deletion</h3>'+
+      '<button class="btn sm" id="ov-purge-run" style="margin-left:auto">Run cleanup now</button></div><div id="ov-purge" style="padding:12px 18px"><span class="spin sm"></span> Loading…</div></div>'+
     '<div class="row" style="margin-top:16px;gap:10px;flex-wrap:wrap"><button class="btn primary" id="ov-dl">Download overview (Excel)</button>'+
     '<button class="btn" id="ov-usage">Open per-person usage</button>'+
     '<span class="hint">Live figures from the whole system. Usage time counts only while the app is open and in front, added up across each person\'s devices.</span></div>';
 }
+/* item 11: owner's view of the gate-photo deletion: stored now, overdue, and every run */
+async function paintPurge(v){
+  const box=$('#ov-purge',v); if(!box) return;
+  try{
+    const [st,lg]=await Promise.all([ rpc('gp_photo_stats'), SB.from('photo_purge_log').select('*').order('ran_at',{ascending:false}).limit(30) ]);
+    if(lg.error) throw lg.error;
+    const log=lg.data||[], last=log[0], mb=b=>(Number(b||0)/1048576).toFixed(1)+' MB';
+    const overdue=Number(st&&st.overdue||0);
+    box.innerHTML='<div class="grid g4" style="gap:10px">'+
+        stat('Gate photos stored',(st&&st.stored)||0,mb(st&&st.bytes)+' · selfies + thumbnails','var(--indigo)')+
+        stat('Past 7 days, not yet deleted',overdue,overdue?'Deleted at the next run':'Nothing overdue',overdue?'var(--hold)':'var(--seal)')+
+        stat('Last cleanup',last?fmtDT(ts(last.ran_at)):'Not run yet',last?(last.photos_deleted+' deleted · '+mb(last.bytes_freed)):'Runs nightly at 3:00 am','var(--cyan)')+
+        stat('Schedule','Daily 3:00 am','Photos are deleted 7 days after they were taken','var(--seal)')+'</div>'+
+      (log.length?'<div class="scroll-x" style="margin-top:12px"><table style="min-width:560px"><thead><tr><th>When</th><th>How</th><th>Photos deleted</th><th>Space freed</th><th>Passes cleared</th><th>Problems</th></tr></thead><tbody>'+
+        log.map(r=>'<tr><td>'+esc(fmtDT(ts(r.ran_at)))+'</td><td class="hint">'+esc(r.source==='manual'?'Run now':'Scheduled')+'</td><td class="num">'+r.photos_deleted+'</td><td class="num">'+mb(r.bytes_freed)+'</td><td class="num">'+r.passes_cleared+'</td><td class="hint">'+esc(r.errors||'—')+'</td></tr>').join('')+
+        '</tbody></table></div>'
+        :'<p class="hint" style="margin-top:10px">No cleanup has run yet. It runs every night at 3:00 am, or tap “Run cleanup now”.</p>');
+  }catch(e){ box.innerHTML='<p class="hint">Could not load the deletion log ('+esc((e.message||'').replace(/^.*?: /,''))+'). Has 59-photo-purge-and-site-tags.sql been run?</p>'; }
+}
 function wireOverview(v){
+  paintPurge(v);
+  if($('#ov-purge-run',v)) $('#ov-purge-run',v).onclick=async()=>{ const b=$('#ov-purge-run',v); b.disabled=true; b.textContent='Running…';
+    try{ const {data,error}=await SB.functions.invoke('gate-photo-purge',{body:{source:'manual'}}); if(error) throw error;
+      if(data&&data.skipped) toast(data.reason||'Skipped — it ran a few minutes ago.','hold');
+      else toast('Cleanup done — '+((data&&data.deleted)||0)+' photo(s) deleted.','ok');
+      paintPurge(v); }
+    catch(e){ toast('Cleanup could not run: '+((e&&e.message)||'is the gate-photo-purge function deployed?'),'bad'); }
+    finally{ b.disabled=false; b.textContent='Run cleanup now'; } };
   if($('#ov-usage',v)) $('#ov-usage',v).onclick=()=>go({name:'usage'});
   if($('#ov-dl',v)) $('#ov-dl',v).onclick=()=>{
     if(!window.XLSX) return toast('Spreadsheet engine still loading — try again in a moment.','bad');
@@ -3282,8 +3316,17 @@ function flowStepRow(f,s){
   meta+=flowCommentThread(s);
   // item 7: the people on this step, the raiser (and admins) can attach a file at ANY stage of a running flow
   const canAttach=f.status==='running'&&(s.actors.indexOf(ME.id)>-1||f.requesterId===ME.id||ME.admin||ME.owner);
-  const attachBtn=canAttach?'<button class="btn ghost sm" data-fattach="'+s.id+'" style="padding:2px 9px">📎 Attach a file</button>':'';
-  const files=(s.files.length||attachBtn)?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+s.files.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'" title="'+esc(fl.name)+'">'+esc(fl.name)+'</button>').join('')+attachBtn+'</div>':'';
+  const attachBtn=canAttach?'<button class="btn ghost sm" data-fattach="'+s.id+'" style="padding:2px 9px">'+(isSiteStep(s)?'📷 Add site photos':'📎 Attach a file')+'</button>':'';
+  // item 14: photos tagged with a station are shown grouped by station, each labelled with its date
+  const tagged=s.files.filter(fl=>fl.station), plain=s.files.filter(fl=>!fl.station);
+  let sitePhotos='';
+  if(tagged.length){ const by={}; tagged.forEach(fl=>(by[fl.station]=by[fl.station]||[]).push(fl));
+    const stations=Object.keys(by).sort((a,b)=>a.localeCompare(b)), short=n=>String(n||'').length>18?String(n).slice(0,16)+'…':String(n||'');
+    sitePhotos='<div class="site-photos"><div class="sp-head">Site photos · '+tagged.length+' photo'+(tagged.length>1?'s':'')+' from '+stations.length+' station'+(stations.length>1?'s':'')+'</div>'+
+      stations.map(st=>'<div class="sp-group"><div class="sp-st">📍 '+esc(st)+' <span class="hint">('+by[st].length+')</span></div><div class="row" style="gap:6px;flex-wrap:wrap">'+
+        by[st].slice().sort((a,b)=>String(a.photoDate).localeCompare(String(b.photoDate))).map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'" title="'+esc(fl.name)+'">'+esc(fmtD(fl.photoDate))+' · '+esc(short(fl.name))+'</button>').join('')+
+        '</div></div>').join('')+'</div>'; }
+  const files=sitePhotos+((plain.length||attachBtn)?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:4px">'+plain.map(fl=>'<button class="btn sm" data-ffile="'+fl.id+'" title="'+esc(fl.name)+'">'+esc(fl.name)+'</button>').join('')+attachBtn+'</div>':'');
   let ownerBtn='';
   if(ME.owner&&f.status==='running'&&(s.status==='pending'||s.status==='waiting'))
     ownerBtn='<button class="btn ghost sm" data-fsys="'+s.id+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button>';
@@ -3431,18 +3474,56 @@ function wireFlowDetail(v){
       await load(['flows','notif'],[ROUTE.id]); toast(rep?'New document sent and the original replaced.':'Sent to the approver.','ok'); render(); }
     catch(e){ $('#fr-go',v).disabled=false; $('#fr-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
 }
+/* item 14: site-proof steps (SRN "Service / material received proof", GRN "Material
+   image at site"). One PO/WO can cover work at many stations, so every photo gets the
+   STATION it is from and the DATE it was taken. Photos can come from the gallery here
+   (they're usually taken earlier, on site), not only the live camera. */
+const isSiteStep=s=>!!s&&(s.stage==='SRN'||s.stage==='GRN')&&(s.action==='upload'||s.needsFile);
+const IMG_RX=/\.(jpe?g|png|webp|heic|heif)$/i;
+const istToday=()=>new Date(Date.now()+5.5*3600e3).toISOString().slice(0,10);
+function sitePhotoTagger(mount,list,meta){
+  const paint=()=>{
+    const today=istToday(), imgs=list.filter(f=>IMG_RX.test(f.name||''));
+    if(!imgs.length){ mount.innerHTML=''; return; }
+    mount.innerHTML='<div class="site-tags"><div class="hint" style="margin:0 0 8px">For each photo, pick the <b>station</b> and the <b>date</b> it was taken.</div>'+
+      imgs.map(f=>{ const m=meta[f.path]||(meta[f.path]={station:'',date:today});
+        return '<div class="site-tag-row"><div class="st-name" title="'+esc(f.name)+'">'+esc(f.name)+'</div>'+
+          '<input type="text" list="dl-st-site" placeholder="Station" autocomplete="off" value="'+esc(m.station)+'" data-st="'+esc(f.path)+'">'+
+          '<input type="date" max="'+today+'" value="'+esc(m.date)+'" data-sd="'+esc(f.path)+'"></div>'; }).join('')+
+      (imgs.length>1?'<button type="button" class="btn ghost sm" data-stsame style="margin-top:2px">Same station &amp; date as the first photo for all</button>':'')+'</div>'+
+      '<datalist id="dl-st-site">'+STATIONS.map(st=>'<option value="'+esc(st.name)+'">'+esc(st.code+' · '+st.state)+'</option>').join('')+'</datalist>';
+    $$('[data-st]',mount).forEach(i=>i.oninput=()=>{ meta[i.dataset.st].station=i.value; });
+    $$('[data-sd]',mount).forEach(i=>i.onchange=()=>{ meta[i.dataset.sd].date=i.value; });
+    const same=$('[data-stsame]',mount); if(same) same.onclick=()=>{ const first=meta[imgs[0].path]; imgs.forEach(f=>{ meta[f.path].station=first.station; meta[f.path].date=first.date; }); paint(); };
+  };
+  paint(); return paint;
+}
+/* every photo must be tagged; returns {items} for flow_photo_tags, or {err} */
+function siteTagItems(list,meta){
+  const imgs=list.filter(f=>IMG_RX.test(f.name||'')), today=istToday();
+  for(const f of imgs){ const m=meta[f.path];
+    if(!m||!String(m.station||'').trim()) return {err:'Choose the station for every photo.'};
+    if(!m.date) return {err:'Choose the date for every photo.'};
+    if(m.date>today) return {err:'A photo date cannot be in the future.'}; }
+  return {items:imgs.map(f=>({path:f.path,station:String(meta[f.path].station).trim(),photo_date:meta[f.path].date}))};
+}
 /* item 7: attach supporting documents to ANY step (step's people, raiser, admins) */
 function flowAttachDialog(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]};
-  modal({title:'Attach a file',
-    body:'<p style="margin-top:0">Attach supporting documents to <b>'+esc(s.label)+'</b>. Everyone who can see this flow will see them on this step.</p>'+
-      '<div style="margin-top:8px"><div id="fat-files"></div></div>'+
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; const site=isSiteStep(s), meta={};
+  modal({title:site?'Add site photos':'Attach a file',
+    body:'<p style="margin-top:0">'+(site?'Add photos to <b>'+esc(s.label)+'</b> — each one with its station and date.':'Attach supporting documents to <b>'+esc(s.label)+'</b>.')+' Everyone who can see this flow will see them on this step.</p>'+
+      '<div style="margin-top:8px"><div id="fat-files"></div></div><div id="fat-tags" style="margin-top:8px"></div>'+
       '<div id="fat-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fat-go">Attach</button>',
-    onOpen:(mv,cl)=>{ uploader($('#fat-files',mv),local.files,{mode:'support',single:false,label:'Add photos, PDF, Excel or Word — several at once is fine'});
+    onOpen:(mv,cl)=>{
+      const repaint=site?sitePhotoTagger($('#fat-tags',mv),local.files,meta):null;
+      uploader($('#fat-files',mv),local.files,{mode:'support',single:false,gallery:site,onChange:repaint||undefined,
+        label:site?'Add site photos from the gallery or camera — several at once is fine':'Add photos, PDF, Excel or Word — several at once is fine'});
       $('#fat-go',mv).onclick=async()=>{ if(!local.files.length) return $('#fat-err',mv).textContent='Pick at least one file.';
+        let tags=null; if(site){ const r=siteTagItems(local.files,meta); if(r.err) return $('#fat-err',mv).textContent=r.err; tags=r.items; }
         $('#fat-go',mv).disabled=true;
-        try{ await rpc('flow_add_file',{p_step:stepId,p_files:filesPayload(local.files)}); cl(); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('File attached.','ok'); render(); }
+        try{ if(tags&&tags.length) await rpc('flow_photo_tags',{p_items:tags});
+          await rpc('flow_add_file',{p_step:stepId,p_files:filesPayload(local.files)}); cl(); await load(['flows','notif'],flowIdsOfStep(stepId)); toast(site?'Site photos added.':'File attached.','ok'); render(); }
         catch(e){ $('#fat-go',mv).disabled=false; $('#fat-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 /* Approve with a condition — a normal approve whose condition rides in data_val */
@@ -3604,7 +3685,8 @@ function flowAct(stepId){
       (s.needsFile?'<div style="margin-top:10px"><label>Attach copy</label><div id="fa-files"></div></div>':'');
   } else {
     if(s.needsFile){ const multiPO=(s.stage==='Purchase'&&s.action==='initiate');
-      body+='<div style="margin-top:10px"><label>'+(multiPO?'Attach purchase order(s) — one indent can have several':'Upload document(s)')+'</label><div id="fa-files"></div></div>'; }
+      body+='<div style="margin-top:10px"><label>'+(multiPO?'Attach purchase order(s) — one indent can have several':isSiteStep(s)?'Site photos — add photos from every station where the work was done':'Upload document(s)')+'</label><div id="fa-files"></div>'+
+        (isSiteStep(s)?'<div id="fa-sitetags" style="margin-top:8px"></div>':'')+'</div>'; }
   }
   if(s.needsDatetime) body+='<div style="margin-top:10px"><label for="fa-dt">Confirmation date & time</label><input type="datetime-local" id="fa-dt"></div>';
   // supporting documents are allowed on every step (quotations, comparisons, photos…)
@@ -3612,7 +3694,12 @@ function flowAct(stepId){
   body+='<div style="margin-top:10px"><label for="fa-rem">Remark <span class="hint">optional</span></label><input type="text" id="fa-rem"></div><div id="fa-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
   modal({title:flowActLabel(s),body:body,footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Continue</button>',
     onOpen:(mv,cl)=>{
-      if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,{mode:'support',single:false,label:'Tap to upload (PDF, image, Excel, Word) — add more than one if needed'});
+      // item 14: at the site-proof step each photo gets its station + date (gallery allowed)
+      const siteMeta={}, siteRepaint=$('#fa-sitetags',mv)?sitePhotoTagger($('#fa-sitetags',mv),local.files,siteMeta):null;
+      flowAct._siteMeta=siteMeta;
+      if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,siteRepaint
+        ?{mode:'support',single:false,gallery:true,onChange:siteRepaint,label:'Add site photos from the gallery or camera — several at once is fine'}
+        :{mode:'support',single:false,label:'Tap to upload (PDF, image, Excel, Word) — add more than one if needed'});
       if($('#fa-supp',mv)) uploader($('#fa-supp',mv),local.support,{mode:'support',single:false,label:'Add supporting files (optional)'});
       if($('#fp-adv',mv)){ const paint=()=>{ $('#fp-adv',mv).innerHTML=advices.map((a,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center"><input type="number" min="0" max="100" placeholder="%" data-pct="'+i+'" value="'+esc(a.pct)+'" style="width:80px"><div style="flex:1" id="adv-f-'+i+'"></div></div>').join('');
         advices.forEach((a,i)=>{ $('[data-pct="'+i+'"]',mv).oninput=e=>a.pct=e.target.value; a._list=a._list||[]; uploader($('#adv-f-'+i,mv),a._list,{mode:'support',single:true,label:'Advice '+(i+1)+' PDF'}); }); };
@@ -3631,7 +3718,12 @@ function flowAct(stepId){
           else if(!primary.length) return err.textContent='Upload the advice document.';
         }
         const remark=$('#fa-rem',mv).value.trim();
-        cl(); flowPinThen(()=>flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,'Signed.'));
+        let siteTags=null;
+        if(isSiteStep(s)){ const r=siteTagItems(local.files,flowAct._siteMeta||{}); if(r.err) return err.textContent=r.err; siteTags=r.items; }
+        cl(); flowPinThen(async()=>{
+          // save each photo's station + date first; the database attaches them as the step records the files
+          if(siteTags&&siteTags.length){ try{ await rpc('flow_photo_tags',{p_items:siteTags}); }catch(e){ fail(e); return; } }
+          flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,'Signed.'); });
       };
     }});
 }
