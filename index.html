@@ -368,6 +368,43 @@ tbody tr:last-child td{border-bottom:0}
 .flow-dot{width:13px;height:13px;border-radius:50%;border:2px solid var(--line-2);background:var(--surface);flex:none;margin-top:3px}
 .flow-step.done .flow-dot{background:var(--seal);border-color:var(--seal)}
 .flow-step.live .flow-dot{background:var(--indigo);border-color:var(--indigo);box-shadow:0 0 0 4px var(--indigo-soft)}
+/* item 9: make the live (pending) step unmistakable in the timeline */
+.flow-step.live{background:var(--indigo-soft);border-left:3px solid var(--indigo);border-radius:8px;padding-left:9px;margin-left:-9px}
+.pending-with{margin-top:5px;font-size:12.5px;font-weight:600;color:var(--indigo);display:inline-flex;align-items:center;gap:5px}
+.pending-with:before{content:"\25CF";font-size:9px}
+.pending-with .pw-sub{font-weight:400;color:var(--steel)}
+/* items 5/6: step comment thread — Facebook-style, dated and attributed */
+.cmt-thread{margin-top:7px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+.cmt-thread>summary{cursor:pointer;padding:6px 10px;font-size:12.5px;font-weight:600;color:var(--indigo);list-style:none;user-select:none}
+.cmt-thread>summary::-webkit-details-marker{display:none}
+.cmt-thread>summary:before{content:"\1F4AC  ";}
+.cmt-list{padding:4px 10px 9px}
+.cmt{padding:7px 0;border-top:1px solid var(--line)}
+.cmt:first-child{border-top:none}
+.cmt-h{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:13px}
+.cmt-h>b{font-weight:600}
+.cmt-to{font-size:11px;color:var(--steel)}
+.cmt-t{margin-left:auto;font-size:11px;color:var(--steel);white-space:nowrap}
+.cmt-b{font-size:13px;margin-top:2px;white-space:pre-wrap;word-break:break-word}
+/* item 2: tappable summary tiles */
+.stat.tap{cursor:pointer;transition:transform .08s ease,box-shadow .12s ease}
+.stat.tap:hover{box-shadow:0 0 0 2px var(--indigo-soft)}
+.stat.tap:active{transform:scale(.98)}
+/* item 8: hand-off highlighting — tagged to me (amber) / I'm awaiting a reply (muted) */
+tr.row-tagme>td{background:var(--hold-soft,#FFF6E5)}
+tr.row-tagme>td:first-child{box-shadow:inset 4px 0 0 var(--hold)}
+tr.row-await>td{background:var(--surface-2)}
+tr.row-await>td:first-child{box-shadow:inset 4px 0 0 var(--line-2)}
+.tag-me{color:var(--hold);font-weight:700}
+.tagme-panel{border-color:var(--hold);box-shadow:0 0 0 3px var(--hold-soft,#FFF6E5)}
+/* item 10: the order an ask travels */
+.tchain{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
+.tchain-chip{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:var(--surface)}
+.tchain-chip.tc-done{background:#E7F5EC;border-color:#BFE3CB;color:var(--seal)}
+.tchain-chip.tc-now{background:var(--hold-soft,#FFF6E5);border-color:var(--hold);color:var(--hold);font-weight:700}
+.tchain-chip.tc-next{color:var(--steel)}
+.tchain-chip.tc-back{border-style:dashed;color:var(--steel)}
+.tchain-arr{color:var(--steel);font-size:12px}
 .gp-picked{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface-2)}
 .gp-selfie-wrap{margin-top:6px}
 .gp-selfie-done{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
