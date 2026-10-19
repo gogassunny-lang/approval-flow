@@ -2622,40 +2622,145 @@ function nativeCameraCapture(){
     document.body.appendChild(inp); inp.click();
   });
 }
-/* opens the front camera, lets you capture and confirm one frame, uploads it,
-   and resolves to the stored path (or null if the person backed out) */
+/* ---- selfie look: left–right orientation + gentle filters ----
+   What you see is what gets saved: the live view, the preview and the stored
+   photo all use the same orientation and the same filter. By default the photo
+   is the true view (as others see you, so writing on a badge or shirt reads the
+   right way round); "Flip" switches it, and each phone remembers the choice.
+   Filters are mild light-and-colour looks only, so the face stays recognisable. */
+const SF_FILTERS=[
+  {id:'natural',label:'Natural',css:''},
+  {id:'bright', label:'Bright', css:'brightness(1.12) contrast(1.04) saturate(1.08)'},
+  {id:'glow',   label:'Glow',   css:'brightness(1.08) contrast(0.94) saturate(1.12) blur(0.5px)',tint:'rgba(255,196,170,.24)'},
+  {id:'warm',   label:'Warm',   css:'sepia(0.15) saturate(1.18) brightness(1.04)',tint:'rgba(255,166,77,.22)'},
+  {id:'cool',   label:'Cool',   css:'saturate(0.96) contrast(1.06) brightness(1.04)',tint:'rgba(86,156,255,.22)'},
+  {id:'vivid',  label:'Vivid',  css:'contrast(1.12) saturate(1.35)'},
+  {id:'mono',   label:'B&W',    css:'grayscale(1) contrast(1.12) brightness(1.04)'},
+  {id:'retro',  label:'Retro',  css:'sepia(0.35) contrast(0.92) brightness(1.06) saturate(0.9)',tint:'rgba(255,214,170,.2)'}
+];
+const sfFilter=id=>SF_FILTERS.find(f=>f.id===id)||SF_FILTERS[0];
+const sfPref={ get(k,d){ try{ const v=localStorage.getItem('setu.selfie.'+k); return v==null?d:v; }catch(e){ return d; } },
+               set(k,v){ try{ localStorage.setItem('setu.selfie.'+k,String(v)); }catch(e){} } };
+// Android / Chrome draw CSS filters straight onto a canvas; older iPhones get the same look pixel by pixel
+const SF_CTX_FILTER=typeof CanvasRenderingContext2D!=='undefined' && 'filter' in CanvasRenderingContext2D.prototype;
+function sfPixelFilter(ctx,w,h,css){
+  const steps=[]; css.replace(/(brightness|contrast|saturate|sepia|grayscale)\(([\d.]+)\)/g,(_,n,v)=>{ steps.push({n,a:parseFloat(v)}); return ''; });
+  if(!steps.length) return;
+  for(const s of steps){ const a=(s.n==='sepia'||s.n==='grayscale')?Math.min(1,s.a):s.a, r=1-a;
+    s.m= s.n==='saturate'  ? [.213+.787*a,.715-.715*a,.072-.072*a, .213-.213*a,.715+.285*a,.072-.072*a, .213-.213*a,.715-.715*a,.072+.928*a]
+       : s.n==='grayscale' ? [.2126+.7874*r,.7152-.7152*r,.0722-.0722*r, .2126-.2126*r,.7152+.2848*r,.0722-.0722*r, .2126-.2126*r,.7152-.7152*r,.0722+.9278*r]
+       : s.n==='sepia'     ? [.393+.607*r,.769-.769*r,.189-.189*r, .349-.349*r,.686+.314*r,.168-.168*r, .272-.272*r,.534-.534*r,.131+.869*r]
+       : null; }
+  const img=ctx.getImageData(0,0,w,h), d=img.data, cl=v=>v<0?0:v>255?255:v;
+  for(let i=0;i<d.length;i+=4){ let r=d[i],g=d[i+1],b=d[i+2];
+    for(const s of steps){
+      if(s.n==='brightness'){ r=cl(r*s.a); g=cl(g*s.a); b=cl(b*s.a); }
+      else if(s.n==='contrast'){ r=cl((r-127.5)*s.a+127.5); g=cl((g-127.5)*s.a+127.5); b=cl((b-127.5)*s.a+127.5); }
+      else { const m=s.m, R=r, G=g, B=b; r=cl(m[0]*R+m[1]*G+m[2]*B); g=cl(m[3]*R+m[4]*G+m[5]*B); b=cl(m[6]*R+m[7]*G+m[8]*B); }
+    }
+    d[i]=r; d[i+1]=g; d[i+2]=b; }
+  ctx.putImageData(img,0,0);
+}
+/* draws a frame (camera, photo or canvas) with the chosen orientation and filter, <= edge px */
+function sfRender(src,sw,sh,f,mirror,edge){
+  const sc=Math.min(1,(edge||1000)/Math.max(sw,sh));
+  const cv=document.createElement('canvas'); cv.width=Math.max(1,Math.round(sw*sc)); cv.height=Math.max(1,Math.round(sh*sc));
+  const ctx=cv.getContext('2d');
+  if(mirror){ ctx.translate(cv.width,0); ctx.scale(-1,1); }
+  ctx.drawImage(src,0,0,cv.width,cv.height);
+  // the filtered frame goes over the plain one, so a soft (Glow) edge never turns dark
+  if(f.css&&SF_CTX_FILTER){ ctx.filter=f.css; ctx.drawImage(src,0,0,cv.width,cv.height); ctx.filter='none'; }
+  ctx.setTransform(1,0,0,1,0,0);
+  if(f.css&&!SF_CTX_FILTER) sfPixelFilter(ctx,cv.width,cv.height,f.css);
+  if(f.tint){ ctx.globalCompositeOperation='soft-light'; ctx.fillStyle=f.tint; ctx.fillRect(0,0,cv.width,cv.height); ctx.globalCompositeOperation='source-over'; }
+  return cv;
+}
+/* a small centre square of the frame, for the round filter previews */
+function sfSnap(src,sw,sh){ const s=Math.min(sw,sh), cv=document.createElement('canvas'); cv.width=cv.height=96;
+  cv.getContext('2d').drawImage(src,(sw-s)/2,(sh-s)/2,s,s,0,0,96,96); return cv.toDataURL('image/jpeg',0.7); }
+const sfChips=cur=>'<div class="sf-filters" role="radiogroup" aria-label="Photo filter">'+SF_FILTERS.map(f=>
+  '<button type="button" class="sf-chip'+(f.id===cur?' on':'')+'" data-sf="'+f.id+'" role="radio" aria-checked="'+(f.id===cur)+'">'+
+  '<span class="sf-thumb"><img alt=""'+(f.css?' style="filter:'+f.css+'"':'')+'>'+(f.tint?'<i style="background:'+f.tint+'"></i>':'')+'</span>'+esc(f.label)+'</button>').join('')+'</div>';
+const blobToImage=b=>new Promise((res,rej)=>{ const u=URL.createObjectURL(b), i=new Image();
+  i.onload=()=>{ URL.revokeObjectURL(u); res(i); }; i.onerror=()=>{ URL.revokeObjectURL(u); rej(new Error('image')); }; i.src=u; });
+
+/* opens the front camera, lets you capture and confirm one frame (choosing a
+   look and the left–right orientation), uploads it, and resolves to the stored
+   path (or null if the person backed out) */
 function captureSelfie(title){
   return new Promise(resolve=>{
-    let stream=null, path=null, done=false, previewBlob=null;
+    let stream=null, path=null, done=false;
+    let raw=null;              // the captured frame: true orientation, no filter
+    let src='live';            // 'live' camera in the app, or 'native' (the phone's camera app)
+    let mode='';               // 'live' view or 'preview' of the captured frame
+    let filt=sfFilter(sfPref.get('filter','natural'));
+    const mirror={ live:sfPref.get('mirror.live','0')==='1', native:sfPref.get('mirror.native','0')==='1' };
+    const LIVE_MSG='Fit your face inside the circle and look at the camera. The photo is live and time-stamped — it cannot be uploaded, and a held-up photograph will not line up in the ring.';
     const finish=v=>{ if(done)return; done=true; if(stream)stream.getTracks().forEach(t=>t.stop()); resolve(v); };
     modal({title:title||'Take a live selfie',cls:'selfie',
       body:'<div id="sf-stage" class="selfie-stage"><div class="selfie-hint"><span class="spin"></span> Starting the camera…</div></div>'+
-           '<div id="sf-msg" class="hint" style="margin-top:8px;text-align:center">Fit your face inside the circle and look at the camera. The photo is live and time-stamped — it cannot be uploaded, and a held-up photograph will not line up in the ring.</div>',
+           '<div id="sf-look" hidden>'+sfChips(filt.id)+'</div>'+
+           '<div id="sf-msg" class="hint" style="margin-top:8px;text-align:center">'+LIVE_MSG+'</div>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="sf-retake" style="display:none">Retake</button><button class="btn primary" id="sf-shoot" disabled>Capture</button>',
       onOpen:(v,cl)=>{
-        const stage=$('#sf-stage',v), msg=$('#sf-msg',v), shoot=$('#sf-shoot',v), retake=$('#sf-retake',v);
+        const stage=$('#sf-stage',v), look=$('#sf-look',v), msg=$('#sf-msg',v), shoot=$('#sf-shoot',v), retake=$('#sf-retake',v);
         const obs=new MutationObserver(()=>{ if(!v.isConnected){ obs.disconnect(); finish(path) } });
         obs.observe(v.parentNode||document.body,{childList:true});
+        const render=()=>sfRender(raw,raw.width,raw.height,filt,mirror[src],1000);
+        // apply the current look to whatever is on screen
+        const applyLook=()=>{
+          look.querySelectorAll('.sf-chip').forEach(c=>{ const on=c.dataset.sf===filt.id; c.classList.toggle('on',on); c.setAttribute('aria-checked',String(on));
+            const im=c.querySelector('img'); if(im) im.style.transform=mirror[src]?'scaleX(-1)':''; });
+          if(mode==='live'){
+            const video=$('video.selfie-video',stage), tint=$('.sf-tint',stage);
+            if(video){ video.style.transform=mirror.live?'scaleX(-1)':''; video.style.filter=filt.css||''; }
+            if(tint) tint.style.background=filt.tint||'transparent';
+          }else if(mode==='preview'&&raw){
+            const img=$('img.selfie-video',stage); if(img) img.src=render().toDataURL('image/jpeg',0.85);
+          }
+        };
+        // bring the remembered look into view the first time the row shows
+        let centred=false; const centreChip=()=>{ if(centred) return; centred=true; const strip=$('.sf-filters',look), on=$('.sf-chip.on',look); if(!strip||!on) return;
+          const a=strip.getBoundingClientRect(), b=on.getBoundingClientRect(); strip.scrollLeft+=(b.left+b.width/2)-(a.left+a.width/2); };
+        const paintChips=(el,w,h)=>{ try{ const u=sfSnap(el,w,h); look.querySelectorAll('.sf-thumb img').forEach(im=>{ im.src=u; }); }catch(e){} };
+        look.addEventListener('click',e=>{ const c=e.target.closest('.sf-chip'); if(!c) return;
+          filt=sfFilter(c.dataset.sf); sfPref.set('filter',filt.id); applyLook(); });
+        const addFlip=()=>{ const b=document.createElement('button'); b.type='button'; b.className='sf-flip';
+          b.setAttribute('aria-label','Flip the photo left to right'); b.innerHTML='&#8644; Flip';
+          b.onclick=()=>{ mirror[src]=!mirror[src]; sfPref.set('mirror.'+src,mirror[src]?'1':'0'); applyLook(); };
+          stage.appendChild(b); };
+        // the captured frame, ready to check: change the look or flip it, then use it
+        const showPreview=()=>{ mode='preview';
+          stage.innerHTML='<img class="selfie-video" alt="selfie preview">'; addFlip();
+          look.hidden=false; centreChip(); paintChips(raw,raw.width,raw.height); applyLook();
+          shoot.style.display=''; shoot.disabled=false; shoot.textContent='Use this photo'; shoot.dataset.mode='use'; retake.style.display='';
+          if(msg) msg.textContent='This is exactly how the photo will be saved. Pick a look, or tap Flip if it’s the wrong way round.';
+        };
         // take the shot with the phone's camera app when the live camera can't start
         const useNative=async()=>{
-          const blob=await nativeCameraCapture(); if(!blob) return;   // cancelled — leave the error + button up
-          shoot.style.display='none'; retake.style.display='none'; if(msg) msg.textContent='';
-          stage.innerHTML='<div class="selfie-hint"><span class="spin"></span> Saving…</div>';
-          try{ path=await selfieUpload(blob); cl(); }
-          catch(e){ showCamErr('Could not save the photo. Try again.'); }
+          const blob=await nativeCameraCapture(); if(!blob) return;   // cancelled — leave what's on screen
+          try{ const img=await blobToImage(blob); raw=sfRender(img,img.naturalWidth||img.width,img.naturalHeight||img.height,SF_FILTERS[0],false,1000); }
+          catch(e){ return showCamErr('Could not read that photo. Try again.'); }
+          src='native'; showPreview();
         };
         // render a camera error with a one-tap fallback to the phone camera app
-        function showCamErr(html){
+        function showCamErr(html){ mode=''; look.hidden=true;
           stage.innerHTML='<div class="selfie-err">'+html+'</div>'+
             '<button class="btn primary" id="sf-native" style="margin-top:12px;width:100%">📷 Use phone camera</button>'+
             '<div class="hint" style="margin-top:7px;text-align:center">This opens your phone’s camera to take the selfie now. To get the live circle guide back, allow Camera for SETU and reopen the app.</div>';
-          shoot.style.display='none'; retake.style.display='none';
+          shoot.style.display='none'; retake.style.display='none'; if(msg) msg.textContent='';
           const nb=$('#sf-native',stage); if(nb) nb.onclick=useNative;
         }
-        const showLive=()=>{ const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
-          video.muted=true; video.className='selfie-video mirror'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
+        const showLive=()=>{ src='live'; mode='live';
+          const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
+          video.muted=true; video.className='selfie-video'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
+          const tint=document.createElement('div'); tint.className='sf-tint'; stage.appendChild(tint);   // colour wash for the Warm / Cool / Glow / Retro looks
           const ring=document.createElement('div'); ring.className='selfie-ring'; stage.appendChild(ring);   // face guide: a real face fills the oval, a held-up photo won't line up
-          shoot.textContent='Capture'; shoot.dataset.mode='cap'; shoot.disabled=false; retake.style.display='none'; };
+          addFlip(); look.hidden=false; centreChip(); applyLook();
+          // once real frames arrive, put a still of the person in each round filter preview
+          video.addEventListener('playing',()=>setTimeout(()=>{ if(video.isConnected&&video.videoWidth) paintChips(video,video.videoWidth,video.videoHeight); },350),{once:true});
+          if(msg) msg.textContent=LIVE_MSG;
+          shoot.style.display=''; shoot.textContent='Capture'; shoot.dataset.mode='cap'; shoot.disabled=false; retake.style.display='none'; };
         (async()=>{
           const md=navigator.mediaDevices;
           if(!md||!md.getUserMedia){
@@ -2670,6 +2775,7 @@ function captureSelfie(title){
           const tries=[{video:{facingMode:{ideal:'user'}},audio:false},{video:{facingMode:'user'},audio:false},{video:true,audio:false}];
           let err=null;
           for(const c of tries){ try{ stream=await md.getUserMedia(c); err=null; break; }catch(e){ err=e; } }
+          if(done){ if(stream) stream.getTracks().forEach(t=>t.stop()); return; }   // closed while the camera was starting
           if(!stream){
             const name=(err&&(err.name||err.message))||'unknown';
             const why=/NotAllowed|Security|Permission/i.test(name)
@@ -2685,19 +2791,15 @@ function captureSelfie(title){
         shoot.onclick=async()=>{
           if(shoot.dataset.mode==='use'){
             shoot.disabled=true; retake.style.display='none'; msg.textContent='Saving…';
-            try{ path=await selfieUpload(previewBlob); cl(); }
+            try{ const blob=await new Promise(res=>render().toBlob(res,'image/jpeg',0.85)); path=await selfieUpload(blob); cl(); }
             catch(e){ msg.textContent='Could not save the photo. Try again.'; shoot.disabled=false; retake.style.display=''; }
             return;
           }
-          const video=$('.selfie-video',stage); if(!video) return;
-          const w=video.videoWidth||720, h=video.videoHeight||720, edge=1000, scale=Math.min(1,edge/Math.max(w,h));
-          const cv=document.createElement('canvas'); cv.width=Math.round(w*scale); cv.height=Math.round(h*scale);
-          cv.getContext('2d').drawImage(video,0,0,cv.width,cv.height);
-          previewBlob=await new Promise(res=>cv.toBlob(res,'image/jpeg',0.82));
-          stage.innerHTML='<img class="selfie-video" src="'+cv.toDataURL('image/jpeg',0.82)+'" alt="selfie preview">';
-          shoot.textContent='Use this photo'; shoot.dataset.mode='use'; retake.style.display='';
+          const video=$('video.selfie-video',stage); if(!video||!video.videoWidth) return;
+          raw=sfRender(video,video.videoWidth,video.videoHeight,SF_FILTERS[0],false,1000);   // true orientation; look applied on save
+          showPreview();
         };
-        retake.onclick=showLive;
+        retake.onclick=()=>{ if(src==='native') useNative(); else showLive(); };
       }});
   });
 }
