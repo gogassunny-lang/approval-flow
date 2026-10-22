@@ -2610,7 +2610,7 @@ function wirePeople(v){
 /* ============================================================
    Garuda — CNG stock (Stage 2a: masters browser; GRN/QR/Processed next)
    ============================================================ */
-let garudaTab='items', garudaItemQ='', garudaStnQ='', garudaLoaded=false, garudaLoading=false;
+let garudaTab='items', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaLoaded=false, garudaLoading=false;
 async function loadGaruda(force){
   if(garudaLoading) return; if(garudaLoaded&&!force) return;
   garudaLoading=true;
@@ -2619,7 +2619,7 @@ async function loadGaruda(force){
       SB.from('cng_items').select('code,name,item_type,part_life').order('code'),
       SB.from('cng_stations').select('station_no,station_name').order('station_no'),
       SB.from('cng_lots').select('id,request_id,item_code,item_name,item_type,po_no,grn_no,grn_date,accepted_qty,rate,series_prefix,series_from,series_to').eq('minted',true).order('created_at',{ascending:false}),
-      SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,po_no,grn_no,status').order('id')
+      SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,po_no,grn_no,status,station_no,issued_to,issued_at,allotted_at,consumed_at,returned_at,replaced_from').order('id')
     ]);
     DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||''}));
     DB.garudaStations=(st.data||[]).map(r=>({no:r.station_no,name:r.station_name||''}));
@@ -2654,6 +2654,19 @@ function viewGaruda(){
       '<table class="cards"><thead><tr><th>Station no.</th><th>Station name</th></tr></thead><tbody>'+
       rows.map(s=>'<tr><td class="num"><b>'+esc(s.no)+'</b></td><td>'+esc(s.name)+'</td></tr>').join('')+
       '</tbody></table></div>';
+  } else if(garudaTab==='stock'){
+    const tags=DB.garudaTags||[]; const q=garudaStockQ.trim().toLowerCase();
+    const ST={in_store:['t-ok','In store'],issued:['t-prog','Issued'],allotted:['t-wait','Allotted'],consumed:['t-hold','Consumed'],returned:['t-bad','Returned'],replaced:['t-bad','Replaced']};
+    const counts={}; tags.forEach(t=>counts[t.status]=(counts[t.status]||0)+1);
+    const rows=tags.filter(t=>(garudaStockF==='all'||t.status===garudaStockF)&&(!q||(t.id+' '+t.item_code+' '+(t.item_name||'')+' '+(t.station_no||'')+' '+(t.issued_to||'')).toLowerCase().includes(q))).slice(0,300);
+    const chip=(k,label)=>'<button data-sf="'+k+'" class="btn sm '+(garudaStockF===k?'primary':'ghost')+'">'+esc(label)+(k!=='all'&&counts[k]?' '+counts[k]:'')+'</button>';
+    body='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap">'+
+      chip('all','All ('+tags.length+')')+chip('in_store','In store')+chip('issued','Issued')+chip('allotted','Allotted')+chip('consumed','Consumed')+chip('returned','Returned')+
+      '<input id="g-stocksearch" type="text" placeholder="Search QR, item, station or person" value="'+esc(garudaStockQ)+'" style="flex:1;min-width:200px"></div>'+
+      '<table class="cards"><thead><tr><th>QR code</th><th>Item</th><th>Status</th><th>Where</th><th></th></tr></thead><tbody>'+
+      (rows.length?rows.map(t=>{const s=ST[t.status]||['t-wait',t.status]; return '<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+' <span class="hint">'+esc(t.item_name||'')+'</span></td><td><span class="tag '+s[0]+'" style="font-size:11px">'+s[1]+'</span></td><td class="hint meta">'+esc(t.station_no||'—')+(t.issued_to?' · '+esc(t.issued_to):'')+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Open</button></td></tr>';}).join('')
+        :'<tr><td colspan="5"><div class="empty" style="padding:18px"><p class="hint">No QR matches.</p></div></td></tr>')+
+      '</tbody></table></div>';
   } else {
     const lots=DB.garudaLots||[];
     if(!lots.length){ body='<div class="card pad"><p class="hint" style="margin:0">No GRNs processed yet. When a CNG GRN is finally approved, its items and QR codes appear here.</p></div>'; }
@@ -2665,8 +2678,9 @@ function viewGaruda(){
           '</tbody></table></div>'; }).join('');
     }
   }
-  return '<div class="card pad" style="margin-bottom:14px"><p class="hint" style="margin:0">The CNG item &amp; station masters imported from Garuda, and the GRNs processed through the CNG flow with their QR codes.</p></div>'+
-    '<div class="tabs" style="margin-bottom:12px">'+tab('items','Items',items.length)+tab('stations','Stations',stations.length)+tab('processed','Processed',(DB.garudaLots||[]).length)+'</div>'+
+  return '<div class="card pad" style="margin-bottom:14px"><div class="row" style="flex-wrap:wrap;gap:10px"><p class="hint" style="margin:0;flex:1;min-width:200px">The CNG item &amp; station masters, the processed GRNs with their QR codes, and the live stock you can issue, allot, consume and return.</p>'+
+      '<button class="btn primary" id="g-scan">📷 Scan a QR</button></div></div>'+
+    '<div class="tabs" style="margin-bottom:12px">'+tab('items','Items',items.length)+tab('stations','Stations',stations.length)+tab('processed','Processed',(DB.garudaLots||[]).length)+tab('stock','Stock',(DB.garudaTags||[]).length)+'</div>'+
     '<div id="g-body">'+body+'</div>';
 }
 function wireGaruda(v){
@@ -2675,6 +2689,101 @@ function wireGaruda(v){
   const si=$('#g-isearch',v); if(si) si.oninput=()=>{ garudaItemQ=si.value; const p=si.selectionStart; render(); const n=$('#g-isearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
   const ss=$('#g-ssearch',v); if(ss) ss.oninput=()=>{ garudaStnQ=ss.value; const p=ss.selectionStart; render(); const n=$('#g-ssearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
   $$('[data-qrlot]',v).forEach(b=>b.onclick=()=>qrLotDialog(b.dataset.qrlot));
+  if($('#g-scan',v)) $('#g-scan',v).onclick=()=>cngScanDialog();
+  $$('[data-sf]',v).forEach(b=>b.onclick=()=>{ garudaStockF=b.dataset.sf; render(); });
+  const sk=$('#g-stocksearch',v); if(sk) sk.oninput=()=>{ garudaStockQ=sk.value; const p=sk.selectionStart; render(); const n=$('#g-stocksearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
+  $$('[data-tag]',v).forEach(b=>b.onclick=()=>cngTagPanel(b.dataset.tag));
+}
+
+/* ---------- CNG QR lifecycle: scan / find a sticker, then act on it ---------- */
+const CNG_ST={in_store:['t-ok','In store'],issued:['t-prog','Issued'],allotted:['t-wait','Allotted'],consumed:['t-hold','Consumed'],returned:['t-bad','Returned'],replaced:['t-bad','Replaced']};
+async function cngFetchTag(code){ const {data}=await SB.from('cng_tags').select('*').eq('id',(code||'').trim().toUpperCase()).maybeSingle(); return data||null; }
+async function cngReload(){ await loadGaruda(true); if(ROUTE.name==='garuda') render(); }
+function cngScanDialog(){
+  let stream=null, raf=0, stopped=false;
+  const stop=()=>{ stopped=true; if(raf)cancelAnimationFrame(raf); if(stream){try{stream.getTracks().forEach(t=>t.stop())}catch(e){}} };
+  modal({title:'Scan or enter a QR',
+    body:'<div style="text-align:center"><video id="sc-vid" playsinline muted style="width:100%;max-width:320px;border-radius:10px;background:#000;display:none"></video>'+
+      '<div id="sc-hint" class="hint" style="margin-top:8px">Point the camera at the sticker, or type the code below.</div></div>'+
+      '<div style="margin-top:12px;display:flex;gap:8px"><input id="sc-code" type="text" placeholder="GAR-DSP-00001" autocomplete="off" style="flex:1;text-transform:uppercase"><button class="btn" id="sc-find">Find</button></div>'+
+      '<div id="sc-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="sc-cam">Use camera</button>',
+    onOpen:(mv,close)=>{
+      const open=async(code)=>{ const c=(code||$('#sc-code',mv).value||'').trim(); if(!c) return $('#sc-err',mv).textContent='Type a QR code.';
+        const t=await cngFetchTag(c); if(!t){ $('#sc-err',mv).textContent='No QR found for '+c+'.'; return; } stop(); close(); setTimeout(()=>cngTagPanel(t.id),0); };
+      $('#sc-find',mv).onclick=()=>open();
+      $('#sc-code',mv).onkeydown=e=>{ if(e.key==='Enter') open(); };
+      $('#sc-cam',mv).onclick=async()=>{
+        const btn=$('#sc-cam',mv); btn.disabled=true;
+        try{ await ensureJsQR(); stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+          const vid=$('#sc-vid',mv); vid.style.display='block'; vid.srcObject=stream; await vid.play();
+          $('#sc-hint',mv).textContent='Scanning… hold the sticker steady.';
+          const cv=document.createElement('canvas'), ctx=cv.getContext('2d');
+          const tick=()=>{ if(stopped) return; if(vid.readyState===vid.HAVE_ENOUGH_DATA){ cv.width=vid.videoWidth; cv.height=vid.videoHeight; ctx.drawImage(vid,0,0,cv.width,cv.height);
+              try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height); if(r&&r.data){ open(r.data); return; } }catch(e){} }
+            raf=requestAnimationFrame(tick); };
+          tick();
+        }catch(e){ btn.disabled=false; $('#sc-err',mv).textContent='Camera not available — type the code instead.'; }
+      };
+      // closing the modal (X / back) must stop the camera
+      const veil=mv.closest?mv.closest('.veil'):null; if(veil){ const mo=new MutationObserver(()=>{ if(!document.body.contains(veil)){ stop(); mo.disconnect(); } }); mo.observe(document.body,{childList:true,subtree:true}); }
+    }});
+}
+let _jsqrP=null;
+function ensureJsQR(){ if(window.jsQR) return Promise.resolve();
+  if(!_jsqrP) _jsqrP=new Promise((res,rej)=>{ const sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js'; sc.onload=()=>res(); sc.onerror=()=>rej(new Error('scanner load failed')); document.head.appendChild(sc); });
+  return _jsqrP; }
+async function cngTagPanel(code){
+  const t=await cngFetchTag(code); if(!t) return toast('QR not found.','bad');
+  const st=CNG_ST[t.status]||['t-wait',t.status];
+  const {data:evs}=await SB.from('cng_tag_events').select('action,by_name,detail,at').eq('tag_id',t.id).order('at');
+  const hist=(evs||[]).map(e=>'<div class="hint" style="margin-top:3px">• <b>'+esc(e.action)+'</b>'+(e.by_name?' — '+esc(e.by_name):'')+(e.detail?' · '+esc(e.detail):'')+' <span style="opacity:.7">'+esc(fmtDT(ts(e.at)))+'</span></div>').join('');
+  let actions='';
+  if(t.status==='in_store') actions='<button class="btn primary" data-act="issue">Issue to a station</button>';
+  else if(t.status==='issued') actions='<button class="btn primary" data-act="allot">Mark allotted (fitted)</button>';
+  else if(t.status==='allotted') actions='<button class="btn primary" data-act="consume">Mark consumed</button>';
+  else if(t.status==='consumed') actions='<button class="btn primary" data-act="return">Accept return at store</button>';
+  const canReplace=['in_store','issued','allotted'].indexOf(t.status)>-1;
+  modal({title:t.id,
+    body:'<div class="kv" style="margin-top:0"><dt>Item</dt><dd>'+esc(t.item_code)+' · '+esc(t.item_name||'')+'</dd>'+
+      '<dt>Status</dt><dd><span class="tag '+st[0]+'">'+st[1]+'</span></dd>'+
+      (t.station_no?'<dt>Station</dt><dd>'+esc(t.station_no)+'</dd>':'')+(t.issued_to?'<dt>Issued to</dt><dd>'+esc(t.issued_to)+'</dd>':'')+
+      (t.grn_no?'<dt>GRN</dt><dd>'+esc(t.grn_no)+'</dd>':'')+(t.replaced_from?'<dt>Replaces</dt><dd class="num">'+esc(t.replaced_from)+'</dd>':'')+'</div>'+
+      '<div class="grid" style="gap:9px;margin-top:14px">'+actions+(canReplace?'<button class="btn" data-act="replace">Replace a damaged sticker</button>':'')+'</div>'+
+      (hist?'<div class="sep" style="margin:14px 0 8px"></div><div class="hint" style="font-weight:600">History</div>'+hist:'')+
+      '<div id="tp-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Close</button>',
+    onOpen:(mv,cl)=>{ $$('[data-act]',mv).forEach(b=>b.onclick=()=>{const a=b.dataset.act;
+      if(a==='issue') cngIssueDialog(t,cl);
+      else if(a==='replace') cngReplaceDialog(t,cl);
+      else { const fn={allot:'cng_allot',consume:'cng_consume',return:'cng_return'}[a];
+        cngDo(fn, a==='allot'?{p_tag:t.id,p_photo:''}:{p_tag:t.id}, cl); } }); }});
+}
+async function cngDo(fn,args,close){ busy(true);
+  try{ await rpc(fn,args); if(close)close(); await cngReload(); toast('Updated.','ok'); }
+  catch(e){ fail(e); } finally{ busy(false); } }
+function cngIssueDialog(t,parentClose){
+  modal({title:'Issue '+t.id,
+    body:'<p class="hint" style="margin-top:0">Issue this QR to a station and the person taking it.</p>'+
+      '<div><label for="is-stn">Station</label><input id="is-stn" list="cng-stn-dl" placeholder="Station number" autocomplete="off"><datalist id="cng-stn-dl">'+(DB.garudaStations||[]).map(s=>'<option value="'+esc(s.no)+'">'+esc(s.name)+'</option>').join('')+'</datalist></div>'+
+      '<div style="margin-top:10px"><label for="is-to">Issued to</label><input id="is-to" type="text" placeholder="Name of the person / technician"></div>'+
+      '<div id="is-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="is-go">Issue</button>',
+    onOpen:(mv,cl)=>{ $('#is-go',mv).onclick=async()=>{ const stn=$('#is-stn',mv).value.trim(), to=$('#is-to',mv).value.trim();
+      if(!stn) return $('#is-err',mv).textContent='Choose a station.'; if(!to) return $('#is-err',mv).textContent='Enter who it is issued to.';
+      busy(true); try{ await rpc('cng_issue',{p_tag:t.id,p_station:stn,p_to:to}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Issued.','ok'); }
+      catch(e){ busy(false); $('#is-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
+}
+function cngReplaceDialog(t,parentClose){
+  modal({title:'Replace '+t.id,
+    body:'<p class="hint" style="margin-top:0">Retire this damaged sticker and make a fresh QR for the same item. The new code carries the same item and its current state.</p>'+
+      '<div><label for="rp-why">Why</label><textarea id="rp-why" placeholder="e.g. sticker torn / unreadable"></textarea></div><div id="rp-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rp-go">Replace</button>',
+    onOpen:(mv,cl)=>{ $('#rp-go',mv).onclick=async()=>{ const why=$('#rp-why',mv).value.trim(); if(why.length<3) return $('#rp-err',mv).textContent='Give a short reason.';
+      busy(true); try{ const {data,error}=await SB.rpc('cng_replace',{p_tag:t.id,p_reason:why}); if(error) throw error;
+        cl(); if(parentClose)parentClose(); await cngReload(); busy(false); toast('New QR: '+data,'ok'); setTimeout(()=>cngTagPanel(data),300); }
+      catch(e){ busy(false); $('#rp-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 /* load a QR renderer on demand (no change to index.html) */
 let _qrLibP=null;
