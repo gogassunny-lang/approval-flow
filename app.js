@@ -211,7 +211,7 @@ async function loadNotifs(){
 /* ALDS PO/WO flows: build the flow objects from their rows */
 function buildFlows(freq,fsteps,factors,ffiles,faudit){
   const FR={};
-  const list=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,requesterId:x.requester_id,
+  const list=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,department:x.department||(x.fields&&x.fields.department)||'ALDS',requesterId:x.requester_id,
     title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     steps:[],audit:[]});
   const FS={};
@@ -2615,12 +2615,16 @@ async function loadGaruda(force){
   if(garudaLoading) return; if(garudaLoaded&&!force) return;
   garudaLoading=true;
   try{
-    const [it,st]=await Promise.all([
+    const [it,st,lots,tags]=await Promise.all([
       SB.from('cng_items').select('code,name,item_type,part_life').order('code'),
-      SB.from('cng_stations').select('station_no,station_name').order('station_no')
+      SB.from('cng_stations').select('station_no,station_name').order('station_no'),
+      SB.from('cng_lots').select('id,request_id,item_code,item_name,item_type,po_no,grn_no,grn_date,accepted_qty,rate,series_prefix,series_from,series_to').eq('minted',true).order('created_at',{ascending:false}),
+      SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,po_no,grn_no,status').order('id')
     ]);
     DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||''}));
     DB.garudaStations=(st.data||[]).map(r=>({no:r.station_no,name:r.station_name||''}));
+    DB.garudaLots=(lots.data||[]);
+    DB.garudaTags=(tags.data||[]);
     garudaLoaded=true;
   }catch(e){ /* leave unloaded; the view shows a retry */ }
   finally{ garudaLoading=false; }
@@ -2641,7 +2645,7 @@ function viewGaruda(){
       (rows.length?rows.map(i=>'<tr><td class="num"><b>'+esc(i.code)+'</b></td><td>'+esc(i.name)+'</td><td class="hint meta">'+esc(i.type||'—')+'</td><td class="hint meta">'+esc(i.partLife||'—')+'</td></tr>').join('')
         :'<tr><td colspan="4"><div class="empty" style="padding:20px"><p class="hint">No item matches “'+esc(garudaItemQ)+'”.</p></div></td></tr>')+
       '</tbody></table>'+(items.length>400&&!q?'<div class="hint" style="padding:10px 16px">Showing the first 400 — search to narrow down.</div>':'')+'</div>';
-  } else {
+  } else if(garudaTab==='stations'){
     const q=garudaStnQ.trim().toLowerCase();
     const rows=stations.filter(s=>!q||(s.no+' '+s.name).toLowerCase().includes(q));
     body='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap">'+
@@ -2650,9 +2654,19 @@ function viewGaruda(){
       '<table class="cards"><thead><tr><th>Station no.</th><th>Station name</th></tr></thead><tbody>'+
       rows.map(s=>'<tr><td class="num"><b>'+esc(s.no)+'</b></td><td>'+esc(s.name)+'</td></tr>').join('')+
       '</tbody></table></div>';
+  } else {
+    const lots=DB.garudaLots||[];
+    if(!lots.length){ body='<div class="card pad"><p class="hint" style="margin:0">No GRNs processed yet. When a CNG GRN is finally approved, its items and QR codes appear here.</p></div>'; }
+    else { const byReq={}; lots.forEach(l=>(byReq[l.request_id]=byReq[l.request_id]||[]).push(l));
+      body=Object.keys(byReq).map(rid=>{ const g=byReq[rid], grnNo=g[0].grn_no||'—', po=g[0].po_no||'', qty=g.reduce((a,l)=>a+(l.accepted_qty||0),0);
+        return '<div class="card pad" style="margin-bottom:12px"><div class="row" style="flex-wrap:wrap"><div><b>GRN '+esc(grnNo)+'</b>'+(po?' <span class="hint">· PO '+esc(po)+'</span>':'')+'<div class="hint">'+g.length+' line'+(g.length>1?'s':'')+' · '+qty+' QR'+(qty>1?'s':'')+'</div></div></div>'+
+          '<table class="cards" style="margin-top:10px"><thead><tr><th>Item</th><th>Qty</th><th>QR series</th><th></th></tr></thead><tbody>'+
+          g.map(l=>'<tr><td><b class="num">'+esc(l.item_code)+'</b> <span class="hint">'+esc(l.item_name||'')+'</span></td><td class="num">'+(l.accepted_qty||0)+'</td><td class="num hint">'+esc(l.series_from||'')+((l.accepted_qty||0)>1?' … '+esc(l.series_to||''):'')+'</td><td style="text-align:right;white-space:nowrap"><button class="btn sm" data-qrlot="'+esc(l.id)+'">View / print QRs</button></td></tr>').join('')+
+          '</tbody></table></div>'; }).join('');
+    }
   }
-  return '<div class="card pad" style="margin-bottom:14px"><p class="hint" style="margin:0">The CNG item and station masters, imported from Garuda. Processed GRNs and QR codes arrive here next.</p></div>'+
-    '<div class="tabs" style="margin-bottom:12px">'+tab('items','Items',items.length)+tab('stations','Stations',stations.length)+'</div>'+
+  return '<div class="card pad" style="margin-bottom:14px"><p class="hint" style="margin:0">The CNG item &amp; station masters imported from Garuda, and the GRNs processed through the CNG flow with their QR codes.</p></div>'+
+    '<div class="tabs" style="margin-bottom:12px">'+tab('items','Items',items.length)+tab('stations','Stations',stations.length)+tab('processed','Processed',(DB.garudaLots||[]).length)+'</div>'+
     '<div id="g-body">'+body+'</div>';
 }
 function wireGaruda(v){
@@ -2660,6 +2674,36 @@ function wireGaruda(v){
   $$('[data-gt]',v).forEach(b=>b.onclick=()=>{ garudaTab=b.dataset.gt; render(); });
   const si=$('#g-isearch',v); if(si) si.oninput=()=>{ garudaItemQ=si.value; const p=si.selectionStart; render(); const n=$('#g-isearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
   const ss=$('#g-ssearch',v); if(ss) ss.oninput=()=>{ garudaStnQ=ss.value; const p=ss.selectionStart; render(); const n=$('#g-ssearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
+  $$('[data-qrlot]',v).forEach(b=>b.onclick=()=>qrLotDialog(b.dataset.qrlot));
+}
+/* load a QR renderer on demand (no change to index.html) */
+let _qrLibP=null;
+function ensureQR(){ if(window.QRCode) return Promise.resolve();
+  if(!_qrLibP) _qrLibP=new Promise((res,rej)=>{ const sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'; sc.onload=()=>res(); sc.onerror=()=>rej(new Error('QR load failed')); document.head.appendChild(sc); });
+  return _qrLibP; }
+function qrLotDialog(lotId){
+  const lot=(DB.garudaLots||[]).find(l=>l.id===lotId), tags=(DB.garudaTags||[]).filter(t=>t.lot_id===lotId);
+  if(!tags.length) return toast('No QR codes for this line.','bad');
+  modal({title:'QR codes — '+(lot?lot.item_code:''),
+    body:'<div class="hint" style="margin:0 0 10px">'+tags.length+' sticker'+(tags.length>1?'s':'')+(lot&&lot.item_name?' · '+esc(lot.item_name):'')+'. Scan from the screen, or print.</div>'+
+      '<div id="qr-grid" class="row" style="gap:12px;flex-wrap:wrap;justify-content:center"></div>',
+    footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="qr-print">Print</button>',
+    onOpen:(mv,cl)=>{ const grid=$('#qr-grid',mv); const printCells=[];
+      ensureQR().then(()=>{ tags.forEach(t=>{ const cell=document.createElement('div'); cell.className='qr-cell';
+          cell.style.cssText='text-align:center;padding:8px;border:1px solid var(--line);border-radius:8px';
+          const box=document.createElement('div'); cell.appendChild(box);
+          try{ new QRCode(box,{text:t.id,width:118,height:118,correctLevel:QRCode.CorrectLevel.M}); }catch(e){}
+          const cap=document.createElement('div'); cap.className='num'; cap.style.cssText='margin-top:6px;font-size:12px;font-weight:600'; cap.textContent=t.id; cell.appendChild(cap);
+          grid.appendChild(cell);
+          let durl=''; try{ const cv=box.querySelector('canvas'); durl=cv?cv.toDataURL('image/png'):((box.querySelector('img')||{}).src||''); }catch(e){}
+          printCells.push('<div class="qr-cell"><img src="'+durl+'"><div>'+esc(t.id)+'</div></div>'); }); })
+        .catch(()=>{ grid.innerHTML='<p class="hint">Could not load the QR renderer — check the connection and reopen.</p>'; });
+      if($('#qr-print',mv)) $('#qr-print',mv).onclick=()=>{ if(!printCells.length) return toast('QR codes are still rendering — try again in a second.','bad');
+        const w=window.open('','_blank'); if(!w) return toast('Allow pop-ups to print.','bad');
+        w.document.write('<html><head><title>QR codes</title><style>body{font-family:sans-serif;display:flex;flex-wrap:wrap;gap:12px;padding:12px}.qr-cell{text-align:center;border:1px solid #ccc;border-radius:8px;padding:8px}.qr-cell img{width:118px;height:118px}.qr-cell div{font-size:12px;margin-top:6px;font-weight:600}</style></head><body>'+printCells.join('')+'</body></html>');
+        w.document.close(); setTimeout(()=>{ try{ w.print(); }catch(e){} },500); };
+    }});
 }
 
 /* a plain picker for files that are read in the browser and never stored */
@@ -3893,10 +3937,23 @@ function flowCancelDialog(id){
       catch(e){ $('#fc-go',mv).disabled=false; $('#fc-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 function flowAct(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s;
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s, f=x.f;
+  // CNG GRN preparation: Prashant records the received lines here; QRs mint on final approval
+  const cngGrn=!!(f&&f.department==='CNG'&&s.stage==='GRN'&&s.substep===1);
+  const grn={no:'',invoice:'',lines:[{code:'',acc:'',rate:''}]};
+  if(cngGrn&&!garudaLoaded) loadGaruda();
   const local={files:[],support:[]};   // uploaded file records
   let dt=''; const dataFields={}; let payMode='full'; const advices=[{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null}];
   let body='<p style="margin-top:0">'+esc(s.label)+'</p>';
+  if(cngGrn){
+    body+='<div class="card pad" style="margin:4px 0 2px"><h4 style="margin:0 0 6px;font-size:13px">Received lines</h4>'+
+      '<p class="hint" style="margin:0 0 10px">Add each item received against this PO and the quantity accepted. One QR sticker is made per accepted unit when the GRN is finally approved.</p>'+
+      '<div class="grid g2" style="gap:10px"><div><label for="gr-no">GRN number</label><input id="gr-no" type="text" placeholder="e.g. GRN-9"></div>'+
+      '<div><label for="gr-inv">Invoice number <span class="hint" style="font-weight:400">optional</span></label><input id="gr-inv" type="text"></div></div>'+
+      '<div id="fa-grn-lines" style="margin-top:10px"></div>'+
+      '<button class="btn sm" id="gr-add" style="margin-top:8px">+ Add a line</button>'+
+      '<datalist id="cng-items-dl"></datalist></div>';
+  }
   if(s.action==='payment'){
     body+='<div class="seg" id="fp-mode" style="margin:8px 0"><button data-m="full" class="on">Full advice</button><button data-m="partial">Partial advice</button></div>'+
       '<div id="fp-partial" class="hide"><div class="hint">Add up to 4 advices, each with its percentage and PDF.</div><div id="fp-adv"></div></div>'+
@@ -3926,6 +3983,23 @@ function flowAct(stepId){
         advices.forEach((a,i)=>{ $('[data-pct="'+i+'"]',mv).oninput=e=>a.pct=e.target.value; a._list=a._list||[]; uploader($('#adv-f-'+i,mv),a._list,{mode:'support',single:true,label:'Advice '+(i+1)+' PDF'}); }); };
         paint(); }
       $$('#fp-mode button',mv).forEach(b=>b.onclick=()=>{payMode=b.dataset.m; $$('#fp-mode button',mv).forEach(x=>x.classList.toggle('on',x.dataset.m===payMode)); $('#fp-partial',mv).classList.toggle('hide',payMode!=='partial'); });
+      if(cngGrn){
+        const dl=$('#cng-items-dl',mv), fillDl=()=>{ if(dl&&!dl.children.length) dl.innerHTML=(DB.garudaItems||[]).map(i=>'<option value="'+esc(i.code)+'">'+esc(i.name)+'</option>').join(''); };
+        fillDl(); if(!garudaLoaded) loadGaruda().then(fillDl);
+        const no=$('#gr-no',mv); if(no) no.oninput=e=>grn.no=e.target.value; const inv=$('#gr-inv',mv); if(inv) inv.oninput=e=>grn.invoice=e.target.value;
+        const paintLines=()=>{ const box=$('#fa-grn-lines',mv); if(!box) return;
+          box.innerHTML=grn.lines.map((ln,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">'+
+            '<input class="gl-code" data-i="'+i+'" list="cng-items-dl" placeholder="Item code" value="'+esc(ln.code)+'" style="flex:2;min-width:150px">'+
+            '<input class="gl-acc" data-i="'+i+'" type="number" min="0" placeholder="Qty accepted" value="'+esc(ln.acc)+'" style="width:130px">'+
+            '<input class="gl-rate" data-i="'+i+'" type="text" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:90px">'+
+            (grn.lines.length>1?'<button class="btn ghost sm gl-del" data-i="'+i+'" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div>').join('');
+          $$('.gl-code',box).forEach(el=>el.oninput=e=>grn.lines[+e.target.dataset.i].code=e.target.value.trim());
+          $$('.gl-acc',box).forEach(el=>el.oninput=e=>grn.lines[+e.target.dataset.i].acc=e.target.value);
+          $$('.gl-rate',box).forEach(el=>el.oninput=e=>grn.lines[+e.target.dataset.i].rate=e.target.value);
+          $$('.gl-del',box).forEach(el=>el.onclick=()=>{ grn.lines.splice(+el.dataset.i,1); paintLines(); }); };
+        paintLines();
+        if($('#gr-add',mv)) $('#gr-add',mv).onclick=()=>{ grn.lines.push({code:'',acc:'',rate:''}); paintLines(); };
+      }
       $('#fa-go',mv).onclick=()=>{
         const err=$('#fa-err',mv); err.textContent='';
         const primary=filesPayload(local.files), supp=filesPayload(local.support);
@@ -3941,10 +4015,14 @@ function flowAct(stepId){
         const remark=$('#fa-rem',mv).value.trim();
         let siteTags=null;
         if(isSiteStep(s)){ const r=siteTagItems(local.files,flowAct._siteMeta||{}); if(r.err) return err.textContent=r.err; siteTags=r.items; }
+        let grnLots=null;
+        if(cngGrn){ grnLots=grn.lines.filter(l=>l.code&&Number(l.acc)>0).map(l=>({item_code:l.code,order_qty:Number(l.acc)||0,delivered_qty:Number(l.acc)||0,accepted_qty:Number(l.acc)||0,rate:l.rate||'',grn_no:grn.no||'',invoice_no:grn.invoice||''}));
+          if(!grnLots.length) return err.textContent='Add at least one item with a quantity accepted.'; }
         cl(); flowPinThen(async()=>{
           // save each photo's station + date first; the database attaches them as the step records the files
           if(siteTags&&siteTags.length){ try{ await rpc('flow_photo_tags',{p_items:siteTags}); }catch(e){ fail(e); return; } }
-          flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,'Signed.'); });
+          if(grnLots){ try{ await rpc('cng_save_lots',{p_request:f.id,p_lots:grnLots}); }catch(e){ fail(e); return; } }
+          flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,cngGrn?'GRN lines saved.':'Signed.'); });
       };
     }});
 }
