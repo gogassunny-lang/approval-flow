@@ -170,16 +170,22 @@ async function loadPeople(){
   DB.departments=dept.map(d=>d.name);
   DB.projects=proj.map(p=>p.name);
   STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
-  // the day-by-day usage history is only shown on Usage / System overview (admins): last ~3 months
-  const meRow=prof.find(p=>p.id===(ME&&ME.id));
-  if(meRow&&(meRow.is_admin||meRow.see_all||meRow.is_owner)){
-    const since=new Date(Date.now()-92*864e5).toISOString().slice(0,10);
-    const {data:usage,error}=await SB.from('usage_daily').select('*').gte('day',since);
-    if(error) throw error;
-    const U={}; DB.users.forEach(u=>U[u.id]=u);
-    (usage||[]).forEach(x=>{const u=U[x.user_id]; if(u) u.stats.daily[x.day]=Number(x.active_ms)||0});
-  }
 }
+// The day-by-day usage history (up to 533 users × ~92 days) is only ever shown on the
+// owner-only Usage / System overview pages — never on sign-in — so it is loaded lazily
+// when one of those pages opens, not during login.
+async function loadUsage(){
+  if(DB._usageLoaded) return;
+  if(!(ME&&(ME.admin||ME.seeAll||ME.owner))) return;
+  const since=new Date(Date.now()-92*864e5).toISOString().slice(0,10);
+  const {data:usage,error}=await SB.from('usage_daily').select('*').gte('day',since);
+  if(error) return;
+  const U={}; DB.users.forEach(u=>U[u.id]=u);
+  (usage||[]).forEach(x=>{const u=U[x.user_id]; if(u) u.stats.daily[x.day]=Number(x.active_ms)||0});
+  DB._usageLoaded=true;
+}
+function ensureUsage(){ if(DB._usageLoaded) return;
+  loadUsage().then(()=>{ if((ROUTE.name==='usage'||ROUTE.name==='overview')&&!document.querySelector('.veil')) render(); }); }
 async function loadLegacy(){
   const r=await Promise.all([
     SB.from('requests').select('*').order('created_at',{ascending:false}),
@@ -857,7 +863,7 @@ async function enter(session){
     if(routeHash(target)!==routeHash(base)){ go(base,true); go(target); } else { go(base,true); }
     subscribe();
     hideSplash();
-    SB.rpc('record_login').catch(()=>{});                                              // stamp the login once the app is visible
+    Promise.resolve(SB.rpc('record_login')).catch(()=>{});                             // stamp the login once the app is visible (builder isn't a real Promise)
     if(!gateScopeOnly()) load(['gate']).then(()=>reloadSoon(['gate'])).catch(()=>{});   // stream gate passes in behind the first screen
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
     // gate-only accounts don't approve anything: no PIN, no directory-completion nag, no pending-work popup
@@ -1448,8 +1454,8 @@ function render(){
     case 'all': v.innerHTML=viewAll()+flowSection('all'); wireList(v); wireFlowRows(v);
       head(ME.admin||ME.seeAll?'All requests':'Requests I can see',ME.admin||ME.seeAll?'You can see every chain in the system':'Only chains you raised, approve, or were given a task in'); break;
     case 'report': v.innerHTML=viewReport(); wireReport(v); head('Reports','Filter the record and download it'); break;
-    case 'usage': v.innerHTML=viewUsage(); wireUsage(v); break;
-    case 'overview': v.innerHTML=viewOverview(); wireOverview(v); break;
+    case 'usage': ensureUsage(); v.innerHTML=viewUsage(); wireUsage(v); break;
+    case 'overview': ensureUsage(); v.innerHTML=viewOverview(); wireOverview(v); break;
     case 'assist': v.innerHTML=viewAssist(); wireAssist(v); break;
     case 'people': v.innerHTML=viewPeople(); wirePeople(v); head('People & masters','Directory, station master and the permanence rule'); break;
     case 'garuda': if(!canUseGaruda()){ROUTE={name:'dash'};return render();} v.innerHTML=viewGaruda(); wireGaruda(v); head('Garuda — CNG stock','Item & station masters, and processed GRNs with QR codes'); break;
