@@ -142,7 +142,7 @@ async function loadPeople(){
   const [prof,tpl,dept,proj,st]=r.map(x=>x.data||[]);
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -1279,6 +1279,8 @@ const CAN_MANAGE=()=>!!(ME&&(ME.admin||ME.owner||ME.canManageUsers));
 const GRANTS_ROLES=()=>!!(ME&&(ME.admin||ME.owner));   // who may set see-all / admin / sub-admin
 // may the signed-in person edit this user? sub-admins cannot touch an Admin or the owner
 const canEditUser=u=>{ if(ME.admin||ME.owner) return !u.owner||u.id===ME.id; if(ME.canManageUsers) return !u.admin&&!u.owner; return false; };
+// Garuda (CNG stock) is open to anyone who can see CNG, plus anyone granted Garuda access
+const canUseGaruda=()=>!!(ME&&(ME.owner||ME.admin||ME.unit==='CNG'||(ME.deptsVisible||[]).indexOf('CNG')>-1||ME.garudaAccess));
 const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
 const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only accounts see only the Gate Pass page
 const ASSISTANT=()=>!!(ME&&ME.assistsId&&!ME.admin&&!ME.owner);  // a proxy who assists one principal
@@ -1305,6 +1307,7 @@ const PAGES=[
   {k:'report',label:'Reports',grp:'Records'},
   {k:'overview',label:'System overview',grp:'Records',when:()=>ME.owner},
   {k:'people',label:'People & masters',grp:'Records'},
+  {k:'garuda',label:'Garuda (CNG stock)',grp:'Records',when:()=>canUseGaruda()},
   {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll}
 ];
 function paintNav(){
@@ -1407,6 +1410,7 @@ function render(){
     case 'overview': v.innerHTML=viewOverview(); wireOverview(v); break;
     case 'assist': v.innerHTML=viewAssist(); wireAssist(v); break;
     case 'people': v.innerHTML=viewPeople(); wirePeople(v); head('People & masters','Directory, station master and the permanence rule'); break;
+    case 'garuda': if(!canUseGaruda()){ROUTE={name:'dash'};return render();} v.innerHTML=viewGaruda(); wireGaruda(v); head('Garuda — CNG stock','Item & station masters, and processed GRNs with QR codes'); break;
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
     case 'gpreport': v.innerHTML=viewGpReport(); wireGpReport(v); break;
@@ -2544,6 +2548,7 @@ function wirePeople(v){
         '<div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
+        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-garuda" style="width:auto" '+(u.garudaAccess?'checked':'')+'> <span><b>Garuda (CNG stock) access</b><div class="hint">Opens the Garuda page for this person. CNG people get it anyway; use this to give an ALDS person access.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
@@ -2578,6 +2583,7 @@ function wirePeople(v){
           const unitEl=$('#e-unit',mv); if(unitEl){ const nu=unitEl.value||null; if((nu||'')!==(u.unit||'')) await rpc('set_user_unit',{p_user:u.id,p_unit:nu}); }
           if(GRANTS_ROLES()){ const dv=[]; $$('.e-dv',mv).forEach(c=>{ if(c.checked) dv.push(c.value); });
             const cur=(u.deptsVisible||[]).slice().sort(); if(JSON.stringify(dv.slice().sort())!==JSON.stringify(cur)) await rpc('set_depts_visible',{p_user:u.id,p_depts:dv}); }
+          if($('#e-garuda',mv)&&$('#e-garuda',mv).checked!==!!u.garudaAccess) await rpc('set_garuda_access',{p_user:u.id,p_on:$('#e-garuda',mv).checked});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
     const {error}=await SB.from('departments').insert({name:n}); if(error) return fail(error); await load(); render(); toast('Added.','ok')};
@@ -2601,6 +2607,61 @@ function wirePeople(v){
       await load(); toast(out.length+' stations loaded.','ok'); render() }catch(e){ fail(e) }
   });
 }
+/* ============================================================
+   Garuda — CNG stock (Stage 2a: masters browser; GRN/QR/Processed next)
+   ============================================================ */
+let garudaTab='items', garudaItemQ='', garudaStnQ='', garudaLoaded=false, garudaLoading=false;
+async function loadGaruda(force){
+  if(garudaLoading) return; if(garudaLoaded&&!force) return;
+  garudaLoading=true;
+  try{
+    const [it,st]=await Promise.all([
+      SB.from('cng_items').select('code,name,item_type,part_life').order('code'),
+      SB.from('cng_stations').select('station_no,station_name').order('station_no')
+    ]);
+    DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||''}));
+    DB.garudaStations=(st.data||[]).map(r=>({no:r.station_no,name:r.station_name||''}));
+    garudaLoaded=true;
+  }catch(e){ /* leave unloaded; the view shows a retry */ }
+  finally{ garudaLoading=false; }
+}
+function viewGaruda(){
+  const items=DB.garudaItems||[], stations=DB.garudaStations||[];
+  const tab=(k,label,n)=>'<button data-gt="'+k+'" class="'+(garudaTab===k?'on':'')+'">'+esc(label)+' <span class="hint">('+n+')</span></button>';
+  let body;
+  if(!garudaLoaded){
+    body='<div class="card pad"><p class="hint" style="margin:0">Loading the CNG masters…</p></div>';
+  } else if(garudaTab==='items'){
+    const q=garudaItemQ.trim().toLowerCase();
+    const rows=items.filter(i=>!q||(i.code+' '+i.name+' '+i.type).toLowerCase().includes(q)).slice(0,400);
+    body='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap">'+
+      '<input id="g-isearch" type="text" placeholder="Search item code, name or type" value="'+esc(garudaItemQ)+'" style="flex:1;min-width:220px">'+
+      '<span class="tag t-prog" style="align-self:center">'+rows.length+(items.length>rows.length?' of '+items.length:'')+'</span></div>'+
+      '<table class="cards"><thead><tr><th>Item code</th><th>Name</th><th>Type</th><th>Part life</th></tr></thead><tbody>'+
+      (rows.length?rows.map(i=>'<tr><td class="num"><b>'+esc(i.code)+'</b></td><td>'+esc(i.name)+'</td><td class="hint meta">'+esc(i.type||'—')+'</td><td class="hint meta">'+esc(i.partLife||'—')+'</td></tr>').join('')
+        :'<tr><td colspan="4"><div class="empty" style="padding:20px"><p class="hint">No item matches “'+esc(garudaItemQ)+'”.</p></div></td></tr>')+
+      '</tbody></table>'+(items.length>400&&!q?'<div class="hint" style="padding:10px 16px">Showing the first 400 — search to narrow down.</div>':'')+'</div>';
+  } else {
+    const q=garudaStnQ.trim().toLowerCase();
+    const rows=stations.filter(s=>!q||(s.no+' '+s.name).toLowerCase().includes(q));
+    body='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap">'+
+      '<input id="g-ssearch" type="text" placeholder="Search station number or name" value="'+esc(garudaStnQ)+'" style="flex:1;min-width:220px">'+
+      '<span class="tag t-prog" style="align-self:center">'+rows.length+'</span></div>'+
+      '<table class="cards"><thead><tr><th>Station no.</th><th>Station name</th></tr></thead><tbody>'+
+      rows.map(s=>'<tr><td class="num"><b>'+esc(s.no)+'</b></td><td>'+esc(s.name)+'</td></tr>').join('')+
+      '</tbody></table></div>';
+  }
+  return '<div class="card pad" style="margin-bottom:14px"><p class="hint" style="margin:0">The CNG item and station masters, imported from Garuda. Processed GRNs and QR codes arrive here next.</p></div>'+
+    '<div class="tabs" style="margin-bottom:12px">'+tab('items','Items',items.length)+tab('stations','Stations',stations.length)+'</div>'+
+    '<div id="g-body">'+body+'</div>';
+}
+function wireGaruda(v){
+  if(!garudaLoaded){ loadGaruda().then(()=>{ if(ROUTE.name==='garuda') render(); }); }
+  $$('[data-gt]',v).forEach(b=>b.onclick=()=>{ garudaTab=b.dataset.gt; render(); });
+  const si=$('#g-isearch',v); if(si) si.oninput=()=>{ garudaItemQ=si.value; const p=si.selectionStart; render(); const n=$('#g-isearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
+  const ss=$('#g-ssearch',v); if(ss) ss.oninput=()=>{ garudaStnQ=ss.value; const p=ss.selectionStart; render(); const n=$('#g-ssearch'); if(n){n.focus();n.setSelectionRange(p,p);} };
+}
+
 /* a plain picker for files that are read in the browser and never stored */
 function localPicker(mount,label,onFile){
   mount.innerHTML='<div class="drop" tabindex="0" role="button">'+esc(label)+'</div><input type="file" class="hide" accept=".xlsx,.xls">';
