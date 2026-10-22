@@ -142,7 +142,7 @@ async function loadPeople(){
   const [prof,tpl,dept,proj,st]=r.map(x=>x.data||[]);
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -1280,7 +1280,9 @@ const GRANTS_ROLES=()=>!!(ME&&(ME.admin||ME.owner));   // who may set see-all / 
 // may the signed-in person edit this user? sub-admins cannot touch an Admin or the owner
 const canEditUser=u=>{ if(ME.admin||ME.owner) return !u.owner||u.id===ME.id; if(ME.canManageUsers) return !u.admin&&!u.owner; return false; };
 // Garuda (CNG stock) is open to anyone who can see CNG, plus anyone granted Garuda access
-const canUseGaruda=()=>!!(ME&&(ME.owner||ME.admin||ME.unit==='CNG'||(ME.deptsVisible||[]).indexOf('CNG')>-1||ME.garudaAccess));
+const canUseGaruda=()=>!!(ME&&(ME.owner||ME.admin||ME.unit==='CNG'||(ME.deptsVisible||[]).indexOf('CNG')>-1||ME.garudaAccess||ME.garudaStore||ME.garudaSite));
+const canGarudaStore=()=>!!(ME&&(ME.owner||ME.admin||ME.garudaStore));   // issues out / accepts returns
+const canGarudaSite=()=>!!(ME&&(ME.owner||ME.admin||ME.garudaSite));     // allots (fits) / consumes
 const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
 const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only accounts see only the Gate Pass page
 const ASSISTANT=()=>!!(ME&&ME.assistsId&&!ME.admin&&!ME.owner);  // a proxy who assists one principal
@@ -2488,6 +2490,7 @@ function viewPeople(){
      DB.departments.map(d=>'<span class="tag t-wait">'+esc(d)+' <button class="btn ghost sm" data-dd="'+esc(d)+'" style="padding:0 4px" title="Remove">×</button></span>').join('')+'</div><div class="row" style="gap:8px;margin-top:14px"><input id="dp-new" type="text" placeholder="Add a department" style="max-width:280px"><button class="btn sm" id="dp-add">Add</button></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Requests stuck on an absent approver</h3><p class="hint" style="margin-top:5px">Only an admin can move a request off someone who is unavailable. The original assignment stays in the trail.</p>'+
      (stuck.length?'<div style="margin-top:12px">'+stuck.map(r=>'<div class="filerow"><div style="min-width:0;flex:1"><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(r.ref)+' · with '+esc(user(r.chain[r.current].userId).name)+' for '+daysBetween(r.chain[r.current].actedAt||r.createdAt,Date.now())+' days</div></div><button class="btn sm" data-re="'+r.id+'">Reassign</button></div>').join('')+'</div>':'<p class="hint" style="margin-top:10px">Nothing is currently in progress.</p>')+'</div>':'')+
+   (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Bulk set “Reports to”</h3><p class="hint" style="margin-top:5px">Upload a sheet with two columns — the <b>person</b> and their <b>manager</b> — each by employee code or name. Headers like “Employee”/“Name” and “Manager”/“Reports to” are detected automatically. This is what makes hierarchy-ordered tagging and teams work.</p><div id="p-mgrupload" style="margin-top:12px"></div><div id="p-mgrres" style="margin-top:10px"></div></div>':'')+
    '<div class="grid g2" style="margin-top:16px;align-items:start"><div class="card pad"><h3>Station master</h3><p class="hint" style="margin-top:5px">'+STATIONS.length+' stations loaded.'+(ME.admin?' Upload a replacement to refresh the list — the columns must stay ERP Code, Station Name, State.':'')+'</p>'+(ME.admin?'<div id="p-mast" style="margin-top:12px"></div>':'')+'</div>'+
    '<div class="card pad"><h3>Typed, not in the master</h3>'+(unlisted.length?'<p class="hint" style="margin-top:5px">Typed by requesters and not found in the station master. Worth adding.</p><ul style="margin:10px 0 0;padding-left:18px">'+unlisted.map(n=>'<li>'+esc(n)+'</li>').join('')+'</ul>':'<p class="hint" style="margin-top:5px">Nothing so far — every site used has matched the master.</p>')+
      '<div class="sep"></div><h3>Project names</h3><p class="hint" style="margin-top:5px">'+DB.projects.map(esc).join(', ')+'</p></div></div>'+
@@ -2548,7 +2551,9 @@ function wirePeople(v){
         '<div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
-        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-garuda" style="width:auto" '+(u.garudaAccess?'checked':'')+'> <span><b>Garuda (CNG stock) access</b><div class="hint">Opens the Garuda page for this person. CNG people get it anyway; use this to give an ALDS person access.</div></span></label>':'')+
+        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-garuda" style="width:auto" '+(u.garudaAccess?'checked':'')+'> <span><b>Garuda (CNG stock) access</b><div class="hint">Opens the Garuda page for this person. CNG people get it anyway; use this to give an ALDS person access.</div></span></label>'+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gstore" style="width:auto" '+(u.garudaStore?'checked':'')+'> <span><b>Garuda — Store role</b><div class="hint">Issues QRs out to a station, and accepts returns at the store.</div></span></label>'+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gsite" style="width:auto" '+(u.garudaSite?'checked':'')+'> <span><b>Garuda — Site role</b><div class="hint">At the station: allots (fits) a QR and marks it consumed.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
@@ -2584,6 +2589,7 @@ function wirePeople(v){
           if(GRANTS_ROLES()){ const dv=[]; $$('.e-dv',mv).forEach(c=>{ if(c.checked) dv.push(c.value); });
             const cur=(u.deptsVisible||[]).slice().sort(); if(JSON.stringify(dv.slice().sort())!==JSON.stringify(cur)) await rpc('set_depts_visible',{p_user:u.id,p_depts:dv}); }
           if($('#e-garuda',mv)&&$('#e-garuda',mv).checked!==!!u.garudaAccess) await rpc('set_garuda_access',{p_user:u.id,p_on:$('#e-garuda',mv).checked});
+          if($('#e-gstore',mv)&&($('#e-gstore',mv).checked!==!!u.garudaStore||$('#e-gsite',mv).checked!==!!u.garudaSite)) await rpc('set_garuda_role',{p_user:u.id,p_store:$('#e-gstore',mv).checked,p_site:$('#e-gsite',mv).checked});
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
     const {error}=await SB.from('departments').insert({name:n}); if(error) return fail(error); await load(); render(); toast('Added.','ok')};
@@ -2596,6 +2602,30 @@ function wirePeople(v){
       footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rg">Reassign</button>',
       onOpen:(mv,cl)=>{$('#rg',mv).onclick=async()=>{const id=$('#rs',mv).value, why=$('#rw',mv).value.trim(); if(!id) return $('#r-err',mv).textContent='Pick who it moves to.';
         try{ await rpc('reassign_step',{p_request:r.id,p_user:id,p_why:why}); await load(); cl(); render(); toast('Moved to '+user(id).name+'.','ok') }catch(e){ $('#r-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
+  if($('#p-mgrupload',v)) localPicker($('#p-mgrupload',v),'Upload the Reports-to sheet (.xlsx)',async(file)=>{
+    const res=$('#p-mgrres',v);
+    if(['xlsx','xls'].indexOf(extOf(file.name))<0) return toast('Upload an Excel file.','bad');
+    if(!window.XLSX){ return toast('Spreadsheet engine still loading — try again.','bad'); }
+    try{ const wb=XLSX.read(await file.arrayBuffer(),{type:'array'}), grid=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
+      let hi=-1; for(let i=0;i<Math.min(grid.length,10);i++){ const r=(grid[i]||[]).map(c=>String(c||'').toLowerCase()); if(r.some(c=>/manager|reports?\s*to/.test(c))){ hi=i; break; } }
+      if(hi<0) return res.innerHTML='<span style="color:var(--stop);font-size:13px">Could not find a “Manager” or “Reports to” column.</span>';
+      const hdr=grid[hi].map(c=>String(c||'').toLowerCase());
+      const mi=hdr.findIndex(c=>/manager|reports?\s*to/.test(c));
+      let pi=hdr.findIndex((c,idx)=>idx!==mi&&/employee|emp|person|staff|name/.test(c));
+      if(pi<0) pi=hdr.findIndex((c,idx)=>idx!==mi&&String(c).trim()!=='');
+      if(pi<0) return res.innerHTML='<span style="color:var(--stop);font-size:13px">Could not find the person column.</span>';
+      const rows=[]; for(let i=hi+1;i<grid.length;i++){ const r=grid[i]; if(!r) continue; const person=String(r[pi]||'').trim(); if(!person) continue; rows.push({person, manager:String(r[mi]||'').trim()}); }
+      if(!rows.length) return res.innerHTML='<span class="hint">No rows found below the header.</span>';
+      res.innerHTML='<span class="hint">Applying '+rows.length+' rows…</span>';
+      const {data,error}=await SB.rpc('bulk_set_managers',{p_rows:rows}); if(error){ res.innerHTML=''; return fail(error); }
+      await load(); const um=(data&&data.unmatched)||[]; res.innerHTML='';
+      modal({title:'Reports-to updated',
+        body:'<p style="margin-top:0"><b>'+(data.set||0)+'</b> reporting line'+((data.set||0)===1?'':'s')+' set.'+(um.length?' <b>'+um.length+'</b> could not be matched:':' Every row matched.')+'</p>'+
+          (um.length?'<ul style="margin:8px 0 0;padding-left:18px;font-size:13px">'+um.slice(0,40).map(x=>'<li>'+esc(x)+'</li>').join('')+(um.length>40?'<li>…and '+(um.length-40)+' more</li>':'')+'</ul>':''),
+        footer:'<button class="btn primary" data-x>Done</button>'});
+      render();
+    }catch(e){ res.innerHTML=''; fail(e); }
+  });
   if($('#p-mast',v)) localPicker($('#p-mast',v),'Upload a replacement station master (.xlsx)',async(file)=>{
     if(['xlsx','xls'].indexOf(extOf(file.name))<0) return toast('The master must be an Excel file.','bad');
     try{ const wb=XLSX.read(await file.arrayBuffer(),{type:'array'}), rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1});
@@ -2739,18 +2769,24 @@ async function cngTagPanel(code){
   const st=CNG_ST[t.status]||['t-wait',t.status];
   const {data:evs}=await SB.from('cng_tag_events').select('action,by_name,detail,at').eq('tag_id',t.id).order('at');
   const hist=(evs||[]).map(e=>'<div class="hint" style="margin-top:3px">• <b>'+esc(e.action)+'</b>'+(e.by_name?' — '+esc(e.by_name):'')+(e.detail?' · '+esc(e.detail):'')+' <span style="opacity:.7">'+esc(fmtDT(ts(e.at)))+'</span></div>').join('');
+  // find any QR that replaced this one (trace the chain forward)
+  const replacedBy=(DB.garudaTags||[]).find(x=>x.replaced_from===t.id);
   let actions='';
-  if(t.status==='in_store') actions='<button class="btn primary" data-act="issue">Issue to a station</button>';
-  else if(t.status==='issued') actions='<button class="btn primary" data-act="allot">Mark allotted (fitted)</button>';
-  else if(t.status==='allotted') actions='<button class="btn primary" data-act="consume">Mark consumed</button>';
-  else if(t.status==='consumed') actions='<button class="btn primary" data-act="return">Accept return at store</button>';
-  const canReplace=['in_store','issued','allotted'].indexOf(t.status)>-1;
+  if(t.status==='in_store'&&canGarudaStore()) actions='<button class="btn primary" data-act="issue">Issue to a station</button>';
+  else if(t.status==='issued'&&canGarudaSite()) actions='<button class="btn primary" data-act="allot">Mark allotted (fitted)</button>';
+  else if(t.status==='allotted'&&canGarudaSite()) actions='<button class="btn primary" data-act="consume">Mark consumed</button>';
+  else if(t.status==='consumed'&&canGarudaStore()) actions='<button class="btn primary" data-act="return">Accept return at store</button>';
+  const canReplace=['in_store','issued','allotted'].indexOf(t.status)>-1&&(canGarudaStore()||canGarudaSite());
+  const nextRole=t.status==='in_store'||t.status==='consumed'?'store':(t.status==='issued'||t.status==='allotted'?'site':'');
+  const roleNote=(!actions&&nextRole)?'<div class="hint" style="margin-top:12px">The next step ('+(t.status==='in_store'?'issue':t.status==='issued'?'allot':t.status==='allotted'?'consume':'return')+') needs the <b>'+nextRole+'</b> role. Ask an admin to grant it.</div>':'';
   modal({title:t.id,
     body:'<div class="kv" style="margin-top:0"><dt>Item</dt><dd>'+esc(t.item_code)+' · '+esc(t.item_name||'')+'</dd>'+
       '<dt>Status</dt><dd><span class="tag '+st[0]+'">'+st[1]+'</span></dd>'+
       (t.station_no?'<dt>Station</dt><dd>'+esc(t.station_no)+'</dd>':'')+(t.issued_to?'<dt>Issued to</dt><dd>'+esc(t.issued_to)+'</dd>':'')+
-      (t.grn_no?'<dt>GRN</dt><dd>'+esc(t.grn_no)+'</dd>':'')+(t.replaced_from?'<dt>Replaces</dt><dd class="num">'+esc(t.replaced_from)+'</dd>':'')+'</div>'+
-      '<div class="grid" style="gap:9px;margin-top:14px">'+actions+(canReplace?'<button class="btn" data-act="replace">Replace a damaged sticker</button>':'')+'</div>'+
+      (t.grn_no?'<dt>GRN</dt><dd>'+esc(t.grn_no)+'</dd>':'')+
+      (t.replaced_from?'<dt>Replaces</dt><dd><button class="btn ghost sm" data-goto="'+esc(t.replaced_from)+'" style="padding:0;color:var(--indigo)">'+esc(t.replaced_from)+'</button></dd>':'')+
+      (replacedBy?'<dt>Replaced by</dt><dd><button class="btn ghost sm" data-goto="'+esc(replacedBy.id)+'" style="padding:0;color:var(--indigo)">'+esc(replacedBy.id)+'</button></dd>':'')+'</div>'+
+      '<div class="grid" style="gap:9px;margin-top:14px">'+actions+(canReplace?'<button class="btn" data-act="replace">Replace a damaged sticker</button>':'')+'</div>'+roleNote+
       (hist?'<div class="sep" style="margin:14px 0 8px"></div><div class="hint" style="font-weight:600">History</div>'+hist:'')+
       '<div id="tp-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Close</button>',
@@ -2758,7 +2794,8 @@ async function cngTagPanel(code){
       if(a==='issue') cngIssueDialog(t,cl);
       else if(a==='replace') cngReplaceDialog(t,cl);
       else { const fn={allot:'cng_allot',consume:'cng_consume',return:'cng_return'}[a];
-        cngDo(fn, a==='allot'?{p_tag:t.id,p_photo:''}:{p_tag:t.id}, cl); } }); }});
+        cngDo(fn, a==='allot'?{p_tag:t.id,p_photo:''}:{p_tag:t.id}, cl); } });
+      $$('[data-goto]',mv).forEach(b=>b.onclick=()=>{ const c=b.dataset.goto; cl(); setTimeout(()=>cngTagPanel(c),0); }); }});
 }
 async function cngDo(fn,args,close){ busy(true);
   try{ await rpc(fn,args); if(close)close(); await cngReload(); toast('Updated.','ok'); }
@@ -3646,7 +3683,7 @@ function flowStepRow(f,s){
   if(parked) st=['t-wait','Asked for more — waiting'];
   const held=s.status==='pending'&&s.onHold;
   if(held) st=['t-hold','On hold'];
-  const actors=s.actors.map(id=>user(id).name).join(', ')||'—';
+  const actors=s.actorKind==='any'?'Anyone in the department':(s.actors.map(id=>user(id).name).join(', ')||'—');
   let meta='';
   if(held) meta+='<div class="hint" style="color:var(--hold)"><b>On hold</b>'+(s.holdBy?' by '+esc(user(s.holdBy).name):'')+(s.holdReason?' — '+esc(s.holdReason):'')+'</div>';
   if(s.status==='done'){
@@ -3738,7 +3775,7 @@ function viewFlowDetail(id){
 function flowSidePanel(f){
   const s=flowLive(f);
   if(!s) return '<div class="card pad"><h3>'+(f.status==='completed'?'Completed':f.status==='cancelled'?'Cancelled':'Nothing to do')+'</h3><p class="hint" style="margin-top:6px">This flow has no open step right now.</p></div>';
-  const mine=s.actors.indexOf(ME.id)>-1, isReq=f.requesterId===ME.id;
+  const mine=s.actors.indexOf(ME.id)>-1||s.actorKind==='any', isReq=f.requesterId===ME.id;
   const canEsc=s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
   const withWho=s.actors.map(id=>user(id).name).join(', ')||'—';
   const tg=infoTargets(s);
