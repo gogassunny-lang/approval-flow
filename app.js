@@ -142,7 +142,7 @@ async function loadPeople(){
   const [prof,tpl,dept,proj,st]=r.map(x=>x.data||[]);
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -219,6 +219,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
       canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      canHold:!!s.can_hold,onHold:!!s.on_hold,holdReason:s.hold_reason||'',holdBy:s.hold_by,
       erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
       infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoTos:s.info_tos||[],infoReplies:s.info_replies||[],infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
@@ -1517,7 +1518,7 @@ let draft=null, formTab='indent';
    other department stay on the free-form chain. */
 const FLOW_DIV_MAP={'ONM':'O&M','O&M':'O&M','Project':'Project','Retail':'Retail'};
 const flowDivOf=d=>FLOW_DIV_MAP[d]||null;
-const isFlowDraft=()=>!!(draft&&draft.f&&draft.f.department==='ALDS'&&flowDivOf(draft.f.division));
+const isFlowDraft=()=>!!(draft&&draft.f&&((draft.f.department==='ALDS'&&flowDivOf(draft.f.division))||draft.f.department==='CNG'));
 function viewNew(){
   head('Raise a request','Attach the ERP document, check what was read from it, then set the chain. ALDS O&M / Project / Retail follow their fixed flow automatically.');
   if(!draft||draft.type!==formTab) draft={type:formTab,files:[],support:[],chain:[],f:{category:'O&M'},conf:{},meta:{}};
@@ -1560,6 +1561,11 @@ function chainCard(){
    PO/WO flow — a note explaining the fixed hierarchy (no chain to build). */
 function rightCol(){
   if(isFlowDraft()){
+    if(draft.f.department==='CNG'){
+      return '<div class="card pad"><h3>Fixed approval flow</h3>'+
+        '<p class="hint" style="margin-top:5px">This is a <b>CNG</b> indent, so it follows the company\'s fixed <b>CNG</b> approval flow — indent approval, PO/WO approval, then GRN. You do not pick approvers here.</p>'+
+        '<div class="hint" style="margin-top:10px">When you send it, the whole chain is built automatically and step 1 is signed with your daily PIN. Each approver can Approve or Hold; a Hold pauses it in place until it is resumed.</div></div>';
+    }
     const hd=formTab==='indent'?'ALDS PO':'ALDS WO', div=flowDivOf(draft.f.division);
     return '<div class="card pad"><h3>Fixed approval flow</h3>'+
       '<p class="hint" style="margin-top:5px">This is an <b>'+esc(hd)+'</b> request in the <b>'+esc(div)+'</b> division, so it follows the company\'s fixed '+esc(hd)+' hierarchy. You do not pick approvers here.</p>'+
@@ -1746,7 +1752,8 @@ async function submit(note){
    instead of building a chain. */
 async function flowRaiseSubmit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
-  const head=t==='indent'?'PO':'WO', div=flowDivOf(f.division);
+  const cng=f.department==='CNG';
+  const head=cng?'CNG':(t==='indent'?'PO':'WO'), div=cng?(f.division||''):flowDivOf(f.division);
   const title=(t==='indent'?f.indentNo:f.orderNo)||'';
   if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; }
   else { if(!f.orderNo) return note.textContent='Work order number is needed.'; }
@@ -1760,7 +1767,7 @@ async function flowRaiseSubmit(note){
       await load();
       const flow=DB.flows.find(x=>x.id===id), step1=flow&&flow.steps.find(s=>s.status==='pending');
       if(step1){ await rpc('flow_act',{p_step:step1.id,p_kind:'act',p_remark:'',p_pin:flowCall._pin,p_files:files,p_datetime:null,p_data:null}); await load(); }
-      draft=null; toast('ALDS '+head+' flow created and signed at step 1.','ok'); go({name:'flowdetail',id});
+      draft=null; toast((cng?'CNG':'ALDS '+head)+' flow created and signed at step 1.','ok'); go({name:'flowdetail',id});
     }catch(e){ fail(e) } finally{ busy(false) }
   };
   flowPinThen(run);
@@ -2467,7 +2474,7 @@ function viewPeople(){
     '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(CAN_CREATE()?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+(CAN_MANAGE()?'<button class="btn" id="p-resync" title="Re-resolve approvers on live flows after renaming an account">Re-sync flow approvers</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="p-search" type="text" placeholder="Search name, email, designation or department" value="'+esc(peopleQ)+'" style="flex:1;min-width:220px">'+(pq?'<span class="tag t-prog" style="align-self:center">'+ulist.length+' of '+DB.users.length+'</span><button class="btn ghost sm" id="p-search-clear">Clear</button>':'')+'</div>'+
    '<table class="cards people"><thead><tr><th>Name</th><th>Employee ID</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
-   ulist.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(!u.admin&&!u.owner&&(u.canCreateUsers||u.canManageUsers)?'<span class="tag t-prog">Sub-admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
+   ulist.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(!u.admin&&!u.owner&&(u.canCreateUsers||u.canManageUsers)?'<span class="tag t-prog">Sub-admin</span> ':'')+((u.unit&&u.unit!=='ALDS')?'<span class="tag t-hold">'+esc(u.unit)+'</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta num">'+esc(u.empId||'—')+'</td><td class="meta">'+esc(u.role||'')+'</td>'+
      '<td class="hint meta">'+esc(u.dept||(u.admin?'no department':''))+'</td><td class="hint meta">'+(mgr?'reports to '+esc(mgr.name)+(u.managerConfirmed?'':' <span class="tag t-hold">unconfirmed</span>'):'')+'</td><td class="meta">'+(badges||'')+'</td><td class="meta">'+(pinOK(u)?'<span class="tag t-ok">PIN set</span>':'<span class="tag t-wait">No PIN today</span>')+'</td>'+
      '<td class="acts" style="text-align:right;white-space:nowrap">'+(canEditUser(u)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+
@@ -2531,7 +2538,10 @@ function wirePeople(v){
         '<div><label for="e-name">Full name</label><input id="e-name" type="text" value="'+esc(u.name||'')+'"'+((u.owner&&u.id!==ME.id)?' disabled':'')+'>'+((u.owner&&u.id!==ME.id)?'<div class="hint">Only the system owner can rename their own account.</div>':'<div class="hint">Used across the app and to match ALDS flow approvers — spelling matters.</div>')+'</div>'+
         '<div><label for="e-emp">Employee code</label><input id="e-emp" type="text" value="'+esc(u.empId||'')+'" autocomplete="off" placeholder="e.g. CPIL1234"><div class="hint">Used to sign in (Employee ID or email) and shown on the People and Usage pages. Leave blank if none.</div></div>'+
         '<div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
-        '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
+        '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div>'+
+        '<div><label for="e-unit">Department <span class="hint" style="font-weight:400">which department’s data they work in (ALDS / CNG)</span></label><select id="e-unit"><option value="">ALDS (default)</option>'+DEPTS.map(d=>'<option '+((u.unit||'ALDS')===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
+        (GRANTS_ROLES()?'<div><label>Also sees these departments <span class="hint" style="font-weight:400">cross-department access</span></label><div class="row" style="gap:12px;flex-wrap:wrap;margin-top:4px">'+DEPTS.map(d=>'<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:400"><input type="checkbox" class="e-dv" value="'+esc(d)+'" style="width:auto" '+((u.deptsVisible||[]).indexOf(d)>-1?'checked':'')+'> '+esc(d)+'</label>').join('')+'</div><div class="hint">Tick the other departments this person may see as well — e.g. the ultimate purchaser. Their own department is always visible; gate pass is open to everyone.</div></div>':'')+
+        '<div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
@@ -2565,6 +2575,9 @@ function wirePeople(v){
           if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
           if($('#e-assist',mv)){ const av=$('#e-assist',mv).value||null; if((av||null)!==(u.assistsId||null)) await rpc('set_assists',{p_user:u.id,p_principal:av}); }
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
+          const unitEl=$('#e-unit',mv); if(unitEl){ const nu=unitEl.value||null; if((nu||'')!==(u.unit||'')) await rpc('set_user_unit',{p_user:u.id,p_unit:nu}); }
+          if(GRANTS_ROLES()){ const dv=[]; $$('.e-dv',mv).forEach(c=>{ if(c.checked) dv.push(c.value); });
+            const cur=(u.deptsVisible||[]).slice().sort(); if(JSON.stringify(dv.slice().sort())!==JSON.stringify(cur)) await rpc('set_depts_visible',{p_user:u.id,p_depts:dv}); }
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
     const {error}=await SB.from('departments').insert({name:n}); if(error) return fail(error); await load(); render(); toast('Added.','ok')};
@@ -3304,7 +3317,7 @@ function wireGpReport(v){
 /* ============================================================
    ALDS PO / WO fixed flows (Stage 2 UI)
    ============================================================ */
-const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':'ALDS WO (Work order)';
+const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':h==='WO'?'ALDS WO (Work order)':h==='CNG'?'CNG (Indent)':h;
 const flowNorm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const flowLive=f=>f.steps.find(s=>s.status==='pending');
 const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
@@ -3417,8 +3430,11 @@ function flowStepRow(f,s){
   // people. Show the approver's row muted and put the highlight on whoever has it.
   const parked=s.status==='pending'&&s.infoRequested;
   if(parked) st=['t-wait','Asked for more — waiting'];
+  const held=s.status==='pending'&&s.onHold;
+  if(held) st=['t-hold','On hold'];
   const actors=s.actors.map(id=>user(id).name).join(', ')||'—';
   let meta='';
+  if(held) meta+='<div class="hint" style="color:var(--hold)"><b>On hold</b>'+(s.holdBy?' by '+esc(user(s.holdBy).name):'')+(s.holdReason?' — '+esc(s.holdReason):'')+'</div>';
   if(s.status==='done'){
     if(s.systemApproved) meta='<div class="hint" style="color:var(--indigo)"><b>System Approved — by super admin</b> · '+esc(fmtDT(s.actedAt))+'</div>';
     else meta='<div class="hint">'+(s.actedBy?esc(user(s.actedBy).name):'—')+' · '+esc(fmtDT(s.actedAt))+(s.remark?' · '+esc(s.remark):'')+'</div>';
@@ -3547,8 +3563,14 @@ function flowSidePanel(f){
     let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</p>';
     if(s.infoReplies&&s.infoReplies.length) body+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b> replied: '+esc(e.text)+'</div></div>').join('');
     else if(s.infoReply) body+='<div class="banner" style="margin-top:8px"><div class="hint">Replied: '+esc(s.infoReply)+'</div></div>';
+    if(s.onHold) body+='<div class="banner hold" style="margin-top:12px"><div><b>On hold</b>'+(s.holdReason?' — '+esc(s.holdReason):'')+'. Resume to continue, or approve to pass it on.</div></div>';
     body+='<div class="grid" style="gap:9px;margin-top:14px">';
-    if(approving){
+    if(s.canHold){
+      // CNG approvals: Approve or Hold (pause), per the CNG flow
+      body+='<button class="btn primary" data-fact="'+s.id+'">'+(s.action==='confirm'?'Confirm and pass on':'Approve and pass on')+'</button>'+
+        (s.onHold?'<button class="btn" data-frelease="'+s.id+'">Resume (lift the hold)</button>'
+                 :'<button class="btn hold" data-fhold="'+s.id+'">Hold (pause here)</button>');
+    } else if(approving){
       body+='<button class="btn primary" data-fact="'+s.id+'">'+(s.action==='confirm'?'Confirm and pass on':'Approve and pass on')+'</button>'+
         '<button class="btn" data-fcond="'+s.id+'">Approve with a condition</button>'+
         '<button class="btn hold" data-fask="'+s.id+'">Ask the requester for more</button>'+
@@ -3575,6 +3597,8 @@ function wireFlowDetail(v){
   $$('[data-fact]',v).forEach(b=>b.onclick=()=>flowAct(b.dataset.fact));
   $$('[data-fcond]',v).forEach(b=>b.onclick=()=>flowCondDialog(b.dataset.fcond));
   $$('[data-fask]',v).forEach(b=>b.onclick=()=>flowAskDialog(b.dataset.fask));
+  $$('[data-fhold]',v).forEach(b=>b.onclick=()=>flowHoldDialog(b.dataset.fhold));
+  $$('[data-frelease]',v).forEach(b=>b.onclick=()=>flowReleaseHold(b.dataset.frelease));
   $$('[data-fsys]',v).forEach(b=>b.onclick=()=>flowSysApprove(b.dataset.fsys));
   $$('[data-fattach]',v).forEach(b=>b.onclick=()=>flowAttachDialog(b.dataset.fattach));
   $$('[data-frwd]',v).forEach(b=>b.onclick=()=>flowRewind(b.dataset.frwd));
@@ -3766,6 +3790,24 @@ function flowReject(stepId){
     footer:'<button class="btn" data-x>Cancel</button><button class="btn bad" id="frg">Reject</button>',
     onOpen:(mv,cl)=>{$('#frg',mv).onclick=()=>{const reason=$('#frr',mv).value.trim(); if(reason.length<3) return toast('Add a reason.','bad'); cl();
       flowPinThen(()=>flowCall(stepId,'reject',reason,null,null,null,'Sent back for changes.')); }}});
+}
+/* CNG "Hold": pause the step in place (reason + PIN). It does not go back to the raiser. */
+function flowHoldDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return;
+  modal({title:'Put this step on hold',
+    body:'<p style="margin-top:0">Pausing <b>'+esc(x.s.label)+'</b>. It stays on this step (it does <b>not</b> go back to the raiser), reminders stop, and everyone can see it is on hold. You can resume it any time, or approve to pass it on.</p>'+
+      '<div><label for="fhr">Reason for the hold</label><textarea id="fhr" placeholder="Why it is being paused"></textarea></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="fhg">Hold</button>',
+    onOpen:(mv,cl)=>{$('#fhg',mv).onclick=()=>{const reason=$('#fhr',mv).value.trim(); if(reason.length<3) return toast('Add a short reason.','bad'); cl();
+      flowPinThen(()=>flowHoldCall(stepId,reason)); }}});
+}
+async function flowHoldCall(stepId,reason){ busy(true);
+  try{ await rpc('flow_hold',{p_step:stepId,p_reason:reason,p_pin:flowCall._pin}); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('Put on hold.','ok'); render(); }
+  catch(e){ fail(e); } finally{ busy(false); } }
+function flowReleaseHold(stepId){
+  (async()=>{ busy(true);
+    try{ await rpc('flow_release',{p_step:stepId}); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('Resumed.','ok'); render(); }
+    catch(e){ fail(e); } finally{ busy(false); } })();
 }
 function flowEscalate(stepId){
   const x=flowFindStep(stepId); if(!x) return;
