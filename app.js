@@ -329,8 +329,20 @@ const isMyTurn=r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.curren
 const iReplied=repl=>Array.isArray(repl)&&repl.some(e=>(e.user_id||e.userId)===ME.id);
 // the list of people a tag is directed at (supports old single-tag data)
 const infoTargets=o=>(o&&o.infoTos&&o.infoTos.length)?o.infoTos:(o&&o.infoTo?[o.infoTo]:[]);
+// the active tagged person = the first, in order, who has not yet replied (sequential tagging)
+const legacyActiveTag=r=>{ const tg=infoTargets(r); if(!tg.length) return null; return tg.find(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id))||null; };
+const legacyTagged=r=>r&&r.status==='Info Requested'&&infoTargets(r).indexOf(ME.id)>-1;   // am I tagged on this (replied or not)
 const needsMyInfo=r=>{ if(r.status!=='Info Requested') return false;
-  const tg=infoTargets(r); return tg.length?(tg.includes(ME.id)&&!iReplied(r.infoReplies)):(r.requesterId===ME.id); };
+  const tg=infoTargets(r); return tg.length?(legacyActiveTag(r)===ME.id):(r.requesterId===ME.id); };
+// the ordered "1. A ✓ → 2. B · now → 3. C → back to asker" chain, for a legacy request
+function legacyTagChain(r){ const tg=infoTargets(r); if(tg.length<2) return '';
+  const active=legacyActiveTag(r), rep=r.infoReplies||[], done=id=>rep.some(e=>(e.user_id||e.userId)===id);
+  const chips=tg.map((id,i)=>{ const st=done(id)?'done':(id===active?'now':'next');
+    return '<span class="tchain-chip tc-'+st+'">'+(i+1)+'. '+esc(user(id).name)+(st==='done'?' ✓':st==='now'?' · now':'')+'</span>'; });
+  chips.push('<span class="tchain-chip tc-back">back to '+esc(user(r.chain[r.infoStep].userId).name)+'</span>');
+  return '<div class="tchain" style="margin-top:7px">'+chips.join('<span class="tchain-arr">→</span>')+'</div>'; }
+function legacyReplyThread(r){ const rep=r.infoReplies||[]; if(!rep.length) return '';
+  return '<div class="cmt-thread" style="margin-top:8px">'+rep.map(e=>'<div class="cmt"><div class="cmt-h"><b>'+esc(e.name||user(e.user_id||e.userId).name)+'</b> <span class="hint">'+esc(e.at?fmtDT(ts(e.at)):'')+'</span></div><div class="cmt-b" style="white-space:pre-wrap">'+esc(e.text)+'</div></div>').join('')+'</div>'; }
 const isManager=u=>!!(u&&(u.manager||u.admin||u.owner));
 const teamOf=id=>DB.users.filter(u=>u.active&&u.managerId===id&&u.managerConfirmed);
 const pendingTeam=id=>DB.users.filter(u=>u.active&&u.managerId===id&&!u.managerConfirmed);
@@ -1861,7 +1873,7 @@ function viewDetail(id){
     // show this node muted ("parked") and say clearly who it's pending with
     const cls=s.status==='approved'?'done':s.status==='conditional'?'done cond':s.status==='rejected'?'stop':s.status==='info'?'parked':live?'live':s.status==='waiting'?'locked':'';
     let parkedWith='';
-    if(s.status==='info'){ const h=holder(r); parkedWith='<div class="pending-with tagged" style="margin-top:7px">Pending with <b>'+esc(h?h.name:'the requester')+'</b> <span class="pw-sub">· asked by '+esc(u.name)+'</span></div>'; }
+    if(s.status==='info'){ const h=holder(r); parkedWith='<div class="pending-with tagged" style="margin-top:7px">Pending with <b>'+esc(h?h.name:'the requester')+'</b> <span class="pw-sub">· asked by '+esc(u.name)+'</span></div>'+legacyTagChain(r)+legacyReplyThread(r); }
     let tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-wait">Asked for more — waiting</span>',
       pending:stepBlocked(s)?'<span class="tag t-hold">Work given out</span>':'<span class="tag t-prog">Holding it now</span>',waiting:'<span class="tag t-wait">Waiting turn</span>'}[s.status]||'';
     if(s.systemApproved) tag='<span class="tag t-ok" style="background:var(--indigo);color:#fff">System Approved — by super admin</span>';
@@ -1898,9 +1910,18 @@ function viewDetail(id){
       '<button class="btn hold" id="a-info">Ask the requester for more</button><button class="btn bad" id="a-no">Reject and close</button></div>'+
       '<div class="hint" style="margin-top:11px">The ERP document cannot be changed from here. If it is wrong, reject it and have it reissued.</div></div>';
   } else if(info){
-    panel='<div class="card pad" style="border-color:var(--hold)"><h3>Reply to step '+(r.infoStep+2)+'</h3><p class="hint" style="margin-top:5px">This goes straight back to '+esc(user(r.chain[r.infoStep].userId).name)+'. Earlier approvals stand.</p>'+
+    const tg=infoTargets(r), idx=tg.indexOf(ME.id), more=tg.length>1&&idx>-1&&idx<tg.length-1, asker=user(r.chain[r.infoStep].userId);
+    panel='<div class="card pad" style="border-color:var(--hold)"><h3>'+(tg.length>1?'You were tagged to check':'Reply to step '+(r.infoStep+2))+'</h3>'+
+      '<p class="hint" style="margin-top:5px">'+esc(asker.name)+' asked:</p><div class="banner hold" style="margin-top:8px"><div>'+esc(r.chain[r.infoStep].remark||'—')+'</div></div>'+
+      legacyTagChain(r)+legacyReplyThread(r)+
       '<div style="margin-top:14px"><label for="i-reply">Your reply</label><textarea id="i-reply" placeholder="Answer what was asked."></textarea></div><div style="margin-top:12px"><label>Add documents</label><div id="i-files"></div></div>'+
-      '<button class="btn primary" id="i-send" style="width:100%;margin-top:14px">Send back to '+esc(user(r.chain[r.infoStep].userId).name.split(' ')[0])+'</button></div>';
+      '<div class="hint" style="margin-top:10px">'+(more?'After you reply it goes to the next person in the order above.':'You are last — after you reply it goes back to '+esc(asker.name)+'. Earlier approvals stand.')+'</div>'+
+      '<button class="btn primary" id="i-send" style="width:100%;margin-top:12px">Send reply</button></div>';
+  } else if(legacyTagged(r)){
+    const active=legacyActiveTag(r);
+    panel='<div class="card pad"><h3>You are tagged — not your turn yet</h3>'+
+      '<p class="hint" style="margin-top:5px">'+esc(user(r.chain[r.infoStep].userId).name)+' asked: <b>'+esc(r.chain[r.infoStep].remark||'')+'</b></p>'+legacyTagChain(r)+legacyReplyThread(r)+
+      '<p class="hint" style="margin-top:10px">'+(active?'It comes to you after <b>'+esc(user(active).name)+'</b> replies. You will get a notification.':'You have already replied.')+'</p></div>';
   } else {
     const h=holder(r);
     panel='<div class="card pad"><h3>'+(h?'Sitting with '+esc(h.name):'Closed')+'</h3><p class="hint" style="margin-top:6px">'+(h?'Nothing for you to do until it reaches you.':(r.status==='Approved'?'Approved by everyone in the chain on '+esc(fmtD(r.closedAt))+'.':'Closed on '+esc(fmtD(r.closedAt))+'. Raise a fresh request if the document is reissued.'))+'</p>'+
@@ -2051,7 +2072,7 @@ function wireDetail(v){
   if(needsMyInfo(r)){
     const files=[]; uploader($('#i-files',v),files,{mode:'support',label:'Add the photos or documents that were asked for'});
     $('#i-send',v).onclick=async()=>{const t=$('#i-reply',v).value.trim(); if(!t&&!files.length){toast('Add a reply or at least one document.','bad');return}
-      busy(true); try{ await rpc('reply_info',{p_request:r.id,p_text:t,p_files:filesPayload(files)}); await after('Sent back to '+user(r.chain[r.infoStep].userId).name+'.') }catch(e){fail(e)} finally{busy(false)} };
+      busy(true); try{ await rpc('reply_info',{p_request:r.id,p_text:t,p_files:filesPayload(files)}); await after('Reply sent.') }catch(e){fail(e)} finally{busy(false)} };
   }
   const nb=$('#ntb',v);
   if(nb) nb.onclick=async()=>{const t=$('#nt',v).value.trim(); if(!t){toast('Write something first.','bad');return}
@@ -2531,7 +2552,7 @@ function wirePeople(v){
   if($('#p-new',v)) $('#p-new',v).onclick=createUserDialog;
   if($('#p-xls',v)) $('#p-xls',v).onclick=exportUsersXlsx;
   if($('#p-resync',v)) $('#p-resync',v).onclick=()=>modal({title:'Re-sync flow approvers',
-    body:'<p style="margin-top:0">This re-checks every <b>live ALDS flow</b> and fills in any approval step that currently has no approver, matching the fixed hierarchy against the current directory.</p>'+
+    body:'<p style="margin-top:0">This re-checks every <b>live ALDS and CNG flow</b> and fills in any approval step that currently has no approver, matching the fixed hierarchy against the current directory.</p>'+
       '<p class="hint">Use it after renaming an account to match the hierarchy (e.g. “prachikhara” → “Prachi Khara”). It only adds missing approvers — it never changes steps already resolved.</p>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rs-go">Re-sync now</button>',
     onOpen:(mv,cl)=>{$('#rs-go',mv).onclick=async()=>{$('#rs-go',mv).disabled=true;
