@@ -78,6 +78,27 @@ function busy(on){let v=$('#busy');
     clearTimeout(busyTimer); busyTimer=setTimeout(()=>{const x=$('#busy'); if(x)x.remove()},15000); }  // never let the veil lock the screen
   else { clearTimeout(busyTimer); if(v)v.remove(); } }
 
+/* A full-screen "Signing you in…" splash shown while a saved session is being
+   restored, so the sign-in page never flashes (and can't be tapped) during the
+   wait and the person can see that something is happening. */
+function showSplash(msg){
+  let v=document.getElementById('splash');
+  if(!v){
+    v=document.createElement('div'); v.id='splash';
+    v.style.cssText='position:fixed;inset:0;z-index:120;display:grid;place-items:center;background:linear-gradient(160deg,#0c3aa6,#0a2c78);transition:opacity .25s';
+    v.innerHTML='<div style="text-align:center;color:#fff">'
+      +'<div style="font-weight:800;letter-spacing:.34em;font-size:26px;margin-bottom:16px">S E T U</div>'
+      +'<div style="display:flex;align-items:center;gap:9px;justify-content:center;opacity:.92">'
+      +'<span class="spin" style="border-color:rgba(255,255,255,.35);border-top-color:#fff"></span>'
+      +'<span id="splash-msg" style="font-size:14px"></span></div></div>';
+    document.body.appendChild(v);
+  }
+  const m=document.getElementById('splash-msg'); if(m) m.textContent=msg||'Signing you in…';
+  v.style.display='grid'; v.style.opacity='1';
+}
+function hideSplash(){ const v=document.getElementById('splash'); if(!v) return;
+  v.style.opacity='0'; setTimeout(()=>{ const x=document.getElementById('splash'); if(x) x.remove() },260); }
+
 /* ============================================================
    Loading everything this person is allowed to see
    ============================================================ */
@@ -813,13 +834,17 @@ async function doSignOut(){
 $('#signout').onclick=doSignOut;
 
 async function enter(session){
-  busy(true);
+  showSplash('Signing you in…');
   try{
     ME={id:session.user.id};
-    await load();
-    if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); busy(false); return }
-    if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); busy(false); return }
-    await SB.rpc('record_login');
+    // Load only what the first screen needs, so the app opens as soon as this
+    // person's own work is ready. People first (it resolves who ME is), then the
+    // work lists. The heaviest query — up to 3,000 gate passes — is streamed in
+    // afterwards instead of blocking the sign-in for everyone.
+    await load(['people']);
+    if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); hideSplash(); busy(false); return }
+    if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); hideSplash(); busy(false); return }
+    await load(gateScopeOnly()?['gate','notif']:['legacy','flows','notif']);
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
@@ -831,6 +856,9 @@ async function enter(session){
     if(h){ if(h.name==='detail') target=DB.requests.some(r=>r.id===h.id)?h:base; else target=h; }
     if(routeHash(target)!==routeHash(base)){ go(base,true); go(target); } else { go(base,true); }
     subscribe();
+    hideSplash();
+    SB.rpc('record_login').catch(()=>{});                                              // stamp the login once the app is visible
+    if(!gateScopeOnly()) load(['gate']).then(()=>reloadSoon(['gate'])).catch(()=>{});   // stream gate passes in behind the first screen
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
     // gate-only accounts don't approve anything: no PIN, no directory-completion nag, no pending-work popup
     if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
@@ -839,7 +867,7 @@ async function enter(session){
     else if(incomplete()) setTimeout(profileDialog,400);
     else if(!pinOK(ME)) setTimeout(pinDialog,450);
     else setTimeout(pendingPopup,500);
-  }catch(e){ fail(e) } finally { busy(false) }
+  }catch(e){ hideSplash(); fail(e) } finally { busy(false) }
 }
 /* a nudge on sign-in listing whatever is actually waiting on this person */
 function pendingPopup(){
@@ -858,7 +886,7 @@ function pendingPopup(){
     footer:'<button class="btn primary" data-x>Got it</button>',
     onOpen:(v,close)=>{ $$('[data-go]',v).forEach(b=>b.onclick=()=>{const k=b.dataset.go;close();setTimeout(()=>go({name:k}),0)}); }});
 }
-function leave(){ pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
+function leave(){ hideSplash(); pushForget(); ME=null; unsubscribe(); $('#app').classList.add('hide'); $('#signin').classList.remove('hide'); signMode='login'; paintSignIn() }
 
 /* extend a chain that ran out: append approvers, reopening the request if it had closed */
 function extendChainDialog(r){
@@ -4217,7 +4245,11 @@ if('serviceWorker' in navigator&&location.protocol==='https:') navigator.service
 document.title=CONFIG.APP_NAME||'SETU';
 
 (async function boot(){
-  try{ const {data}=await SB.from('departments').select('name').order('name'); if(data) DB.departments=data.map(d=>d.name) }catch(e){}
+  // If a session looks stored, raise the splash at once so the sign-in page never
+  // flashes (and can't be tapped) while the token is restored. Departments are
+  // public reference data, loaded with everyone else after sign-in (paintSignIn
+  // falls back to the seeded list), so there's no need to fetch them up front.
+  try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.indexOf('sb-')===0&&/-auth-token$/.test(k)){ showSplash('Signing you in…'); break; } } }catch(e){}
   SB.auth.onAuthStateChange((event,session)=>{
     if(event==='SIGNED_OUT'){ leave(); return }
     if(event==='PASSWORD_RECOVERY'&&session){
@@ -4229,5 +4261,5 @@ document.title=CONFIG.APP_NAME||'SETU';
     if(session&&!ME&&!recovering) enter(session);
   });
   const {data:{session}}=await SB.auth.getSession();
-  if(session) enter(session); else paintSignIn();
+  if(session) enter(session); else { hideSplash(); paintSignIn(); }
 })();
