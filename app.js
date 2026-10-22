@@ -142,6 +142,7 @@ async function loadPeople(){
   const [prof,tpl,dept,proj,st]=r.map(x=>x.data||[]);
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -932,9 +933,12 @@ function createUserDialog(){
       '<div><label for="cu-dept">Department <span class="hint" id="cu-dept-opt"></span></label><select id="cu-dept">'+deptOptions('')+'</select></div></div>'+
       '<div><label for="cu-mgr">Reports to</label><select id="cu-mgr">'+mgrOptions('',null)+'</select><div class="hint">A manager, an admin, or you. Set here, no confirmation needed — they are on that person\'s team from the start.</div></div>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-man" style="width:auto"> <span><b>Manager</b><div class="hint">Can hand work to their team inside a request.</div></span></label>'+
-      '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>'+
+      (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-see" style="width:auto"> <span><b>Can see every request</b><div class="hint">Oversight without admin rights, e.g. audit.</div></span></label>':'')+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-gateonly" style="width:auto"> <span><b>Gate Pass only</b><div class="hint">Signs in to the Gate Pass page and nothing else.</div></span></label>'+
       '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-hrhead" style="width:auto"> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Views every gate pass + the Reports page. Restricted to those.</div></span></label>'+
+      (GRANTS_ROLES()?'<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">Sub-admin — user-desk powers without full Admin</div>'+
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-cc" style="width:auto"> <span><b>Can create users</b><div class="hint">May add new accounts (ordinary users only, never Admins).</div></span></label>'+
+        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="cu-cm" style="width:auto"> <span><b>Can manage users</b><div class="hint">May edit existing people (not Admins or the owner) and reset their passwords. No access to requests, reports or masters.</div></span></label>':'')+
       '<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('cu-pages',DEFAULT_PAGES)+'<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">How they get in</div>'+
       '<label style="display:flex;align-items:flex-start;gap:9px;margin:0"><input type="radio" name="cu-mode" value="password" checked style="width:auto;margin-top:4px"> <span><b>Give them a temporary password</b><div class="hint">They must choose their own at first sign-in.</div></span></label>'+
       '<div id="cu-pw-wrap" style="padding-left:24px"><label for="cu-pw">Temporary password <span class="hint">optional</span></label><input id="cu-pw" type="text" autocomplete="off" placeholder="Leave blank and one is generated for you"><div class="hint">At least 8 characters if you set one. Shown to you once after the account is created.</div></div>'+
@@ -951,7 +955,8 @@ function createUserDialog(){
       wirePagesChecklist('cu-pages',v);
       $('#cu-go',v).onclick=async()=>{
         const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
-          manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:$('#cu-see',v).checked,is_admin:sysRole()==='admin',
+          manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:($('#cu-see',v)||{}).checked||false,is_admin:sysRole()==='admin',
+          can_create_users:($('#cu-cc',v)||{}).checked||false,can_manage_users:($('#cu-cm',v)||{}).checked||false,
           mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password',password:($('#cu-pw',v)||{}).value||'',pages:readChecklist('cu-pages',v)};
         const err=$('#cu-err',v);
         if(body.name.length<3) return err.textContent='Enter the full name.';
@@ -1263,9 +1268,16 @@ const OPTIONAL_PAGES=[
 const DEFAULT_PAGES=['new','gate','tpl','team','all','report'];   // a plain user's standard set
 function allowedPages(u){
   if(u.admin||u.owner) return OPTIONAL_PAGES.map(p=>p.k);   // admins run the system: every page
-  if(Array.isArray(u.pages)) return u.pages;                // explicitly set
-  return DEFAULT_PAGES;                                     // role default
+  let set=Array.isArray(u.pages)?u.pages.slice():DEFAULT_PAGES.slice();   // explicit set, else role default
+  if((u.canCreateUsers||u.canManageUsers)&&set.indexOf('people')<0) set=set.concat('people');  // sub-admins get the People page
+  return set;
 }
+/* sub-admin = user-desk powers without full Admin (see-all, reports, masters) */
+const CAN_CREATE=()=>!!(ME&&(ME.admin||ME.owner||ME.canCreateUsers));
+const CAN_MANAGE=()=>!!(ME&&(ME.admin||ME.owner||ME.canManageUsers));
+const GRANTS_ROLES=()=>!!(ME&&(ME.admin||ME.owner));   // who may set see-all / admin / sub-admin
+// may the signed-in person edit this user? sub-admins cannot touch an Admin or the owner
+const canEditUser=u=>{ if(ME.admin||ME.owner) return !u.owner||u.id===ME.id; if(ME.canManageUsers) return !u.admin&&!u.owner; return false; };
 const canSeePage=k=>{ const set=allowedPages(ME); return set.indexOf(k)>-1 };
 const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only accounts see only the Gate Pass page
 const ASSISTANT=()=>!!(ME&&ME.assistsId&&!ME.admin&&!ME.owner);  // a proxy who assists one principal
@@ -2452,13 +2464,13 @@ function viewPeople(){
   const pq=peopleQ.trim().toLowerCase();
   const ulist=DB.users.filter(u=>!pq||((u.name+' '+(u.email||'')+' '+(u.empId||'')+' '+(u.role||'')+' '+(u.dept||'')).toLowerCase().includes(pq)));
   return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="flex-wrap:wrap"><div><h3>'+DB.users.filter(u=>u.active).length+' people can be added to a chain</h3><p class="hint" style="margin-top:4px">Anyone registered shows up when a requester searches for approvers. Create accounts here, or let people register themselves from the sign-in screen and set their access afterwards.</p></div>'+
-    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(ME.admin?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-resync" title="Re-resolve approvers on live flows after renaming an account">Re-sync flow approvers</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
+    '<div class="row hdr-actions" style="margin-left:auto;gap:8px">'+(CAN_CREATE()?'<button class="btn primary" id="p-new">Create an account</button>':'')+((ME.admin||ME.owner)?'<button class="btn" id="p-xls">Download emails (Excel)</button>':'')+(CAN_MANAGE()?'<button class="btn" id="p-resync" title="Re-resolve approvers on live flows after renaming an account">Re-sync flow approvers</button>':'')+'<button class="btn" id="p-pw">Change password</button><button class="btn" id="p-me">My directory entry</button></div></div></div>'+
    '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="p-search" type="text" placeholder="Search name, email, designation or department" value="'+esc(peopleQ)+'" style="flex:1;min-width:220px">'+(pq?'<span class="tag t-prog" style="align-self:center">'+ulist.length+' of '+DB.users.length+'</span><button class="btn ghost sm" id="p-search-clear">Clear</button>':'')+'</div>'+
    '<table class="cards people"><thead><tr><th>Name</th><th>Employee ID</th><th>Designation</th><th>Department</th><th>Reports to</th><th>Access</th><th>PIN</th><th></th></tr></thead><tbody>'+
-   ulist.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
+   ulist.map(u=>{const mgr=u.managerId?user(u.managerId):null, badges=(u.owner?'<span class="tag" style="background:#1A1338;color:#fff;border-color:#1A1338">Super admin</span> ':'')+(u.admin&&!u.owner?'<span class="tag t-prog">Admin</span> ':'')+(!u.admin&&!u.owner&&(u.canCreateUsers||u.canManageUsers)?'<span class="tag t-prog">Sub-admin</span> ':'')+(u.manager?'<span class="tag t-ok">Manager</span> ':'')+(u.seeAll&&!u.admin?'<span class="tag t-wait">Sees all</span>':'');
      return '<tr'+(u.active?'':' style="opacity:.55"')+'><td><div class="row" style="gap:10px"><div class="av sm">'+inits(u.name)+'</div><div><b>'+esc(u.name)+'</b>'+(u.id===ME.id?' <span class="hint">(you)</span>':'')+(u.active?'':' <span class="tag t-bad">off</span>')+'<div class="hint">'+esc(u.email)+'</div></div></div></td><td class="meta num">'+esc(u.empId||'—')+'</td><td class="meta">'+esc(u.role||'')+'</td>'+
      '<td class="hint meta">'+esc(u.dept||(u.admin?'no department':''))+'</td><td class="hint meta">'+(mgr?'reports to '+esc(mgr.name)+(u.managerConfirmed?'':' <span class="tag t-hold">unconfirmed</span>'):'')+'</td><td class="meta">'+(badges||'')+'</td><td class="meta">'+(pinOK(u)?'<span class="tag t-ok">PIN set</span>':'<span class="tag t-wait">No PIN today</span>')+'</td>'+
-     '<td class="acts" style="text-align:right;white-space:nowrap">'+(ME.admin&&(!u.owner||u.id===ME.id)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+
+     '<td class="acts" style="text-align:right;white-space:nowrap">'+(canEditUser(u)?'<button class="btn sm" data-ed="'+u.id+'">Edit</button>':(u.owner?'<span class="hint">only the owner</span>':''))+
      (ME.owner&&!u.owner?' <button class="btn sm" data-rmu="'+u.id+'" style="color:var(--stop)">Remove</button>':'')+'</td></tr>'}).join('')+
    (ulist.length?'':'<tr><td colspan="8"><div class="empty" style="padding:22px 8px"><h3>No one matches</h3><p class="hint">No person matches “'+esc(peopleQ)+'”.</p></div></td></tr>')+'</tbody></table></div>'+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Departments</h3><p class="hint" style="margin-top:5px">A request shows a handover whenever it crosses from one of these to another, so keep the list tight.</p><div class="row" style="flex-wrap:wrap;gap:7px;margin-top:12px">'+
@@ -2476,7 +2488,9 @@ function viewPeople(){
 }
 /* Owner/admin: download the whole directory (names + emails + access) as Excel */
 function accessLabel(u){
-  const t=[]; if(u.owner)t.push('Owner'); if(u.admin)t.push('Admin'); if(u.manager)t.push('Manager');
+  const t=[]; if(u.owner)t.push('Owner'); if(u.admin)t.push('Admin');
+  if(!u.admin&&!u.owner&&(u.canCreateUsers||u.canManageUsers)){const pr=[]; if(u.canCreateUsers)pr.push('create'); if(u.canManageUsers)pr.push('manage'); t.push('Sub-admin ('+pr.join('/')+')');}
+  if(u.manager)t.push('Manager');
   if(u.seeAll)t.push('Sees all'); if(u.gateman)t.push('Gateman'); if(u.hrHead)t.push('HR Head'); if(u.gateOnly)t.push('Gate only');
   if(u.assistsId){const pr=DB.users.find(x=>x.id===u.assistsId); t.push('Assistant to '+(pr?pr.name:'—'));}
   return t.join(', ')||'User';
@@ -2519,26 +2533,33 @@ function wirePeople(v){
         '<div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div><div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
-        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>'+
+        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
         '<div><label for="e-assist">Assistant to (proxy) <span class="hint" style="font-weight:400">optional</span></label><select id="e-assist"><option value="">— nobody —</option>'+DB.users.filter(x=>x.active&&x.id!==u.id&&!x.owner).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>'<option value="'+x.id+'" '+(u.assistsId===x.id?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select><div class="hint">Makes this a proxy for that person: a read-only view of their pending and approved items, no approval buttons, plus an “ERP entry done” button. Restricted to the Assisting page.</div></div>'+
-        '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>'+
+        ((GRANTS_ROLES()&&!u.owner&&!u.admin)?'<div class="sep" style="margin:2px 0"></div><div class="hint" style="font-weight:600;color:var(--ink-soft)">Sub-admin — user-desk powers without full Admin</div>'+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-cc" style="width:auto" '+(u.canCreateUsers?'checked':'')+'> <span><b>Can create users</b><div class="hint">Add new accounts. They make ordinary users only, never Admins.</div></span></label>'+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-cm" style="width:auto" '+(u.canManageUsers?'checked':'')+'> <span><b>Can manage users</b><div class="hint">Edit existing people (not Admins or the owner) and reset their passwords. No access to requests, reports or masters.</div></span></label>':'')+
+        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-adm" style="width:auto" '+(u.admin?'checked':'')+' '+(u.id===ME.id||u.owner||!ME.owner?'disabled':'')+'> <span><b>Administrator</b><div class="hint">'+(u.owner?'The system owner is always an administrator. This cannot be changed by anyone.':(ME.owner?'A system role, separate from the flow: creates accounts, sets access, manages masters, sees every request.':'Only the system owner can grant or remove this.'))+'</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-act" style="width:auto" '+(u.active?'checked':'')+' '+(u.id===ME.id||u.owner?'disabled':'')+'> <span><b>Account active</b><div class="hint">'+(u.owner?'The system owner account cannot be switched off.':'Switched-off people cannot sign in or be added to chains.')+'</div></span></label>'+
         (u.admin||u.owner?'<div class="sep" style="margin:2px 0"></div><div class="hint">This account is an administrator, so it sees every page.</div>':'<div class="sep" style="margin:2px 0"></div>'+pagesChecklist('e-pages',allowedPages(u)))+'</div>'+lists()+'<div id="e-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
       footer:'<button class="btn bad" id="e-reset" style="margin-right:auto">Reset password</button><button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
       onOpen:(mv,cl)=>{
         $('#e-reset',mv).onclick=()=>{ cl(); resetPasswordDialog(u) };
         wirePagesChecklist('e-pages',mv);
-        $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value; const adm=u.id===ME.id?true:$('#e-adm',mv).checked;
+        $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value;
+        const admEl=$('#e-adm',mv), adm=u.id===ME.id?true:(admEl?admEl.checked:!!u.admin);
+        const seeEl=$('#e-see',mv), see=seeEl?seeEl.checked:!!u.seeAll;
         if(!d&&!adm) return $('#e-err',mv).textContent='Choose a department, or make them an administrator.';
         const nameEl=$('#e-name',mv), newName=nameEl?nameEl.value.trim():u.name;
         if(nameEl&&!nameEl.disabled&&newName.length<2) return $('#e-err',mv).textContent='Enter a name of at least 2 characters.';
         const empEl=$('#e-emp',mv), empNew=empEl?empEl.value.trim():(u.empId||'');
         try{ if(nameEl&&!nameEl.disabled&&newName&&newName!==u.name) await rpc('admin_rename_user',{p_user:u.id,p_name:newName});
           if(empEl&&empNew!==(u.empId||'')) await rpc('set_emp_id',{p_user:u.id,p_emp:empNew});
-          await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:$('#e-see',mv).checked,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
+          await rpc('admin_update_profile',{p_user:u.id,p_role:$('#e-role',mv).value.trim(),p_dept:d||null,p_manager:$('#e-mgr',mv).value||null,p_is_manager:$('#e-man',mv).checked,p_see_all:see,p_is_admin:adm,p_active:u.id===ME.id?true:$('#e-act',mv).checked});
+          const ccEl=$('#e-cc',mv), cmEl=$('#e-cm',mv);
+          if(ccEl&&cmEl&&(ccEl.checked!==!!u.canCreateUsers||cmEl.checked!==!!u.canManageUsers)) await rpc('set_subadmin',{p_user:u.id,p_create:ccEl.checked,p_manage:cmEl.checked});
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
           if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
