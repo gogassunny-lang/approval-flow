@@ -3807,7 +3807,11 @@ function flowStepRow(f,s){
     ownerBtn='<button class="btn ghost sm" data-fsys="'+s.id+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button>';
   else if(ME.owner&&(f.status==='running'||f.status==='completed')&&s.status==='done')
     ownerBtn='<button class="btn ghost sm" data-frwd="'+s.id+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
-  const sysBtn=ownerBtn?'<div style="margin-top:6px">'+ownerBtn+'</div>':'';
+  // admin/owner can map the right approver onto a not-yet-done step (fixes a name that didn't resolve)
+  let assignBtn='';
+  if((ME.owner||ME.admin)&&f.status==='running'&&s.status!=='done'&&s.actorKind!=='any'&&s.actorKind!=='raiser')
+    assignBtn='<button class="btn ghost sm" data-fassign="'+s.id+'" style="color:var(--seal);padding:2px 9px">👤 Change approver</button>';
+  const sysBtn=(ownerBtn||assignBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+'</div>':'';
   // item 9: show clearly WHO the live step is pending with (the tagged person when parked, else the actors)
   let pendingWith='';
   if(s.status==='pending'){
@@ -3943,6 +3947,7 @@ function wireFlowDetail(v){
   $$('[data-fsys]',v).forEach(b=>b.onclick=()=>flowSysApprove(b.dataset.fsys));
   $$('[data-fattach]',v).forEach(b=>b.onclick=()=>flowAttachDialog(b.dataset.fattach));
   $$('[data-frwd]',v).forEach(b=>b.onclick=()=>flowRewind(b.dataset.frwd));
+  $$('[data-fassign]',v).forEach(b=>b.onclick=()=>flowAssignActor(b.dataset.fassign));
   // requester's reply panel (answer an "ask for more")
   const reply={files:[]};
   if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
@@ -4109,6 +4114,22 @@ function flowRewind(stepId){
 async function flowRewindCall(stepId){ busy(true);
   try{ await rpc('flow_owner_rewind',{p_step:stepId,p_pin:flowCall._pin}); await load(['flows','notif'],flowIdsOfStep(stepId)); toast('Reopened from this step.','ok'); render(); }
   catch(e){ fail(e); } finally{ busy(false); } }
+/* Admin/owner: map the right person onto a step whose approver didn't resolve (or needs changing) */
+function flowAssignActor(stepId){
+  const x=flowFindStep(stepId); if(!x||!(ME.owner||ME.admin)) return; const s=x.s;
+  const cur=s.actors.map(id=>user(id).name).join(', ')||'— nobody yet —';
+  const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
+    .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
+  modal({title:'Change approver',
+    body:'<p class="hint" style="margin-top:0"><b>'+esc(s.label)+'</b><br>Currently with: <b>'+esc(cur)+'</b>. Pick the right person — they can act straight away, and the change is recorded in the trail.</p>'+
+      '<div style="margin-top:12px"><label for="fa-u">Approver</label><select id="fa-u"><option value="">— choose a person —</option>'+opts+'</select></div>'+
+      '<div id="fa-err" class="hint" style="color:var(--stop);margin-top:6px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Set approver</button>',
+    onOpen:(mv,cl)=>{ $('#fa-go',mv).onclick=async()=>{ const uid=$('#fa-u',mv).value; if(!uid) return $('#fa-err',mv).textContent='Choose a person.';
+      $('#fa-go',mv).disabled=true;
+      try{ await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); await load(['flows','notif'],flowIdsOfStep(stepId)); cl(); toast('Approver updated.','ok'); render(); }
+      catch(e){ $('#fa-go',mv).disabled=false; $('#fa-err',mv).textContent=(e&&e.message)||'Could not update.'; } }; }});
+}
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
   busy(true);
