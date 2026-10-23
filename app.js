@@ -36,7 +36,7 @@ const numOf=s=>{const m=String(s||'').replace(/,/g,'').match(/-?\d+(\.\d+)?/);re
 const tidy=s=>String(s||'').replace(/,\s*,/g,', ').replace(/\s*,\s*/g,', ').replace(/,\s*$/,'').replace(/\s+/g,' ').trim();
 
 /* ---------- state ---------- */
-let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[],passes:[],flows:[]};
+let DB={users:[],requests:[],audit:[],templates:[],departments:[],projects:[],notifs:[],passes:[],flows:[],units:[]};
 let STATIONS=[], ME=null, ROUTE={name:'dash'};
 const byCode=new Map(), byName=new Map();
 function indexStations(){ byCode.clear(); byName.clear();
@@ -157,10 +157,12 @@ async function loadPeople(){
     SB.from('templates').select('*').order('name'),
     SB.from('departments').select('name').order('name'),
     SB.from('projects').select('name').order('name'),
-    SB.from('stations').select('*').order('name')
+    SB.from('stations').select('*').order('name'),
+    SB.from('units').select('name').order('name')
   ]);
-  const bad=r.find(x=>x.error); if(bad) throw bad.error;
-  const [prof,tpl,dept,proj,st]=r.map(x=>x.data||[]);
+  const bad=r.slice(0,5).find(x=>x.error); if(bad) throw bad.error;   // units is optional (table may not exist before migration 71)
+  const [prof,tpl,dept,proj,st]=r.slice(0,5).map(x=>x.data||[]);
+  const unit=(r[5]&&!r[5].error&&r[5].data)?r[5].data:[];
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,
@@ -168,6 +170,7 @@ async function loadPeople(){
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
   DB.departments=dept.map(d=>d.name);
+  DB.units=unit.map(u=>u.name);
   DB.projects=proj.map(p=>p.name);
   STATIONS=st.map(s=>({code:s.code,name:s.name,state:s.state||''})); indexStations();
 }
@@ -439,6 +442,10 @@ const DEPT_DIV={
   'CNG':['Maintenance','Logistics','Project','IT Department','Accounts','Operation','Sales & Marketing','Store','Liaison']
 };
 const DEPTS=Object.keys(DEPT_DIV);
+/* the data-wall departments (home "unit"): from the units table, falling back to
+   the built-in list before the table has loaded. ALDS is always first. */
+const WALL_DEPTS=()=>{const t=(DB.units&&DB.units.length?DB.units.slice():DEPTS.slice());
+  if(t.indexOf('ALDS')<0) t.unshift('ALDS'); return t.sort((a,b)=>a==='ALDS'?-1:b==='ALDS'?1:a.localeCompare(b));};
 /* optional sub-categories under the indent Category. Leave a category's list
    empty and no sub-category dropdown shows. Add more here any time. */
 const SUBCATEGORIES={
@@ -2546,6 +2553,8 @@ function viewPeople(){
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Requests stuck on an absent approver</h3><p class="hint" style="margin-top:5px">Only an admin can move a request off someone who is unavailable. The original assignment stays in the trail.</p>'+
      (stuck.length?'<div style="margin-top:12px">'+stuck.map(r=>'<div class="filerow"><div style="min-width:0;flex:1"><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(r.ref)+' · with '+esc(user(r.chain[r.current].userId).name)+' for '+daysBetween(r.chain[r.current].actedAt||r.createdAt,Date.now())+' days</div></div><button class="btn sm" data-re="'+r.id+'">Reassign</button></div>').join('')+'</div>':'<p class="hint" style="margin-top:10px">Nothing is currently in progress.</p>')+'</div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Bulk set “Reports to”</h3><p class="hint" style="margin-top:5px">Upload a sheet with two columns — the <b>person</b> and their <b>manager</b> — each by employee code or name. Headers like “Employee”/“Name” and “Manager”/“Reports to” are detected automatically. This is what makes hierarchy-ordered tagging and teams work.</p><div id="p-mgrupload" style="margin-top:12px"></div><div id="p-mgrres" style="margin-top:10px"></div></div>':'')+
+   (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Data departments (ALDS / CNG…)</h3><p class="hint" style="margin-top:5px">These decide what data each person sees. A person only sees their own department’s indents and PO/WO flows (gate pass stays open to everyone). Set a person’s department in their <b>Edit</b>, or in bulk below. ALDS is the default.</p><div class="row" style="flex-wrap:wrap;gap:7px;margin-top:12px">'+WALL_DEPTS().map(d=>'<span class="tag '+(d==='ALDS'?'t-wait':'t-hold')+'">'+esc(d)+'</span>').join('')+'</div><div class="row" style="gap:8px;margin-top:14px"><input id="un-new" type="text" placeholder="New department name" style="max-width:280px"><button class="btn sm" id="un-add">Create department</button></div></div>':'')+
+   (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Bulk set department</h3><p class="hint" style="margin-top:5px">Move many people into a department at once. Paste their <b>emails</b> or <b>employee IDs</b> (or names), one per line — email or ID is safest when names repeat. Pick the department and apply.</p><div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap"><label style="margin:0;font-weight:600">Department</label><select id="bd-dept" style="max-width:220px">'+WALL_DEPTS().map(d=>'<option '+(d==='CNG'?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select><button class="btn primary sm" id="bd-go">Set department</button></div><textarea id="bd-list" rows="5" placeholder="one email / employee ID / name per line" style="margin-top:10px;width:100%"></textarea><div id="bd-res" style="margin-top:8px"></div></div>':'')+
    '<div class="grid g2" style="margin-top:16px;align-items:start"><div class="card pad"><h3>Station master</h3><p class="hint" style="margin-top:5px">'+STATIONS.length+' stations loaded.'+(ME.admin?' Upload a replacement to refresh the list — the columns must stay ERP Code, Station Name, State.':'')+'</p>'+(ME.admin?'<div id="p-mast" style="margin-top:12px"></div>':'')+'</div>'+
    '<div class="card pad"><h3>Typed, not in the master</h3>'+(unlisted.length?'<p class="hint" style="margin-top:5px">Typed by requesters and not found in the station master. Worth adding.</p><ul style="margin:10px 0 0;padding-left:18px">'+unlisted.map(n=>'<li>'+esc(n)+'</li>').join('')+'</ul>':'<p class="hint" style="margin-top:5px">Nothing so far — every site used has matched the master.</p>')+
      '<div class="sep"></div><h3>Project names</h3><p class="hint" style="margin-top:5px">'+DB.projects.map(esc).join(', ')+'</p></div></div>'+
@@ -2601,8 +2610,8 @@ function wirePeople(v){
         '<div><label for="e-emp">Employee code</label><input id="e-emp" type="text" value="'+esc(u.empId||'')+'" autocomplete="off" placeholder="e.g. CPIL1234"><div class="hint">Used to sign in (Employee ID or email) and shown on the People and Usage pages. Leave blank if none.</div></div>'+
         '<div class="grid g2"><div><label for="e-role">Designation</label><input id="e-role" type="text" value="'+esc(u.role||'')+'" list="dl-role"></div><div><label for="e-dept">Department</label><select id="e-dept">'+deptOptions(u.dept)+'</select></div></div>'+
         '<div><label for="e-mgr">Reports to</label><select id="e-mgr">'+mgrOptions(u.managerId,u.id)+'</select></div>'+
-        '<div><label for="e-unit">Department <span class="hint" style="font-weight:400">which department’s data they work in (ALDS / CNG)</span></label><select id="e-unit"><option value="">ALDS (default)</option>'+DEPTS.map(d=>'<option '+((u.unit||'ALDS')===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
-        (GRANTS_ROLES()?'<div><label>Also sees these departments <span class="hint" style="font-weight:400">cross-department access</span></label><div class="row" style="gap:12px;flex-wrap:wrap;margin-top:4px">'+DEPTS.map(d=>'<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:400"><input type="checkbox" class="e-dv" value="'+esc(d)+'" style="width:auto" '+((u.deptsVisible||[]).indexOf(d)>-1?'checked':'')+'> '+esc(d)+'</label>').join('')+'</div><div class="hint">Tick the other departments this person may see as well — e.g. the ultimate purchaser. Their own department is always visible; gate pass is open to everyone.</div></div>':'')+
+        '<div><label>Department <span class="hint" style="font-weight:400">which department’s data they work in — click to switch</span></label><div class="row" id="e-unitseg" style="flex-wrap:wrap;gap:6px;margin-top:4px">'+WALL_DEPTS().map(d=>'<button type="button" class="btn sm e-unitbtn'+(((u.unit||'ALDS')===d)?' primary':'')+'" data-unit="'+esc(d)+'">'+esc(d)+(d==='ALDS'?' (default)':'')+'</button>').join('')+'</div><div class="hint" id="e-unitnote">Switches straight away when you click — no need to Save.</div></div>'+
+        (GRANTS_ROLES()?'<div><label>Also sees these departments <span class="hint" style="font-weight:400">cross-department access</span></label><div class="row" style="gap:12px;flex-wrap:wrap;margin-top:4px">'+WALL_DEPTS().filter(d=>d!=='ALDS').map(d=>'<label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:400"><input type="checkbox" class="e-dv" value="'+esc(d)+'" style="width:auto" '+((u.deptsVisible||[]).indexOf(d)>-1?'checked':'')+'> '+esc(d)+'</label>').join('')+'</div><div class="hint">Tick the other departments this person may see as well — e.g. the ultimate purchaser. Their own department is always visible; gate pass is open to everyone.</div></div>':'')+
         '<div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
@@ -2622,6 +2631,16 @@ function wirePeople(v){
       footer:'<button class="btn bad" id="e-reset" style="margin-right:auto">Reset password</button><button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
       onOpen:(mv,cl)=>{
         $('#e-reset',mv).onclick=()=>{ cl(); resetPasswordDialog(u) };
+        // Department quick-switch — persists on click, no Save needed
+        $$('.e-unitbtn',mv).forEach(b=>b.onclick=async()=>{
+          const nd=b.dataset.unit; if((u.unit||'ALDS')===nd) return;
+          try{ await rpc('set_user_unit',{p_user:u.id,p_unit:(nd==='ALDS'?null:nd)});
+            u.unit=(nd==='ALDS'?'':nd); const uu=DB.users.find(x=>x.id===u.id); if(uu) uu.unit=u.unit;
+            $$('.e-unitbtn',mv).forEach(x=>x.classList.toggle('primary',(u.unit||'ALDS')===x.dataset.unit));
+            const note=$('#e-unitnote',mv); if(note) note.textContent='Switched to '+nd+'.';
+            reloadSoon(['people']);
+          }catch(e){ fail(e); }
+        });
         wirePagesChecklist('e-pages',mv);
         $('#eg',mv).onclick=async()=>{const d=$('#e-dept',mv).value;
         const admEl=$('#e-adm',mv), adm=u.id===ME.id?true:(admEl?admEl.checked:!!u.admin);
@@ -2657,6 +2676,22 @@ function wirePeople(v){
       footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rg">Reassign</button>',
       onOpen:(mv,cl)=>{$('#rg',mv).onclick=async()=>{const id=$('#rs',mv).value, why=$('#rw',mv).value.trim(); if(!id) return $('#r-err',mv).textContent='Pick who it moves to.';
         try{ await rpc('reassign_step',{p_request:r.id,p_user:id,p_why:why}); await load(); cl(); render(); toast('Moved to '+user(id).name+'.','ok') }catch(e){ $('#r-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
+  if($('#un-add',v)) $('#un-add',v).onclick=async()=>{
+    const nm=($('#un-new',v).value||'').trim(); if(nm.length<2) return toast('Enter a department name.','bad');
+    try{ await rpc('add_unit',{p_name:nm}); await load(['people']); toast('Department “'+nm+'” created.','ok'); render(); }catch(e){ fail(e); } };
+  if($('#bd-go',v)) $('#bd-go',v).onclick=async()=>{
+    const dept=$('#bd-dept',v).value;
+    const people=($('#bd-list',v).value||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    if(!people.length) return toast('Paste at least one person (email, ID or name).','bad');
+    const res=$('#bd-res',v); res.innerHTML='<span class="hint">Applying '+people.length+'…</span>';
+    try{ const {data,error}=await SB.rpc('bulk_set_unit',{p_dept:dept,p_people:people}); if(error){ res.innerHTML=''; return fail(error); }
+      await load(['people']); const um=(data&&data.unmatched)||[]; res.innerHTML='';
+      modal({title:'Department updated',
+        body:'<p style="margin-top:0"><b>'+(data.set||0)+'</b> '+((data.set||0)===1?'person':'people')+' set to <b>'+esc(data.dept||'')+'</b>.'+(um.length?' <b>'+um.length+'</b> could not be matched:':' Everyone matched.')+'</p>'+
+          (um.length?'<ul style="margin:8px 0 0;padding-left:18px;font-size:13px">'+um.slice(0,40).map(x=>'<li>'+esc(x)+'</li>').join('')+(um.length>40?'<li>…and '+(um.length-40)+' more</li>':'')+'</ul>':''),
+        footer:'<button class="btn primary" data-x>Done</button>'});
+      render();
+    }catch(e){ res.innerHTML=''; fail(e); } };
   if($('#p-mgrupload',v)) localPicker($('#p-mgrupload',v),'Upload the Reports-to sheet (.xlsx)',async(file)=>{
     const res=$('#p-mgrres',v);
     if(['xlsx','xls'].indexOf(extOf(file.name))<0) return toast('Upload an Excel file.','bad');
