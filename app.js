@@ -2998,14 +2998,13 @@ function nativeCameraCapture(){
   });
 }
 /* ---- selfie look: fixed orientation + gentle filters ----
-   What you see is what gets saved: the live view, the preview and the stored
-   photo all show the person the right way round (as others see them, so writing
-   on a badge or shirt reads correctly) — never a mirror image, and there is no
-   flip to choose. The front camera on the phone app delivers a MIRRORED feed, so
-   the live <video> carries the .mirror class (scaleX(-1)) to show it un-mirrored,
-   and the capture passes mirror=true to flip that frame back to true orientation
-   before saving. Filters are mild light-and-colour looks only, so the face stays
-   recognisable. */
+   The phone's front camera delivers a MIRRORED feed. Standard selfie behaviour:
+   - the LIVE framing view is left mirror-like (the raw feed, no transform) so it
+     feels like a mirror and the person frames themselves without tilting;
+   - on CAPTURE the frame is flipped (mirror=true) so the SAVED photo and the
+     confirm preview are the true way round — as others see them, so writing on a
+     badge or shirt reads correctly, and the face stays usable as identity proof.
+   There is no flip button. Filters are mild light-and-colour looks only. */
 const SF_FILTERS=[
   {id:'natural',label:'Natural',css:''},
   {id:'bright', label:'Bright', css:'brightness(1.12) contrast(1.04) saturate(1.08)'},
@@ -3126,7 +3125,7 @@ function captureSelfie(title){
         }
         const showLive=()=>{ src='live'; mode='live';
           const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
-          video.muted=true; video.className='selfie-video mirror'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
+          video.muted=true; video.className='selfie-video'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
           const tint=document.createElement('div'); tint.className='sf-tint'; stage.appendChild(tint);   // colour wash for the Warm / Cool / Glow / Retro looks
           const ring=document.createElement('div'); ring.className='selfie-ring'; stage.appendChild(ring);   // face guide: a real face fills the oval, a held-up photo won't line up
           look.hidden=false; centreChip(); applyLook();
