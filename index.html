@@ -443,6 +443,22 @@ tr.row-await>td:first-child{box-shadow:inset 4px 0 0 var(--line-2)}
 .selfie-hint,.selfie-err{padding:18px;text-align:center;font-size:14px}
 .selfie-err{color:#fff}
 /* selfie looks: colour wash, round filter previews */
+/* Garuda (CNG stock) takeover */
+.garuda-mode .side,.garuda-mode .tabbar,.garuda-mode .main>.top{display:none!important}
+.garuda-mode .main{grid-column:1/-1}
+.garuda-mode #view{padding-top:0}
+.gar-top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:linear-gradient(120deg,#0c3aa6,#0a2c78);color:#fff;padding:12px 16px;border-radius:0 0 var(--r) var(--r);margin:-4px 0 14px}
+.gar-brand{font-weight:800;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
+.gar-brand img{height:20px}
+.gar-colsel{font:inherit;font-weight:600;padding:7px 10px;border-radius:8px;border:0;background:#fff;color:var(--ink);min-width:150px}
+.gar-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+.gar-actions .btn{background:rgba(255,255,255,.16);color:#fff;border-color:transparent}
+.gar-actions .btn:hover{background:rgba(255,255,255,.28)}
+.gar-box{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.gar-tile{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--surface);cursor:pointer;transition:border-color .12s}
+.gar-tile:hover{border-color:var(--indigo)}
+.gar-tile b{display:block;font-size:15px}
+.gar-subtabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
 .sf-tint{position:absolute;inset:0;mix-blend-mode:soft-light;pointer-events:none}
 .sf-filters{display:flex;gap:12px;overflow-x:auto;padding:12px 6px 2px;scrollbar-width:none;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
 .sf-filters::-webkit-scrollbar{display:none}
