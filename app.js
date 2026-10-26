@@ -1426,8 +1426,9 @@ function moreSheet(){
 /* every screen is a history entry, so the Android back button (and the browser's)
    steps back through screens instead of leaving the app */
 const routeHash=r=>'#'+r.name+(r.id?'/'+r.id:'');
+let _flDetailFresh=null;   // last flow id auto-refreshed on open (reset on every navigation)
 const go=(r,replace)=>{
-  ROUTE=r;
+  ROUTE=r; _flDetailFresh=null;
   // navigating always dismisses any open dialog so we never leave a stuck overlay
   try{ $$('.veil').forEach(x=>x.remove()); }catch(e){}
   try{ const url=location.pathname+location.search+routeHash(r);
@@ -1476,7 +1477,13 @@ function render(){
     case 'detail': v.innerHTML=viewDetail(ROUTE.id); wireDetail(v); break;
     case 'gate': v.innerHTML=viewGate(); wireGate(v); break;
     case 'gpreport': v.innerHTML=viewGpReport(); wireGpReport(v); break;
-    case 'flowdetail': v.innerHTML=viewFlowDetail(ROUTE.id); wireFlowDetail(v); break;
+    case 'flowdetail': v.innerHTML=viewFlowDetail(ROUTE.id); wireFlowDetail(v);
+      // always pull this one flow's latest state when it's opened, so a stale copy
+      // (e.g. after the phone was asleep and missed a realtime update) self-corrects
+      // without a full app restart. One lightweight query; guarded so it runs once per open.
+      if(_flDetailFresh!==ROUTE.id){ _flDetailFresh=ROUTE.id; const _id=ROUTE.id;
+        loadFlowsSome([_id]).then(()=>{ if(ROUTE.name==='flowdetail'&&ROUTE.id===_id) render(); }).catch(()=>{}); }
+      break;
   }
 }
 
