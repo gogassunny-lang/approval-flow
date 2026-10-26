@@ -1865,24 +1865,42 @@ function viewTasks(){
   return '<div class="card"><table class="cards"><thead><tr><th>Request</th><th>Given by</th><th>Given</th><th>The task</th></tr></thead><tbody>'+
     l.map(r=>{const m=myOpenTask(r);return '<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(typeLabel(r))+' · '+esc(r.ref)+'</div></td><td class="hint meta">from '+esc(user(m.step.userId).name)+'</td><td class="hint num meta">'+esc(fmtD(m.task.assignedAt))+'</td><td class="pos">'+esc(m.task.task)+'</td></tr>'}).join('')+'</tbody></table></div>';
 }
-let allF={q:'',status:'',type:''};
+let allF={q:'',status:'',type:'',month:'',date:'',pendWith:''};
+// IST calendar day of a timestamp, as YYYY-MM-DD (matches the <input type=date>/month values)
+const istDay=t=>t?new Date(t).toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}):'';
+// shared month/date filter used by BOTH engines on the All requests page
+const dateMatch=createdAt=>{ if(allF.date) return istDay(createdAt)===allF.date;
+  if(allF.month) return istDay(createdAt).slice(0,7)===allF.month; return true; };
 function viewAll(){
   const base=visible();
   let l=base.slice().sort((a,b)=>b.createdAt-a.createdAt);
   if(allF.status) l=l.filter(r=>r.status===allF.status); if(allF.type) l=l.filter(r=>r.type===allF.type);
+  l=l.filter(r=>dateMatch(r.createdAt));
+  if(allF.pendWith) l=l.filter(r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===allF.pendWith);
   if(allF.q){const q=allF.q.toLowerCase();l=l.filter(r=>(docTitle(r)+' '+r.ref+' '+user(r.requesterId).name+' '+(r.f.remarks||'')).toLowerCase().includes(q))}
   // tell apart "no legacy requests at all" from "none match the filter" — the
   // ALDS PO/WO flows render in their own section just below this one.
   const empty = base.length===0
     ? '<div class="card"><div class="empty"><h3>No custom-chain requests</h3><p class="hint">These filters cover REQ-I / REQ-W custom-chain requests. ALDS PO / WO flows are shown below and have their own filter.</p></div></div>'
     : '<div class="card"><div class="empty"><h3>Nothing matches that</h3></div></div>';
+  const pendIds=[...new Set(base.filter(r=>r.status==='In Progress'&&r.chain[r.current]).map(r=>r.chain[r.current].userId))].sort((a,b)=>user(a).name.localeCompare(user(b).name));
+  if(allF.pendWith&&pendIds.indexOf(allF.pendWith)<0) allF.pendWith='';
+  const anyF=allF.q||allF.status||allF.type||allF.month||allF.date||allF.pendWith;
   return '<div class="card pad" style="margin-bottom:16px"><div class="row filters-row" style="flex-wrap:wrap;gap:12px"><div style="flex:1;min-width:220px"><input id="a-q" type="text" placeholder="Search any number (FLOW-, PO/WO no. e.g. 001), site, vendor, requester or remark" value="'+esc(allF.q)+'"></div>'+
     '<select id="a-ty" style="width:auto"><option value="">Both types</option><option value="indent" '+(allF.type==='indent'?'selected':'')+'>Indent</option><option value="workorder" '+(allF.type==='workorder'?'selected':'')+'>Work order</option></select>'+
-    '<select id="a-st" style="width:auto"><option value="">Every status</option>'+['In Progress','Info Requested','Approved','Rejected'].map(s=>'<option '+(allF.status===s?'selected':'')+'>'+s+'</option>').join('')+'</select></div></div>'+
+    '<select id="a-st" style="width:auto"><option value="">Every status</option>'+['In Progress','Info Requested','Approved','Rejected'].map(s=>'<option '+(allF.status===s?'selected':'')+'>'+s+'</option>').join('')+'</select>'+
+    '<input id="a-mo" type="month" title="Filter by month raised" value="'+esc(allF.month)+'" style="width:auto">'+
+    '<input id="a-dt" type="date" title="Filter by exact date raised" value="'+esc(allF.date)+'" style="width:auto">'+
+    (pendIds.length?'<select id="a-pw" title="Legacy: who it is pending with now" style="width:auto"><option value="">Pending with (anyone)</option>'+pendIds.map(id=>'<option value="'+id+'" '+(allF.pendWith===id?'selected':'')+'>'+esc(user(id).name)+'</option>').join('')+'</select>':'')+
+    (anyF?'<button class="btn ghost sm" id="a-clear">Clear filters</button>':'')+'</div></div>'+
     (l.length?'<div class="card">'+rowsHTML(l)+'</div>':empty);
 }
 document.addEventListener('input',e=>{if(e.target.id==='a-q'){allF.q=e.target.value;const p=e.target.selectionStart;render();const n=$('#a-q');if(n){n.focus();n.setSelectionRange(p,p)}}});
-document.addEventListener('change',e=>{if(e.target.id==='a-st'){allF.status=e.target.value;render()} if(e.target.id==='a-ty'){allF.type=e.target.value;render()}});
+document.addEventListener('change',e=>{if(e.target.id==='a-st'){allF.status=e.target.value;render()} if(e.target.id==='a-ty'){allF.type=e.target.value;render()}
+  if(e.target.id==='a-mo'){allF.month=e.target.value;if(allF.month)allF.date='';render()}
+  if(e.target.id==='a-dt'){allF.date=e.target.value;if(allF.date)allF.month='';render()}
+  if(e.target.id==='a-pw'){allF.pendWith=e.target.value;render()}});
+document.addEventListener('click',e=>{if(e.target.id==='a-clear'){allF={q:'',status:'',type:'',month:'',date:'',pendWith:''};render()}});
 
 /* ============================================================
    Detail — the chain, sub-branches, decisions
@@ -4004,7 +4022,8 @@ function flowRow(f){
    They are raised from the Raise-a-request page, so there is no separate raise tab.
    Each section carries a "requester" dropdown + search so an approver facing 100s of
    flows can narrow to one person who raised them and act on just those. */
-let flowFilter={turn:{req:'',q:''},mine:{req:'',q:''},all:{req:'',q:''}};
+let flowFilter={turn:{req:'',q:'',stage:''},mine:{req:'',q:'',stage:''},all:{req:'',q:'',stage:''}};
+const STAGE_ORDER=['Indent','Purchase','Vendor Process','Payment Advice','Advice Submit','Vendor Confirm','SRN','GRN'];
 function flowSection(ctx){
   let list;
   if(ctx==='turn') list=flowMyTurn();
@@ -4013,7 +4032,7 @@ function flowSection(ctx){
   else if(ctx==='mine') list=flowMine();
   else list=DB.flows.slice();
   if(!list.length) return '';
-  const ft=flowFilter[ctx]||(flowFilter[ctx]={req:'',q:''});
+  const ft=flowFilter[ctx]||(flowFilter[ctx]={req:'',q:'',stage:''});
   // the people who raised the flows in this section (so an approver sees only the
   // requesters whose requests actually reached them)
   const reqIds=[...new Set(list.map(f=>f.requesterId))].sort((a,b)=>user(a).name.localeCompare(user(b).name));
@@ -4026,8 +4045,14 @@ function flowSection(ctx){
     else if(allF.type==='workorder') shown=shown.filter(f=>f.head==='WO');
     if(allF.status){ const sm={'In Progress':'running','Approved':'completed'}[allF.status];
       shown = sm ? shown.filter(f=>f.status===sm) : []; }   // Info Requested / Rejected have no flow equivalent
+    shown=shown.filter(f=>dateMatch(f.createdAt));   // #2: the top bar's month / date cover both engines
   }
   if(ft.req) shown=shown.filter(f=>f.requesterId===ft.req);
+  // #1 stage filter: segregate pending files by the stage their LIVE step is at (running flows only)
+  const stageCount={}; list.forEach(f=>{const s=flowLive(f); if(s&&s.stage) stageCount[s.stage]=(stageCount[s.stage]||0)+1;});
+  const stageOpts=Object.keys(stageCount).sort((a,b)=>{const ia=STAGE_ORDER.indexOf(a),ib=STAGE_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
+  if(ft.stage&&!stageCount[ft.stage]) ft.stage='';
+  if(ft.stage) shown=shown.filter(f=>{const s=flowLive(f);return !!(s&&s.stage===ft.stage);});
   // text search: on the All requests page the page's own search box drives it (so one
   // box covers both engines); elsewhere this section's own box does. It matches the
   // FLOW reference AND the real PO / WO / indent number (stored in the title and fields),
@@ -4039,15 +4064,20 @@ function flowSection(ctx){
   shown.sort((a,b)=>b.createdAt-a.createdAt);
   const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='tagged'?'Tagged to you — your input needed':ctx==='awaiting'?'Awaiting reply — you asked someone':ctx==='mine'?'My ALDS flows':'ALDS PO / WO flows';
   const onAll=ctx==='all';
-  const filtered=ft.req||ft.q||(onAll&&(allF.type||allF.status||allF.q));
-  const bar=reqIds.length>1||list.length>1
+  const filtered=ft.req||ft.q||ft.stage||(onAll&&(allF.type||allF.status||allF.q||allF.month||allF.date));
+  const stageSel=stageOpts.length>1
+    ? '<select class="fl-stage" data-ctx="'+ctx+'" title="Show only files pending at a stage" style="width:auto"><option value="">All stages ('+stageOpts.length+')</option>'+
+        stageOpts.map(st=>'<option value="'+esc(st)+'" '+(ft.stage===st?'selected':'')+'>'+esc(st)+' ('+stageCount[st]+')</option>').join('')+'</select>'
+    : '';
+  const bar=reqIds.length>1||list.length>1||stageSel
     ? '<div class="row filters-row" style="gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">'+
-        '<select class="fl-req" data-ctx="'+ctx+'" style="width:auto"><option value="">All requesters ('+reqIds.length+')</option>'+
-          reqIds.map(id=>'<option value="'+id+'" '+(ft.req===id?'selected':'')+'>'+esc(user(id).name)+'</option>').join('')+'</select>'+
+        (reqIds.length>1||list.length>1?'<select class="fl-req" data-ctx="'+ctx+'" style="width:auto"><option value="">All requesters ('+reqIds.length+')</option>'+
+          reqIds.map(id=>'<option value="'+id+'" '+(ft.req===id?'selected':'')+'>'+esc(user(id).name)+'</option>').join('')+'</select>':'')+
+        stageSel+
         // the All page already has the top search box, so don't show a duplicate here
-        (onAll?'<div class="hint" style="flex:1;min-width:180px;align-self:center">Use the search box at the top to find a number, title or division.</div>'
+        (onAll?'<div class="hint" style="flex:1;min-width:140px;align-self:center">Use the search box at the top to find a number, title or division.</div>'
              :'<input class="fl-q" data-ctx="'+ctx+'" type="text" placeholder="Search number, title or division" value="'+esc(ft.q)+'" style="flex:1;min-width:180px">')+
-        ((ft.req||ft.q)?'<button class="btn ghost sm fl-clear" data-ctx="'+ctx+'">Clear</button>':'')+
+        ((ft.req||ft.q||ft.stage)?'<button class="btn ghost sm fl-clear" data-ctx="'+ctx+'">Clear</button>':'')+
       '</div>'
     : '';
   return '<div class="card" style="margin-top:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>'+label+'</h3>'+
@@ -4059,8 +4089,9 @@ function flowSection(ctx){
 }
 function wireFlowRows(v){
   $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow}));
-  $$('.fl-req',v).forEach(sel=>sel.onchange=()=>{const c=sel.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:''})).req=sel.value;render()});
-  $$('.fl-clear',v).forEach(b=>b.onclick=()=>{const c=b.dataset.ctx;flowFilter[c]={req:'',q:''};render()});
+  $$('.fl-req',v).forEach(sel=>sel.onchange=()=>{const c=sel.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:'',stage:''})).req=sel.value;render()});
+  $$('.fl-stage',v).forEach(sel=>sel.onchange=()=>{const c=sel.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:'',stage:''})).stage=sel.value;render()});
+  $$('.fl-clear',v).forEach(b=>b.onclick=()=>{const c=b.dataset.ctx;flowFilter[c]={req:'',q:'',stage:''};render()});
   $$('.fl-q',v).forEach(inp=>inp.oninput=()=>{const c=inp.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:''})).q=inp.value;
     const p=inp.selectionStart;render();const n=$('.fl-q[data-ctx="'+c+'"]');if(n){n.focus();n.setSelectionRange(p,p)}});
 }
