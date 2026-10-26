@@ -2748,7 +2748,7 @@ async function loadGaruda(force){
       SB.from('cng_items').select('code,name,item_type,part_life').order('code'),
       SB.from('cng_stations').select('station_no,station_name').order('station_no'),
       SB.from('cng_lots').select('id,request_id,item_code,item_name,item_type,vendor,po_no,grn_no,grn_date,invoice_no,order_qty,delivered_qty,accepted_qty,rejected_qty,rate,series_prefix,series_from,series_to').eq('minted',true).order('created_at',{ascending:false}),
-      SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,vendor,rate,po_no,grn_no,status,station_no,issued_to,issued_by,issued_at,allotted_by,allotted_at,allot_photo,consumed_by,consumed_at,returned_by,returned_at,replaced_from,replaced_at').order('id')
+      SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,vendor,rate,po_no,grn_no,status,station_no,issued_to,issued_by,issued_by_name,issued_at,allotted_by,allotted_by_name,allotted_at,allot_photo,consumed_by,consumed_by_name,consume_remark,consumed_at,returned_by,returned_by_name,returned_at,replaced_from,replaced_at').order('id')
     ]);
     DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||''}));
     DB.garudaStations=(st.data||[]).map(r=>({no:r.station_no,name:r.station_name||''}));
@@ -2804,7 +2804,9 @@ function garIssue(){
     html+='<div class="card pad" style="margin-bottom:12px"><h3 style="margin:0 0 4px">Issue a range</h3><p class="hint" style="margin:0 0 10px">Same series, up to 100 codes, all still in store. Leave “To” blank to issue just one.</p>'+
       '<div class="grid g2" style="gap:10px"><div><label for="ir-from">From QR</label><input id="ir-from" placeholder="GAR-DSP-00001" autocomplete="off" style="text-transform:uppercase"></div><div><label for="ir-to">To QR (optional)</label><input id="ir-to" placeholder="GAR-DSP-00010" autocomplete="off" style="text-transform:uppercase"></div>'+
       '<div><label for="ir-stn">Station</label><input id="ir-stn" list="cng-stn-dl2" placeholder="Station number" autocomplete="off"><datalist id="cng-stn-dl2">'+(DB.garudaStations||[]).map(s=>'<option value="'+esc(s.no)+'">'+esc(s.name)+'</option>').join('')+'</datalist></div>'+
-      '<div><label for="ir-to2">Issued to</label><input id="ir-to2" type="text" placeholder="Name of the person / technician"></div></div>'+
+      '<div><label for="ir-to2">Issued to</label><input id="ir-to2" type="text" placeholder="Person / technician taking it"></div>'+
+      '<div><label for="ir-by">Issued by</label><input id="ir-by" type="text" value="'+esc((ME&&ME.name)||'')+'" placeholder="Who is issuing"></div>'+
+      '<div><label for="ir-date">Issue date</label><input id="ir-date" type="date" value="'+esc(DAY())+'"></div></div>'+
       '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="ir-go">Issue</button><span id="ir-err" class="hint" style="color:var(--stop)"></span></div></div>';
     html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">In store</h3><span class="tag t-ok" style="margin-left:auto">'+inStore.length+'</span></div>'+
       '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th></th></tr></thead><tbody>'+
@@ -2925,8 +2927,8 @@ function garTrace(){
       sec('GRN',ls.map(l=>'<div class="hint">GRN '+esc(l.grn_no||'—')+(l.grn_date?' · '+esc(l.grn_date):'')+' · qty '+(l.accepted_qty||0)+' · inv '+esc(l.invoice_no||'—')+' · QR '+esc(l.series_from||'')+((l.accepted_qty||0)>1?'…'+esc(l.series_to||''):'')+'</div>').join(''))+
       sec('Approvals (Bangalore & HO)',approvals)+
       sec('Inventory (in store)',inv.map(t=>'<span class="tag t-ok" style="margin:2px;display:inline-block">'+esc(t.id)+'</span>').join(''))+
-      sec('Issue & allot',out.map(t=>'<div class="hint">'+esc(t.id)+' → station '+esc(t.station_no||'—')+' · to '+esc(t.issued_to||'—')+(t.allotted_at?' · allotted '+esc(fmtD(ts(t.allotted_at))):'')+'</div>').join(''))+
-      sec('Consumed & warehouse',cons.map(t=>'<div class="hint">'+esc(t.id)+' · consumed'+(t.consumed_by?' by '+esc(user(t.consumed_by).name):'')+(t.returned_at?' · returned '+esc(fmtD(ts(t.returned_at))):'')+'</div>').join(''))+
+      sec('Issue & allot',out.map(t=>'<div class="hint">'+esc(t.id)+' → station '+esc(t.station_no||'—')+' · to '+esc(t.issued_to||'—')+(t.issued_by_name?' · by '+esc(t.issued_by_name):'')+(t.allotted_at?' · allotted'+(t.allotted_by_name?' by '+esc(t.allotted_by_name):'')+' '+esc(fmtD(ts(t.allotted_at))):'')+'</div>').join(''))+
+      sec('Consumed & warehouse',cons.map(t=>'<div class="hint">'+esc(t.id)+' · consumed'+(t.consumed_by_name?' by '+esc(t.consumed_by_name):'')+(t.consume_remark?' ('+esc(t.consume_remark)+')':'')+(t.returned_at?' · accepted back'+(t.returned_by_name?' by '+esc(t.returned_by_name):'')+' '+esc(fmtD(ts(t.returned_at))):'')+'</div>').join(''))+
       sec('Replaced',repl.map(t=>'<div class="hint">'+esc(t.replaced_from)+' → '+esc(t.id)+'</div>').join(''))+
       '</div>';
   }).join('');
@@ -2989,13 +2991,13 @@ function wireGaruda(v){
   if($('#g-scan',v)) $('#g-scan',v).onclick=()=>cngScanDialog();
   if($('#g-scan2',v)) $('#g-scan2',v).onclick=()=>cngScanDialog();
   if($('#ir-go',v)) $('#ir-go',v).onclick=async()=>{
-    const from=($('#ir-from',v).value||'').trim(), to=($('#ir-to',v).value||'').trim(), stn=($('#ir-stn',v).value||'').trim(), who=($('#ir-to2',v).value||'').trim(), err=$('#ir-err',v);
+    const from=($('#ir-from',v).value||'').trim(), to=($('#ir-to',v).value||'').trim(), stn=($('#ir-stn',v).value||'').trim(), who=($('#ir-to2',v).value||'').trim(), by=($('#ir-by',v).value||'').trim(), dt=($('#ir-date',v).value||'')||null, err=$('#ir-err',v);
     err.textContent='';
     if(!from) return err.textContent='Enter the first QR.';
     if(!stn) return err.textContent='Choose a station.';
     if(!who) return err.textContent='Enter who it is issued to.';
     busy(true);
-    try{ const n=await rpc('cng_issue_range',{p_from:garTagCode(from),p_to:to?garTagCode(to):garTagCode(from),p_station:stn,p_to_person:who}); await cngReload(); toast(n+' QR'+(n>1?'s':'')+' issued.','ok'); }
+    try{ const n=await rpc('cng_issue_range',{p_from:garTagCode(from),p_to:to?garTagCode(to):garTagCode(from),p_station:stn,p_to_person:who,p_by_name:by,p_issue_date:dt}); await cngReload(); toast(n+' QR'+(n>1?'s':'')+' issued.','ok'); }
     catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
     busy(false);
   };
@@ -3072,10 +3074,21 @@ async function cngTagPanel(code){
   const nextRole=t.status==='in_store'||t.status==='consumed'?'store':(t.status==='issued'||t.status==='allotted'?'site':'');
   const roleNote=(!actions&&nextRole)?'<div class="hint" style="margin-top:12px">The next step ('+(t.status==='in_store'?'issue':t.status==='issued'?'allot':t.status==='allotted'?'consume':'return')+') needs the <b>'+nextRole+'</b> role. Ask an admin to grant it.</div>':'';
   modal({title:t.id,
-    body:'<div class="kv" style="margin-top:0"><dt>Item</dt><dd>'+esc(t.item_code)+' · '+esc(t.item_name||'')+'</dd>'+
+    body:'<div class="kv" style="margin-top:0"><dt>Item</dt><dd>'+esc(t.item_name||'')+'</dd>'+
+      '<dt>ERP code</dt><dd>'+esc(t.item_code||'—')+'</dd>'+
       '<dt>Status</dt><dd><span class="tag '+st[0]+'">'+st[1]+'</span></dd>'+
-      (t.station_no?'<dt>Station</dt><dd>'+esc(t.station_no)+'</dd>':'')+(t.issued_to?'<dt>Issued to</dt><dd>'+esc(t.issued_to)+'</dd>':'')+
+      (t.po_no?'<dt>PO</dt><dd>'+esc(t.po_no)+'</dd>':'')+
       (t.grn_no?'<dt>GRN</dt><dd>'+esc(t.grn_no)+'</dd>':'')+
+      (t.vendor?'<dt>Vendor</dt><dd>'+esc(t.vendor)+'</dd>':'')+
+      (t.rate?'<dt>Rate</dt><dd>'+esc(t.rate)+'</dd>':'')+
+      (t.station_no?'<dt>Station</dt><dd>'+esc(t.station_no)+'</dd>':'')+
+      (t.issued_to?'<dt>Issued to</dt><dd>'+esc(t.issued_to)+'</dd>':'')+
+      (t.issued_at?'<dt>Issue date</dt><dd>'+esc(fmtD(ts(t.issued_at)))+'</dd>':'')+
+      (t.issued_by_name?'<dt>Issued by</dt><dd>'+esc(t.issued_by_name)+'</dd>':'')+
+      (t.allotted_by_name?'<dt>Allotted by</dt><dd>'+esc(t.allotted_by_name)+'</dd>':'')+
+      (t.consumed_by_name?'<dt>Consumed by</dt><dd>'+esc(t.consumed_by_name)+'</dd>':'')+
+      (t.consume_remark?'<dt>Remark</dt><dd>'+esc(t.consume_remark)+'</dd>':'')+
+      (t.returned_by_name?'<dt>Accepted by</dt><dd>'+esc(t.returned_by_name)+'</dd>':'')+
       (t.replaced_from?'<dt>Replaces</dt><dd><button class="btn ghost sm" data-goto="'+esc(t.replaced_from)+'" style="padding:0;color:var(--indigo)">'+esc(t.replaced_from)+'</button></dd>':'')+
       (replacedBy?'<dt>Replaced by</dt><dd><button class="btn ghost sm" data-goto="'+esc(replacedBy.id)+'" style="padding:0;color:var(--indigo)">'+esc(replacedBy.id)+'</button></dd>':'')+'</div>'+
       '<div class="grid" style="gap:9px;margin-top:14px">'+actions+(canReplace?'<button class="btn" data-act="replace">Replace a damaged sticker</button>':'')+'</div>'+roleNote+
@@ -3084,9 +3097,10 @@ async function cngTagPanel(code){
     footer:'<button class="btn" data-x>Close</button>',
     onOpen:(mv,cl)=>{ $$('[data-act]',mv).forEach(b=>b.onclick=()=>{const a=b.dataset.act;
       if(a==='issue') cngIssueDialog(t,cl);
-      else if(a==='replace') cngReplaceDialog(t,cl);
-      else { const fn={allot:'cng_allot',consume:'cng_consume',return:'cng_return'}[a];
-        cngDo(fn, a==='allot'?{p_tag:t.id,p_photo:''}:{p_tag:t.id}, cl); } });
+      else if(a==='allot') cngAllotDialog(t,cl);
+      else if(a==='consume') cngConsumeDialog(t,cl);
+      else if(a==='return') cngReturnDialog(t,cl);
+      else if(a==='replace') cngReplaceDialog(t,cl); });
       $$('[data-goto]',mv).forEach(b=>b.onclick=()=>{ const c=b.dataset.goto; cl(); setTimeout(()=>cngTagPanel(c),0); }); }});
 }
 async function cngDo(fn,args,close){ busy(true);
@@ -3094,15 +3108,54 @@ async function cngDo(fn,args,close){ busy(true);
   catch(e){ fail(e); } finally{ busy(false); } }
 function cngIssueDialog(t,parentClose){
   modal({title:'Issue '+t.id,
-    body:'<p class="hint" style="margin-top:0">Issue this QR to a station and the person taking it.</p>'+
-      '<div><label for="is-stn">Station</label><input id="is-stn" list="cng-stn-dl" placeholder="Station number" autocomplete="off"><datalist id="cng-stn-dl">'+(DB.garudaStations||[]).map(s=>'<option value="'+esc(s.no)+'">'+esc(s.name)+'</option>').join('')+'</datalist></div>'+
-      '<div style="margin-top:10px"><label for="is-to">Issued to</label><input id="is-to" type="text" placeholder="Name of the person / technician"></div>'+
+    body:'<p class="hint" style="margin-top:0">Issue this QR from the store.</p>'+
+      '<div class="grid g2" style="gap:10px"><div><label for="is-stn">Station</label><input id="is-stn" list="cng-stn-dl" placeholder="Station number" autocomplete="off"><datalist id="cng-stn-dl">'+(DB.garudaStations||[]).map(s=>'<option value="'+esc(s.no)+'">'+esc(s.name)+'</option>').join('')+'</datalist></div>'+
+      '<div><label for="is-date">Issue date</label><input id="is-date" type="date" value="'+esc(DAY())+'"></div>'+
+      '<div><label for="is-to">Issued to</label><input id="is-to" type="text" placeholder="Person / technician taking it"></div>'+
+      '<div><label for="is-by">Issued by</label><input id="is-by" type="text" value="'+esc((ME&&ME.name)||'')+'" placeholder="Who is issuing it"></div></div>'+
       '<div id="is-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="is-go">Issue</button>',
-    onOpen:(mv,cl)=>{ $('#is-go',mv).onclick=async()=>{ const stn=$('#is-stn',mv).value.trim(), to=$('#is-to',mv).value.trim();
+    onOpen:(mv,cl)=>{ $('#is-go',mv).onclick=async()=>{ const stn=$('#is-stn',mv).value.trim(), to=$('#is-to',mv).value.trim(), by=$('#is-by',mv).value.trim(), dt=$('#is-date',mv).value||null;
       if(!stn) return $('#is-err',mv).textContent='Choose a station.'; if(!to) return $('#is-err',mv).textContent='Enter who it is issued to.';
-      busy(true); try{ await rpc('cng_issue',{p_tag:t.id,p_station:stn,p_to:to}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Issued.','ok'); }
+      busy(true); try{ await rpc('cng_issue',{p_tag:t.id,p_station:stn,p_to:to,p_by_name:by,p_issue_date:dt}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Issued.','ok'); }
       catch(e){ busy(false); $('#is-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
+}
+/* Allot at facility — who allotted it, and an optional item photo */
+function cngAllotDialog(t,parentClose){
+  modal({title:'Allot '+t.id,
+    body:'<p class="hint" style="margin-top:0">Mark this QR fitted at the station. The time is saved automatically.</p>'+
+      '<div><label for="al-by">Allotted by</label><input id="al-by" type="text" value="'+esc((ME&&ME.name)||'')+'" placeholder="Who fitted it"></div>'+
+      '<div style="margin-top:10px"><label for="al-photo">Item photo <span class="hint" style="font-weight:400">optional</span></label><input id="al-photo" type="file" accept="image/*" capture="environment"></div>'+
+      '<div id="al-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="al-go">Mark allotted</button>',
+    onOpen:(mv,cl)=>{ $('#al-go',mv).onclick=async()=>{ const by=$('#al-by',mv).value.trim(); const f=$('#al-photo',mv).files[0];
+      busy(true); try{ let path='';
+        if(f){ path=ME.id+'/garuda-'+t.id+'-'+uid()+'.jpg'; const {error}=await SB.storage.from('documents').upload(path,f,{contentType:f.type||'image/jpeg',upsert:false}); if(error){ path=''; } }
+        await rpc('cng_allot',{p_tag:t.id,p_photo:path,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Allotted.','ok'); }
+      catch(e){ busy(false); $('#al-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
+}
+/* Consume on site — who consumed it, and a short remark */
+function cngConsumeDialog(t,parentClose){
+  modal({title:'Consume '+t.id,
+    body:'<p class="hint" style="margin-top:0">Mark the old part used on site.</p>'+
+      '<div><label for="cs-by">Consumed by</label><input id="cs-by" type="text" value="'+esc((ME&&ME.name)||'')+'" placeholder="Who removed it"></div>'+
+      '<div style="margin-top:10px"><label for="cs-rmk">Remark</label><input id="cs-rmk" type="text" placeholder="e.g. worn out, leaking"></div>'+
+      '<div id="cs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="cs-go">Mark consumed</button>',
+    onOpen:(mv,cl)=>{ $('#cs-go',mv).onclick=async()=>{ const by=$('#cs-by',mv).value.trim(), rmk=$('#cs-rmk',mv).value.trim();
+      busy(true); try{ await rpc('cng_consume',{p_tag:t.id,p_remark:rmk,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Consumed.','ok'); }
+      catch(e){ busy(false); $('#cs-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
+}
+/* Warehouse accept — who accepted the old part back */
+function cngReturnDialog(t,parentClose){
+  modal({title:'Accept return '+t.id,
+    body:'<p class="hint" style="margin-top:0">Accept the old part back at the warehouse. It is not put back as new stock.</p>'+
+      '<div><label for="rt-by">Accepted by</label><input id="rt-by" type="text" value="'+esc((ME&&ME.name)||'')+'" placeholder="Who accepted it"></div>'+
+      '<div id="rt-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rt-go">Accept return</button>',
+    onOpen:(mv,cl)=>{ $('#rt-go',mv).onclick=async()=>{ const by=$('#rt-by',mv).value.trim();
+      busy(true); try{ await rpc('cng_return',{p_tag:t.id,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Return accepted.','ok'); }
+      catch(e){ busy(false); $('#rt-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
 }
 function cngReplaceDialog(t,parentClose){
   modal({title:'Replace '+t.id,
@@ -3164,10 +3217,11 @@ async function selfieUpload(blob){
   const path=ME.id+'/gate-'+uid()+'.jpg';
   const {error}=await SB.storage.from('documents').upload(path,blob,{contentType:'image/jpeg',upsert:false});
   if(error) throw error;
-  // a small copy (~240px, ~10 KB) for the lists, so every list view doesn't pull the
-  // full photo. Best-effort: if it fails, lists simply fall back to the full photo.
-  try{ const tb=await downscaleToJpeg(blob,240,0.7);
-    if(tb) await SB.storage.from('documents').upload(thumbOf(path),tb,{contentType:'image/jpeg',upsert:false}); }catch(e){}
+  // the ~240px list thumbnail is made and uploaded IN THE BACKGROUND, so the person
+  // isn't kept waiting for a second upload. If it isn't ready yet, lists just fall
+  // back to the full photo. Best-effort.
+  (async()=>{ try{ const tb=await downscaleToJpeg(blob,240,0.7);
+    if(tb) await SB.storage.from('documents').upload(thumbOf(path),tb,{contentType:'image/jpeg',upsert:false}); }catch(e){} })();
   return path;
 }
 /* shrink any picked/captured image to a <=edge jpeg (strips EXIF, caps size) */
