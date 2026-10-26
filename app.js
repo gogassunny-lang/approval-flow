@@ -863,7 +863,7 @@ async function enter(session){
     pushRegister();
     const pubTag=(location.hash.match(/^#g\/(.+)$/)||[])[1];   // scanned a QR while signed in
     paintPin(); const h=pubTag?null:routeFromHash();
-    const base=ASSISTANT()?{name:'assist'}:(GATE_ONLY()||HR_HEAD())?{name:'gate'}:{name:'dash'};
+    const base=ASSISTANT()?{name:'assist'}:SUBADMIN()?{name:'people'}:(GATE_ONLY()||HR_HEAD())?{name:'gate'}:{name:'dash'};
     // deep link (from a notification tap): open the target, but keep the home screen
     // beneath it in history so Back returns to the app rather than exiting
     let target=base;
@@ -1331,6 +1331,8 @@ function allowedPages(u){
 /* sub-admin = user-desk powers without full Admin (see-all, reports, masters) */
 const CAN_CREATE=()=>!!(ME&&(ME.admin||ME.owner||ME.canCreateUsers));
 const CAN_MANAGE=()=>!!(ME&&(ME.admin||ME.owner||ME.canManageUsers));
+// a sub-admin (user-desk powers only, not a full admin) manages users and nothing else
+const SUBADMIN=()=>!!(ME&&(ME.canCreateUsers||ME.canManageUsers)&&!ME.admin&&!ME.owner);
 const GRANTS_ROLES=()=>!!(ME&&(ME.admin||ME.owner));   // who may set see-all / admin / sub-admin
 // may the signed-in person edit this user? sub-admins cannot touch an Admin or the owner
 const canEditUser=u=>{ if(ME.admin||ME.owner) return !u.owner||u.id===ME.id; if(ME.canManageUsers) return !u.admin&&!u.owner; return false; };
@@ -1343,9 +1345,10 @@ const GATE_ONLY=()=>!!(ME&&ME.gateOnly&&!ME.admin&&!ME.owner);   // gate-only ac
 const ASSISTANT=()=>!!(ME&&ME.assistsId&&!ME.admin&&!ME.owner);  // a proxy who assists one principal
 const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
-const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner);
+const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail';   // worklist + own gate passes + read-only detail
+  if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda';   // manage users (+ gate pass as an employee)
   return k==='gate'||k==='gpreport'; };
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
@@ -1445,7 +1448,7 @@ function routeFromHash(){ const m=location.hash.match(/^#([a-z]+)(?:\/([\w-]+))?
 const head=(t,s)=>{$('#page-title').textContent=t;$('#page-sub').textContent=s||''};
 function render(){
   if(!ME) return;
-  if(restrictedAcct()&&!restrictedPage(ROUTE.name)) ROUTE=ASSISTANT()?{name:'assist'}:{name:'gate'};   // restricted accounts stay within their own pages
+  if(restrictedAcct()&&!restrictedPage(ROUTE.name)) ROUTE=ASSISTANT()?{name:'assist'}:SUBADMIN()?{name:'people'}:{name:'gate'};   // restricted accounts stay within their own pages
   if(ROUTE.name==='gpreport'&&!canSeeReports()) ROUTE={name:GATE_ONLY()||HR_HEAD()?'gate':'dash'};
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
