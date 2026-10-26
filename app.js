@@ -1390,8 +1390,21 @@ const PAGES=[
   {k:'garuda',label:'Garuda (CNG stock)',grp:'Records',when:()=>canUseGaruda()},
   {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll}
 ];
+const GAR_NAV=()=>GAR_COLS.concat([['download','Download report']]);
+function garExit(){ go({name:'dash'}); }
+function garGo(col){ if(col==='download'){ garDownloadReport(); return; } garudaTab=col; garudaStationSel=''; paintNav(); render(); }
 function paintNav(){
   if(!ME) return;
+  if(ROUTE.name==='garuda'){
+    const nav=$('#nav'); if(nav){
+      nav.innerHTML='<div class="gar-side-top"><button class="btn sm" id="garnav-exit">← Back to SETU</button><button class="btn sm primary" id="garnav-scan">📷 Scan a QR</button></div>'+
+        GAR_NAV().map(c=>'<button data-garcol="'+c[0]+'" class="'+(garudaTab===c[0]?'on':'')+'">'+esc(c[1])+'</button>').join('');
+      if($('#garnav-exit',nav)) $('#garnav-exit',nav).onclick=garExit;
+      if($('#garnav-scan',nav)) $('#garnav-scan',nav).onclick=()=>cngScanDialog();
+      $$('[data-garcol]',nav).forEach(b=>b.onclick=()=>garGo(b.dataset.garcol));
+    }
+    paintTabbar(); return;
+  }
   let h='',g='';
   PAGES.filter(p=>restrictedPage(p.k)).filter(p=>!p.when||p.when()).filter(p=>OPTIONAL_PAGES.every(o=>o.k!==p.k)||canSeePage(p.k)).forEach(p=>{ if(p.grp!==g){g=p.grp;h+='<div class="grp">'+esc(g)+'</div>'}
     const n=p.badge?p.badge():0;
@@ -2860,7 +2873,19 @@ function wirePeople(v){
 /* ============================================================
    Garuda — CNG stock (Stage 2a: masters browser; GRN/QR/Processed next)
    ============================================================ */
-let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaLoaded=false, garudaLoading=false;
+let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaItemSel='', garudaItemType='', garudaItemDetQ='', garudaStnItemQ='', garudaStnMin='', garudaStnMax='', garudaLoaded=false, garudaLoading=false;
+const garTile=(label,val)=>'<div class="card pad" style="padding:13px"><div class="hint" style="font-size:11px;letter-spacing:.05em;text-transform:uppercase">'+esc(label)+'</div><div style="font-size:24px;font-weight:800;margin-top:4px">'+esc(val)+'</div></div>';
+const garField=(label,val)=>'<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px"><div class="hint" style="font-size:10.5px;letter-spacing:.04em;text-transform:uppercase">'+esc(label)+'</div><div style="margin-top:3px;font-weight:600">'+esc(val||'—')+'</div></div>';
+function garTagFields(t){  // the full item-in-station detail card (image 1)
+  const lot=(DB.garudaLots||[]).find(l=>l.id===t.lot_id)||{};
+  const qty=(lot.accepted_qty!=null&&lot.accepted_qty!=='')?lot.accepted_qty+' NOS':'';
+  return '<div class="grid g3" style="gap:8px">'+
+    garField('Item name',t.item_name)+garField('ERP code',t.item_code)+garField('Purchase order',t.po_no)+
+    garField('GRN no',t.grn_no)+garField('GRN date',lot.grn_date)+garField('Vendor name',t.vendor)+
+    garField('Qty',qty)+garField('Rate',t.rate?'₹'+t.rate:'')+garField('Invoice no',lot.invoice_no)+
+    garField('Issue date',t.issued_at?String(t.issued_at).slice(0,10):'')+garField('Issue station no',t.station_no)+garField('Issued to',t.issued_to)+
+    garField('Issued by',t.issued_by_name)+'</div>';
+}
 const GAR_COLS=[['processed','Processed'],['issue','Issue'],['consumed','Consumed'],['items','Items'],['stations','Stations'],['qr','QR management'],['trace','Trace'],['history','History'],['admin','Admin']];
 // a QR encodes a URL so a random phone camera opens the public page; the in-app
 // scanner pulls the GAR-… code back out of whatever it reads (URL or bare code)
@@ -2885,9 +2910,18 @@ async function loadGaruda(force){
   finally{ garudaLoading=false; }
 }
 function garTopBar(){
-  return '<div class="gar-top"><div class="gar-brand"><img src="logo-lockup-white.png" alt="">CNG Garuda</div>'+
-    '<select id="gar-col" class="gar-colsel" aria-label="Garuda section">'+GAR_COLS.map(c=>'<option value="'+c[0]+'"'+(garudaTab===c[0]?' selected':'')+'>'+esc(c[1])+'</option>').join('')+'</select>'+
-    '<div class="gar-actions"><button class="btn sm" id="g-scan">📷 Scan a QR</button><button class="btn sm" id="gar-exit">← Back to SETU</button></div></div>';
+  const title=(GAR_NAV().find(c=>c[0]===garudaTab)||['','CNG Garuda'])[1];
+  return '<div class="gar-head"><h2>'+esc(title)+'</h2>'+
+      '<div class="gar-actions gar-mob"><button class="btn sm" id="g-scan">📷 Scan</button><button class="btn sm" id="gar-exit">← SETU</button></div></div>'+
+    '<div class="gar-chips">'+GAR_NAV().map(c=>'<button data-garchip="'+c[0]+'" class="'+(garudaTab===c[0]?'on':'')+'">'+esc(c[1])+'</button>').join('')+'</div>';
+}
+function garDownloadReport(){
+  const tags=DB.garudaTags||[];
+  if(!tags.length) return toast('No QR data to export yet.','bad');
+  const rows=tags.map(t=>({QR:garTagCode(t.id),'Item code':t.item_code||'',Item:t.item_name||'',Status:t.status||'',Station:t.station_no||'',PO:t.po_no||'',GRN:t.grn_no||'',Vendor:t.vendor||'',Rate:t.rate||'','Issued to':t.issued_to||'','Issued by':t.issued_by_name||'','Issue date':String(t.issued_at||'').slice(0,10),'Consumed by':t.consumed_by_name||'','Consumed at':String(t.consumed_at||'').slice(0,10)}));
+  try{ const ws=XLSX.utils.json_to_sheet(rows), wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Garuda QR');
+    XLSX.writeFile(wb,'garuda-report-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Report downloaded.','ok'); }
+  catch(e){ fail(e); }
 }
 function viewGaruda(){
   if(!garudaLoaded) return garTopBar()+'<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>';
@@ -2916,9 +2950,10 @@ function garProcessed(){
   if(q) items=items.filter(g=>(g.code+' '+g.name+' '+g.grns.join(' ')+' '+g.pos.join(' ')).toLowerCase().includes(q)||tags.some(t=>t.item_code===g.code&&t.id.toLowerCase().includes(q)));
   items.sort((a,b)=>a.code.localeCompare(b.code));
   const head='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="g-procsearch" type="text" placeholder="Search item, ERP, PO, GRN or QR" value="'+esc(garudaProcQ)+'" style="flex:1;min-width:220px"><span class="tag t-prog" style="align-self:center">'+items.length+' item'+(items.length===1?'':'s')+'</span></div>';
-  const rows=items.length?items.map(g=>'<tr><td><b class="num">'+esc(g.code)+'</b> <span class="hint">'+esc(g.name)+'</span></td><td class="num">'+g.qrs+'</td><td class="hint meta">'+esc(g.grns.slice(0,3).join(', ')||'—')+(g.grns.length>3?' +'+(g.grns.length-3):'')+'</td><td class="hint meta">'+esc(g.pos.slice(0,2).join(', ')||'—')+'</td><td style="text-align:right"><button class="btn sm" data-procitem="'+esc(g.code)+'">View / print QRs</button></td></tr>').join('')
+  const cell=(arr,n)=>esc(arr.slice(0,n).join(', ')||'—')+(arr.length>n?' +'+(arr.length-n):'');
+  const rows=items.length?items.map(g=>'<tr data-procitem="'+esc(g.code)+'" style="cursor:pointer"><td><b class="num">'+esc(g.code)+'</b></td><td>'+esc(g.name)+'</td><td class="hint meta">'+cell(g.pos,3)+'</td><td class="hint meta">'+cell(g.grns,3)+'</td><td class="num">'+g.qrs+'</td></tr>').join('')
     :'<tr><td colspan="5"><div class="empty" style="padding:18px"><p class="hint">No item matches.</p></div></td></tr>';
-  return head+'<table class="cards"><thead><tr><th>Item</th><th>QRs</th><th>GRN(s)</th><th>PO(s)</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  return head+'<table class="cards"><thead><tr><th>Code</th><th>Item</th><th>PO</th><th>GRN</th><th>QR</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
 /* Issue — send a QR out of the store (single or a range), and allot it at the station */
 function garIssue(){
@@ -2934,10 +2969,6 @@ function garIssue(){
       '<div><label for="ir-by">Issued by</label><input id="ir-by" type="text" value="'+esc((ME&&ME.name)||'')+'" placeholder="Who is issuing"></div>'+
       '<div><label for="ir-date">Issue date</label><input id="ir-date" type="date" value="'+esc(DAY())+'"></div></div>'+
       '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="ir-go">Issue</button><span id="ir-err" class="hint" style="color:var(--stop)"></span></div></div>';
-    html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">In store</h3><span class="tag t-ok" style="margin-left:auto">'+inStore.length+'</span></div>'+
-      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th></th></tr></thead><tbody>'+
-      (inStore.length?inStore.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+' <span class="hint">'+esc(t.item_name||'')+'</span></td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Issue</button></td></tr>').join('')
-        :'<tr><td colspan="3"><div class="empty" style="padding:16px"><p class="hint">Nothing in store to issue.</p></div></td></tr>')+'</tbody></table></div>';
   }
   if(site){
     html+='<div class="card" style="margin-top:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">Issued — ready to allot at the station</h3><span class="tag t-prog" style="margin-left:auto">'+issued.length+'</span></div>'+
@@ -2969,14 +3000,39 @@ function garConsumed(){
 }
 /* Item — every item with its warehouse counts */
 function garItems(){
-  const items=DB.garudaItems||[], q=garudaItemQ.trim().toLowerCase();
-  const rows=items.filter(i=>!q||(i.code+' '+i.name+' '+i.type).toLowerCase().includes(q)).slice(0,500);
-  const stat=code=>{ const t=(DB.garudaTags||[]).filter(x=>x.item_code===code), c=s=>t.filter(x=>x.status===s).length; return {tot:t.length,store:c('in_store'),out:c('issued')+c('allotted'),cons:c('consumed')+c('returned')}; };
-  return '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="g-isearch" type="text" placeholder="Search item code, name or type" value="'+esc(garudaItemQ)+'" style="flex:1;min-width:220px"><span class="tag t-prog" style="align-self:center">'+rows.length+(items.length>rows.length?' of '+items.length:'')+'</span></div>'+
-    '<table class="cards"><thead><tr><th>Item code</th><th>Name</th><th>Type</th><th>In store</th><th>Out</th><th>Consumed</th><th>Total QR</th></tr></thead><tbody>'+
-    (rows.length?rows.map(i=>{const s=stat(i.code); return '<tr><td class="num"><b>'+esc(i.code)+'</b></td><td>'+esc(i.name)+'</td><td class="hint meta">'+esc(i.type||'—')+'</td><td class="num">'+s.store+'</td><td class="num">'+s.out+'</td><td class="num">'+s.cons+'</td><td class="num">'+(s.tot||'—')+'</td></tr>';}).join('')
-      :'<tr><td colspan="7"><div class="empty" style="padding:20px"><p class="hint">No item matches.</p></div></td></tr>')+
-    '</tbody></table>'+(items.length>500&&!q?'<div class="hint" style="padding:10px 16px">Showing the first 500 — search to narrow.</div>':'')+'</div>';
+  if(garudaItemSel) return garItemDetail(garudaItemSel);
+  const items=DB.garudaItems||[], tags=DB.garudaTags||[], q=garudaItemQ.trim().toLowerCase();
+  const inStoreOf=code=>tags.filter(t=>t.item_code===code&&t.status==='in_store').length;
+  const issuedOf=code=>tags.filter(t=>t.item_code===code&&t.status==='issued').length;
+  const totStore=tags.filter(t=>t.status==='in_store').length, totIssued=tags.filter(t=>t.status==='issued').length;
+  const outTypes=items.filter(i=>inStoreOf(i.code)===0).length;
+  const types=[...new Set(items.map(i=>i.type).filter(Boolean))].sort();
+  let list=items.filter(i=>!q||(i.code+' '+i.name+' '+(i.type||'')).toLowerCase().includes(q));
+  if(garudaItemType) list=list.filter(i=>i.type===garudaItemType);
+  const shown=list.slice(0,400);
+  const tiles='<div class="grid g4" style="gap:10px;margin-bottom:14px">'+garTile('Items',items.length)+garTile('In store',totStore)+garTile('Issued',totIssued)+garTile('Out of stock',outTypes)+'</div>';
+  const bar='<div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:12px"><input id="g-isearch" type="text" placeholder="Search item name or code" value="'+esc(garudaItemQ)+'" style="flex:1;min-width:200px"><select id="g-itype" style="width:auto"><option value="">All types</option>'+types.map(t=>'<option '+(garudaItemType===t?'selected':'')+'>'+esc(t)+'</option>').join('')+'</select></div>';
+  const cards=shown.length?('<div class="grid g4" style="gap:10px">'+shown.map(i=>{const st=inStoreOf(i.code),is=issuedOf(i.code);
+    return '<div class="gar-card" data-itemsel="'+esc(i.code)+'" style="cursor:pointer;border:1px solid var(--line);border-radius:12px;padding:13px;background:var(--surface)"><div class="hint num" style="font-size:11px">'+esc(i.code)+'</div><div style="font-weight:600;margin:3px 0 10px;min-height:38px">'+esc(i.name)+'</div><div class="row" style="align-items:flex-end"><div class="hint" style="flex:1">Issued '+is+'</div><div style="text-align:right"><div style="font-size:22px;font-weight:800;line-height:1">'+st+'</div><div class="hint" style="font-size:10px">IN STORE</div></div></div></div>';}).join('')+'</div>')
+    :'<div class="card pad"><p class="hint" style="margin:0">No item matches.</p></div>';
+  return tiles+bar+cards+(list.length>400?'<div class="hint" style="margin-top:10px">Showing the first 400 — search to narrow.</div>':'');
+}
+function garItemDetail(code){
+  const tags=(DB.garudaTags||[]).filter(t=>t.item_code===code);
+  const item=(DB.garudaItems||[]).find(i=>i.code===code)||{code:code,name:''};
+  const c=s=>tags.filter(t=>t.status===s).length;
+  const received=tags.length, issued=c('issued'), consumed=c('consumed')+c('returned'), store=c('in_store');
+  const back='<button class="btn ghost sm" id="gi-back" style="margin-bottom:10px">← All items</button>';
+  const hdr='<div class="hint" style="font-size:11px;letter-spacing:.06em">ALL ITEMS</div><h2 style="margin:2px 0 2px">'+esc(item.name||code)+'</h2><div class="hint num" style="margin-bottom:12px">'+esc(code)+'</div>';
+  const tiles='<div class="grid g4" style="gap:10px;margin-bottom:14px">'+garTile('QR received',received)+garTile('QR issued',issued)+garTile('QR consumed',consumed)+garTile('Still in store',store)+'</div>';
+  const qd=garudaItemDetQ.trim().toLowerCase();
+  const byGrn={}; tags.forEach(t=>{ const g=t.grn_no||'—'; (byGrn[g]=byGrn[g]||[]).push(t); });
+  let groups=Object.keys(byGrn).map(g=>({grn:g,tags:byGrn[g]}));
+  if(qd) groups=groups.map(gr=>({grn:gr.grn,tags:gr.tags.filter(t=>(gr.grn+' '+(t.station_no||'')+' '+t.id).toLowerCase().includes(qd))})).filter(gr=>gr.tags.length);
+  const search='<input id="gi-search" type="text" placeholder="Search GRN, station or QR" value="'+esc(garudaItemDetQ)+'" style="width:100%;margin-bottom:12px">';
+  const grp=groups.length?groups.map(gr=>'<div class="card pad" style="margin-bottom:12px"><div class="row" style="flex-wrap:wrap;gap:8px;align-items:center"><b>GRN '+esc(gr.grn)+' · '+gr.tags.length+' QR in</b><span class="tag t-ok" style="margin-left:auto">'+gr.tags.filter(t=>t.status==='in_store').length+' in store</span><button class="btn sm" data-grnqr="'+esc(code)+'~'+esc(gr.grn)+'">View / download QRs</button></div><div class="hint" style="margin-top:6px">'+gr.tags.map(t=>esc(garTagCode(t.id))).slice(0,14).join(', ')+(gr.tags.length>14?' +'+(gr.tags.length-14):'')+'</div></div>').join('')
+    :'<div class="card pad"><p class="hint" style="margin:0">No QR codes for this item yet.</p></div>';
+  return back+hdr+tiles+search+grp;
 }
 /* Station — a box per station; open to see the QRs issued there */
 function garStations(){
@@ -2984,12 +3040,19 @@ function garStations(){
   const atStn=no=>tags.filter(t=>t.station_no===no&&t.status!=='in_store');
   if(garudaStationSel){
     const st=stations.find(s=>s.no===garudaStationSel)||{no:garudaStationSel,name:''}, rows=atStn(garudaStationSel);
-    return '<button class="btn sm" id="g-stnback" style="margin-bottom:10px">← All stations</button>'+
-      '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">Station '+esc(st.no)+' <span class="hint">'+esc(st.name)+'</span></h3><span class="tag t-prog" style="margin-left:auto">'+rows.length+' QR</span></div>'+
-      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th>Issued to</th><th>Issue date</th><th></th></tr></thead><tbody>'+
-      (rows.length?rows.map(t=>'<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+' <span class="hint">'+esc(t.item_name||'')+'</span></td><td class="hint meta">'+esc(t.issued_to||'—')+'</td><td class="hint meta">'+esc(t.issued_at?fmtD(ts(t.issued_at)):'—')+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Open</button></td></tr>').join('')
-        :'<tr><td colspan="5"><div class="empty" style="padding:18px"><p class="hint">Nothing issued to this station yet.</p></div></td></tr>')+
-      '</tbody></table></div>';
+    const q=garudaStnItemQ.trim().toLowerCase(), mn=garudaStnMin!==''?parseFloat(garudaStnMin):null, mx=garudaStnMax!==''?parseFloat(garudaStnMax):null;
+    const byItem={}; rows.forEach(t=>{ (byItem[t.item_code]=byItem[t.item_code]||[]).push(t); });
+    let groups=Object.keys(byItem).map(code=>({code,tags:byItem[code],rep:byItem[code][0]}));
+    if(q) groups=groups.filter(g=>(g.code+' '+(g.rep.item_name||'')+' '+g.tags.map(t=>t.id).join(' ')).toLowerCase().includes(q));
+    if(mn!=null) groups=groups.filter(g=>(parseFloat(g.rep.rate)||0)>=mn);
+    if(mx!=null) groups=groups.filter(g=>(parseFloat(g.rep.rate)||0)<=mx);
+    const hdr='<button class="btn ghost sm" id="g-stnback" style="margin-bottom:10px">← All stations</button>'+
+      '<div class="hint" style="font-size:11px;letter-spacing:.06em">ALL STATIONS</div><h2 style="margin:2px 0 2px">'+esc(st.no)+' · '+esc(st.name||'')+'</h2>'+
+      '<div class="hint" style="margin-bottom:12px">'+rows.length+' QR issued here.</div>'+
+      '<div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:12px"><input id="g-stnisearch" type="text" placeholder="Search item, ERP or QR" value="'+esc(garudaStnItemQ)+'" style="flex:2;min-width:200px"><input id="g-stnmin" type="number" placeholder="Min price ₹" value="'+esc(garudaStnMin)+'" style="flex:1;min-width:110px"><input id="g-stnmax" type="number" placeholder="Max price ₹" value="'+esc(garudaStnMax)+'" style="flex:1;min-width:110px"></div>';
+    const cards=groups.length?groups.map(g=>'<div class="card pad" style="margin-bottom:12px"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:baseline"><b>'+esc(g.rep.item_name||g.code)+'</b><span class="hint">'+esc(g.code)+' · '+g.tags.length+' QR · '+(g.rep.rate?'₹'+esc(g.rep.rate):'—')+' · '+esc(g.rep.issued_to||'—')+' · '+esc(g.rep.issued_at?String(g.rep.issued_at).slice(0,10):'—')+'</span><button class="btn sm" data-stnitemqr="'+esc(g.code)+'" style="margin-left:auto">View QRs</button></div><div style="margin-top:10px">'+garTagFields(g.rep)+'</div></div>').join('')
+      :'<div class="card pad"><p class="hint" style="margin:0">Nothing issued to this station'+(q||mn!=null||mx!=null?' matches the filter':' yet')+'.</p></div>';
+    return hdr+cards;
   }
   const q=garudaStnQ.trim().toLowerCase(), rows=stations.filter(s=>!q||(s.no+' '+s.name).toLowerCase().includes(q));
   return '<div class="card pad" style="margin-bottom:12px"><input id="g-ssearch" type="text" placeholder="Search station number or name" value="'+esc(garudaStnQ)+'" style="width:100%"></div>'+
@@ -3062,10 +3125,13 @@ function garTrace(){
 }
 /* Admin — masters (add/edit arrives in a later update) */
 function garAdmin(){
-  return '<div class="gar-box" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr))">'+
-    '<div class="gar-tile" data-admin="items"><b>Item master</b><div class="hint">'+(DB.garudaItems||[]).length+' items</div></div>'+
-    '<div class="gar-tile" data-admin="stations"><b>Station master</b><div class="hint">'+(DB.garudaStations||[]).length+' stations</div></div>'+
-    '</div><div class="hint" style="margin-top:10px">Opens the browse lists. Add / edit of the masters is coming in the next update.</div>';
+  const admin=!!(ME&&(ME.owner||ME.admin));
+  const items=(DB.garudaItems||[]).length, stations=(DB.garudaStations||[]).length;
+  const itemCard='<div class="card pad"><h3 style="margin:0 0 3px">Item master</h3><p class="hint" style="margin:0 0 10px">'+items+' items. <button class="btn ghost sm" data-garcol="items" id="ga-openitems">Browse</button></p>'+
+    (admin?'<div class="grid" style="gap:8px"><input id="ai-code" placeholder="Item code (ERP)" autocomplete="off" style="text-transform:uppercase"><input id="ai-name" placeholder="Item name" autocomplete="off"><div class="grid g2" style="gap:8px"><input id="ai-type" placeholder="Type (optional)" autocomplete="off"><input id="ai-life" placeholder="Part life (optional)" autocomplete="off"></div><div class="row" style="gap:10px;align-items:center"><button class="btn primary sm" id="ai-go">Add / update item</button><span id="ai-err" class="hint" style="color:var(--stop)"></span></div><div class="hint">Adding an existing code updates it.</div></div>':'<p class="hint">Only an administrator can add items.</p>')+'</div>';
+  const stnCard='<div class="card pad"><h3 style="margin:0 0 3px">Station master</h3><p class="hint" style="margin:0 0 10px">'+stations+' stations. <button class="btn ghost sm" data-garcol="stations" id="ga-openstns">Browse</button></p>'+
+    (admin?'<div class="grid" style="gap:8px"><input id="as-no" placeholder="Station number" autocomplete="off"><input id="as-name" placeholder="Station name" autocomplete="off"><div class="row" style="gap:10px;align-items:center"><button class="btn primary sm" id="as-go">Add / update station</button><span id="as-err" class="hint" style="color:var(--stop)"></span></div><div class="hint">Adding an existing number updates it.</div></div>':'<p class="hint">Only an administrator can add stations.</p>')+'</div>';
+  return '<div class="grid g2" style="gap:12px;align-items:start">'+itemCard+stnCard+'</div>';
 }
 /* show an arbitrary set of QR stickers — scan from screen, tap one to open it, or print all */
 function garQrDialog(title,tags){
@@ -3112,8 +3178,8 @@ async function garPublicView(id){
 }
 function wireGaruda(v){
   if(!garudaLoaded){ loadGaruda().then(()=>{ if(ROUTE.name==='garuda') render(); }); }
-  const col=$('#gar-col',v); if(col) col.onchange=()=>{ garudaTab=col.value; garudaStationSel=''; render(); };
-  if($('#gar-exit',v)) $('#gar-exit',v).onclick=()=>go({name:'dash'});
+  $$('[data-garchip]',v).forEach(b=>b.onclick=()=>garGo(b.dataset.garchip));
+  if($('#gar-exit',v)) $('#gar-exit',v).onclick=garExit;
   if($('#g-scan',v)) $('#g-scan',v).onclick=()=>cngScanDialog();
   if($('#g-scan2',v)) $('#g-scan2',v).onclick=()=>cngScanDialog();
   if($('#ir-go',v)) $('#ir-go',v).onclick=async()=>{
@@ -3133,13 +3199,34 @@ function wireGaruda(v){
   wireSearch('g-ssearch',x=>garudaStnQ=x);
   wireSearch('g-stocksearch',x=>garudaStockQ=x);
   wireSearch('g-histsearch',x=>garudaHistQ=x);
+  wireSearch('gi-search',x=>garudaItemDetQ=x);
+  // #5 Items: open an item card -> its detail, and GRN group -> its QRs
+  $$('[data-itemsel]',v).forEach(b=>b.onclick=()=>{ garudaItemSel=b.dataset.itemsel; garudaItemDetQ=''; render(); });
+  if($('#gi-back',v)) $('#gi-back',v).onclick=()=>{ garudaItemSel=''; render(); };
+  const itype=$('#g-itype',v); if(itype) itype.onchange=()=>{ garudaItemType=itype.value; render(); };
+  $$('[data-grnqr]',v).forEach(b=>b.onclick=()=>{ const [code,grn]=b.dataset.grnqr.split('~'); garQrDialog('QR — '+code+' · GRN '+grn,(DB.garudaTags||[]).filter(t=>t.item_code===code&&(t.grn_no||'—')===grn)); });
   $$('[data-procitem]',v).forEach(b=>b.onclick=()=>{ const code=b.dataset.procitem; garQrDialog('QR codes — '+code,(DB.garudaTags||[]).filter(t=>t.item_code===code)); });
   $$('[data-tag]',v).forEach(b=>b.onclick=()=>cngTagPanel(b.dataset.tag));
   $$('[data-sf]',v).forEach(b=>b.onclick=()=>{ garudaStockF=b.dataset.sf; render(); });
   $$('[data-stn]',v).forEach(b=>b.onclick=()=>{ garudaStationSel=b.dataset.stn; render(); });
-  if($('#g-stnback',v)) $('#g-stnback',v).onclick=()=>{ garudaStationSel=''; render(); };
+  if($('#g-stnback',v)) $('#g-stnback',v).onclick=()=>{ garudaStationSel=''; garudaStnItemQ=''; garudaStnMin=''; garudaStnMax=''; render(); };
+  wireSearch('g-stnisearch',x=>garudaStnItemQ=x);
+  const smn=$('#g-stnmin',v); if(smn) smn.oninput=()=>{ garudaStnMin=smn.value; const p=smn.selectionStart; render(); const n=$('#g-stnmin'); if(n){n.focus();try{n.setSelectionRange(p,p)}catch(e){}} };
+  const smx=$('#g-stnmax',v); if(smx) smx.oninput=()=>{ garudaStnMax=smx.value; const p=smx.selectionStart; render(); const n=$('#g-stnmax'); if(n){n.focus();try{n.setSelectionRange(p,p)}catch(e){}} };
+  $$('[data-stnitemqr]',v).forEach(b=>b.onclick=()=>{ const code=b.dataset.stnitemqr; garQrDialog('QR — '+code+' · station '+garudaStationSel,(DB.garudaTags||[]).filter(t=>t.item_code===code&&t.station_no===garudaStationSel&&t.status!=='in_store')); });
   $$('[data-hist]',v).forEach(b=>b.onclick=()=>{ garudaHistTab=b.dataset.hist; render(); });
-  $$('[data-admin]',v).forEach(b=>b.onclick=()=>{ garudaTab=b.dataset.admin; render(); });
+  // #2 Admin: Browse buttons switch columns; the master cards no longer auto-divert
+  $$('[data-garcol]',v).forEach(b=>b.onclick=()=>garGo(b.dataset.garcol));
+  if($('#ai-go',v)) $('#ai-go',v).onclick=async()=>{ const code=($('#ai-code',v).value||'').trim(), name=($('#ai-name',v).value||'').trim(), err=$('#ai-err',v);
+    err.textContent=''; if(!code) return err.textContent='Enter the item code.'; if(!name) return err.textContent='Enter the item name.';
+    $('#ai-go',v).disabled=true;
+    try{ await rpc('cng_item_save',{p_code:code,p_name:name,p_type:($('#ai-type',v).value||'').trim(),p_life:($('#ai-life',v).value||'').trim()}); await cngReload(); toast('Item saved.','ok'); render(); }
+    catch(e){ $('#ai-go',v).disabled=false; err.textContent=(e.message||'').replace(/^.*?: /,''); } };
+  if($('#as-go',v)) $('#as-go',v).onclick=async()=>{ const no=($('#as-no',v).value||'').trim(), name=($('#as-name',v).value||'').trim(), err=$('#as-err',v);
+    err.textContent=''; if(!no) return err.textContent='Enter the station number.';
+    $('#as-go',v).disabled=true;
+    try{ await rpc('cng_station_save',{p_no:no,p_name:name}); await cngReload(); toast('Station saved.','ok'); render(); }
+    catch(e){ $('#as-go',v).disabled=false; err.textContent=(e.message||'').replace(/^.*?: /,''); } };
   const tgo=()=>{ const el=$('#g-tracesearch',v); const qq=(el?el.value:'').trim(); garudaTraceQ=qq; garudaTraceSel=garResolvePO(qq); render(); };
   if($('#g-tracego',v)) $('#g-tracego',v).onclick=tgo;
   const tsel=$('#g-tracesearch',v); if(tsel) tsel.onkeydown=e=>{ if(e.key==='Enter') tgo(); };
@@ -3164,16 +3251,23 @@ function cngScanDialog(){
       $('#sc-find',mv).onclick=()=>open();
       $('#sc-code',mv).onkeydown=e=>{ if(e.key==='Enter') open(); };
       $('#sc-cam',mv).onclick=async()=>{
-        const btn=$('#sc-cam',mv); btn.disabled=true;
-        try{ await ensureJsQR(); stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
-          const vid=$('#sc-vid',mv); vid.style.display='block'; vid.srcObject=stream; await vid.play();
+        const btn=$('#sc-cam',mv); btn.disabled=true; $('#sc-err',mv).textContent='';
+        const md=navigator.mediaDevices;
+        if(!md||!md.getUserMedia){ btn.disabled=false; $('#sc-err',mv).textContent='This browser blocks camera access — type the code instead.'; return; }
+        // prefer the rear camera but fall back to ANY camera (environment as a hard
+        // constraint throws on devices that can't satisfy it — that was the bug)
+        const getCam=async()=>{ try{ return await md.getUserMedia({video:{facingMode:{ideal:'environment'}}}); }catch(e){ return await md.getUserMedia({video:true}); } };
+        try{ await ensureJsQR(); stream=await getCam();
+          const vid=$('#sc-vid',mv); vid.style.display='block'; vid.setAttribute('playsinline',''); vid.srcObject=stream; await vid.play();
           $('#sc-hint',mv).textContent='Scanning… hold the sticker steady.';
           const cv=document.createElement('canvas'), ctx=cv.getContext('2d');
           const tick=()=>{ if(stopped) return; if(vid.readyState===vid.HAVE_ENOUGH_DATA){ cv.width=vid.videoWidth; cv.height=vid.videoHeight; ctx.drawImage(vid,0,0,cv.width,cv.height);
               try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height); if(r&&r.data){ open(r.data); return; } }catch(e){} }
             raf=requestAnimationFrame(tick); };
           tick();
-        }catch(e){ btn.disabled=false; $('#sc-err',mv).textContent='Camera not available — type the code instead.'; }
+        }catch(e){ btn.disabled=false;
+          const n=e&&e.name;
+          $('#sc-err',mv).textContent=n==='NotAllowedError'?'Camera permission was denied — allow camera for SETU, then try again (or type the code).':n==='NotFoundError'?'No camera found on this device — type the code instead.':'Camera could not start — type the code instead.'; }
       };
       // closing the modal (X / back) must stop the camera
       const veil=mv.closest?mv.closest('.veil'):null; if(veil){ const mo=new MutationObserver(()=>{ if(!document.body.contains(veil)){ stop(); mo.disconnect(); } }); mo.observe(document.body,{childList:true,subtree:true}); }
