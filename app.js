@@ -861,7 +861,8 @@ async function enter(session){
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
-    paintPin(); const h=routeFromHash();
+    const pubTag=(location.hash.match(/^#g\/(.+)$/)||[])[1];   // scanned a QR while signed in
+    paintPin(); const h=pubTag?null:routeFromHash();
     const base=ASSISTANT()?{name:'assist'}:(GATE_ONLY()||HR_HEAD())?{name:'gate'}:{name:'dash'};
     // deep link (from a notification tap): open the target, but keep the home screen
     // beneath it in history so Back returns to the app rather than exiting
@@ -870,6 +871,7 @@ async function enter(session){
     if(routeHash(target)!==routeHash(base)){ go(base,true); go(target); } else { go(base,true); }
     subscribe();
     hideSplash();
+    if(pubTag){ const id=decodeURIComponent(pubTag); setTimeout(()=>{ if(canUseGaruda()) cngTagPanel(id); else garPublicView(id); },500); }
     Promise.resolve(SB.rpc('record_login')).catch(()=>{});                             // stamp the login once the app is visible (builder isn't a real Promise)
     if(!gateScopeOnly()) load(['gate']).then(()=>reloadSoon(['gate'])).catch(()=>{});   // stream gate passes in behind the first screen
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
@@ -2733,7 +2735,11 @@ function wirePeople(v){
    Garuda — CNG stock (Stage 2a: masters browser; GRN/QR/Processed next)
    ============================================================ */
 let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaLoaded=false, garudaLoading=false;
-const GAR_COLS=[['processed','Processed'],['items','Items'],['stations','Stations'],['qr','QR management'],['trace','Trace'],['history','History'],['admin','Admin']];
+const GAR_COLS=[['processed','Processed'],['issue','Issue'],['consumed','Consumed'],['items','Items'],['stations','Stations'],['qr','QR management'],['trace','Trace'],['history','History'],['admin','Admin']];
+// a QR encodes a URL so a random phone camera opens the public page; the in-app
+// scanner pulls the GAR-… code back out of whatever it reads (URL or bare code)
+const garTagUrl=id=>APP_URL+'#g/'+encodeURIComponent(id);
+const garTagCode=s=>{ s=String(s||'').trim(); const m=s.match(/GAR-[A-Z]+-\d+/i); return (m?m[0]:s).toUpperCase(); };
 async function loadGaruda(force){
   if(garudaLoading) return; if(garudaLoaded&&!force) return;
   garudaLoading=true;
@@ -2761,6 +2767,8 @@ function viewGaruda(){
   if(!garudaLoaded) return garTopBar()+'<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>';
   let body;
   switch(garudaTab){
+    case 'issue': body=garIssue(); break;
+    case 'consumed': body=garConsumed(); break;
     case 'items': body=garItems(); break;
     case 'stations': body=garStations(); break;
     case 'qr': body=garQR(); break;
@@ -2785,6 +2793,51 @@ function garProcessed(){
   const rows=items.length?items.map(g=>'<tr><td><b class="num">'+esc(g.code)+'</b> <span class="hint">'+esc(g.name)+'</span></td><td class="num">'+g.qrs+'</td><td class="hint meta">'+esc(g.grns.slice(0,3).join(', ')||'—')+(g.grns.length>3?' +'+(g.grns.length-3):'')+'</td><td class="hint meta">'+esc(g.pos.slice(0,2).join(', ')||'—')+'</td><td style="text-align:right"><button class="btn sm" data-procitem="'+esc(g.code)+'">View / print QRs</button></td></tr>').join('')
     :'<tr><td colspan="5"><div class="empty" style="padding:18px"><p class="hint">No item matches.</p></div></td></tr>';
   return head+'<table class="cards"><thead><tr><th>Item</th><th>QRs</th><th>GRN(s)</th><th>PO(s)</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+/* Issue — send a QR out of the store (single or a range), and allot it at the station */
+function garIssue(){
+  const store=canGarudaStore()||ME.owner||ME.admin, site=canGarudaSite()||ME.owner||ME.admin;
+  const tags=DB.garudaTags||[], inStore=tags.filter(t=>t.status==='in_store'), issued=tags.filter(t=>t.status==='issued');
+  if(!store&&!site) return '<div class="card pad"><p class="hint" style="margin:0">You don’t have a Garuda work role. Ask an admin for <b>store</b> or <b>site</b> access to issue or allot.</p></div>';
+  let html='<div class="card pad" style="margin-bottom:12px"><button class="btn primary" id="g-scan2">📷 Scan a QR to issue / allot</button><div class="hint" style="margin-top:6px">Scan a sticker to issue it from the store, or to allot it once it reaches the station.</div></div>';
+  if(store){
+    html+='<div class="card pad" style="margin-bottom:12px"><h3 style="margin:0 0 4px">Issue a range</h3><p class="hint" style="margin:0 0 10px">Same series, up to 100 codes, all still in store. Leave “To” blank to issue just one.</p>'+
+      '<div class="grid g2" style="gap:10px"><div><label for="ir-from">From QR</label><input id="ir-from" placeholder="GAR-DSP-00001" autocomplete="off" style="text-transform:uppercase"></div><div><label for="ir-to">To QR (optional)</label><input id="ir-to" placeholder="GAR-DSP-00010" autocomplete="off" style="text-transform:uppercase"></div>'+
+      '<div><label for="ir-stn">Station</label><input id="ir-stn" list="cng-stn-dl2" placeholder="Station number" autocomplete="off"><datalist id="cng-stn-dl2">'+(DB.garudaStations||[]).map(s=>'<option value="'+esc(s.no)+'">'+esc(s.name)+'</option>').join('')+'</datalist></div>'+
+      '<div><label for="ir-to2">Issued to</label><input id="ir-to2" type="text" placeholder="Name of the person / technician"></div></div>'+
+      '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="ir-go">Issue</button><span id="ir-err" class="hint" style="color:var(--stop)"></span></div></div>';
+    html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">In store</h3><span class="tag t-ok" style="margin-left:auto">'+inStore.length+'</span></div>'+
+      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th></th></tr></thead><tbody>'+
+      (inStore.length?inStore.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+' <span class="hint">'+esc(t.item_name||'')+'</span></td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Issue</button></td></tr>').join('')
+        :'<tr><td colspan="3"><div class="empty" style="padding:16px"><p class="hint">Nothing in store to issue.</p></div></td></tr>')+'</tbody></table></div>';
+  }
+  if(site){
+    html+='<div class="card" style="margin-top:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">Issued — ready to allot at the station</h3><span class="tag t-prog" style="margin-left:auto">'+issued.length+'</span></div>'+
+      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th>Station</th><th></th></tr></thead><tbody>'+
+      (issued.length?issued.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+'</td><td class="hint">'+esc(t.station_no||'—')+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Allot</button></td></tr>').join('')
+        :'<tr><td colspan="4"><div class="empty" style="padding:16px"><p class="hint">Nothing waiting to be allotted.</p></div></td></tr>')+'</tbody></table></div>';
+  }
+  return html;
+}
+/* Consumed — mark the old part used on site, then accept it back at the warehouse */
+function garConsumed(){
+  const store=canGarudaStore()||ME.owner||ME.admin, site=canGarudaSite()||ME.owner||ME.admin;
+  const tags=DB.garudaTags||[], allotted=tags.filter(t=>t.status==='allotted'), consumed=tags.filter(t=>t.status==='consumed');
+  if(!store&&!site) return '<div class="card pad"><p class="hint" style="margin:0">You don’t have a Garuda work role.</p></div>';
+  let html='<div class="card pad" style="margin-bottom:12px"><button class="btn primary" id="g-scan2">📷 Scan a QR</button><div class="hint" style="margin-top:6px">Scan the old part on site to mark it consumed, or scan it at the warehouse to accept it back.</div></div>';
+  if(site){
+    html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">On site — ready to consume</h3><span class="tag t-wait" style="margin-left:auto">'+allotted.length+'</span></div>'+
+      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th>Station</th><th></th></tr></thead><tbody>'+
+      (allotted.length?allotted.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+'</td><td class="hint">'+esc(t.station_no||'—')+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Consume</button></td></tr>').join('')
+        :'<tr><td colspan="4"><div class="empty" style="padding:16px"><p class="hint">Nothing to consume.</p></div></td></tr>')+'</tbody></table></div>';
+  }
+  if(store){
+    html+='<div class="card" style="margin-top:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">Consumed — ready to accept back at the warehouse</h3><span class="tag t-hold" style="margin-left:auto">'+consumed.length+'</span></div>'+
+      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th></th></tr></thead><tbody>'+
+      (consumed.length?consumed.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(t.id)+'</b></td><td>'+esc(t.item_code)+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Accept return</button></td></tr>').join('')
+        :'<tr><td colspan="3"><div class="empty" style="padding:16px"><p class="hint">Nothing waiting to be accepted back.</p></div></td></tr>')+'</tbody></table></div>';
+  }
+  return html;
 }
 /* Item — every item with its warehouse counts */
 function garItems(){
@@ -2896,7 +2949,7 @@ function garQrDialog(title,tags){
     onOpen:(mv,cl)=>{ const grid=$('#qr-grid',mv), printCells=[];
       ensureQR().then(()=>{ tags.forEach(t=>{ const cell=document.createElement('div'); cell.className='qr-cell'; cell.style.cssText='text-align:center;padding:8px;border:1px solid var(--line);border-radius:8px;cursor:pointer';
           const box=document.createElement('div'); cell.appendChild(box);
-          try{ new QRCode(box,{text:t.id,width:118,height:118,correctLevel:QRCode.CorrectLevel.M}); }catch(e){}
+          try{ new QRCode(box,{text:garTagUrl(t.id),width:118,height:118,correctLevel:QRCode.CorrectLevel.M}); }catch(e){}
           const cap=document.createElement('div'); cap.className='num'; cap.style.cssText='margin-top:6px;font-size:12px;font-weight:600'; cap.textContent=t.id; cell.appendChild(cap);
           cell.onclick=()=>{ cl(); setTimeout(()=>cngTagPanel(t.id),0); };
           grid.appendChild(cell);
@@ -2909,11 +2962,43 @@ function garQrDialog(title,tags){
         w.document.close(); setTimeout(()=>{ try{ w.print(); }catch(e){} },500); };
     }});
 }
+/* Public QR page — what a RANDOM scanner (no SETU login) sees: item, vendor,
+   issue date only. The same code inside the signed-in app opens the full panel. */
+async function garPublicView(id){
+  let data=null; try{ const r=await SB.rpc('cng_public_tag',{p_tag:garTagCode(id)}); data=r.data; }catch(e){}
+  let el=document.getElementById('gpub'); if(el) el.remove();
+  el=document.createElement('div'); el.id='gpub';
+  el.style.cssText='position:fixed;inset:0;z-index:130;display:grid;place-items:center;background:#f6f7f9;padding:20px;overflow:auto';
+  const row=(k,val)=>'<tr><td style="color:#536471;padding:4px 12px 4px 0;white-space:nowrap">'+k+'</td><td style="font-weight:600">'+esc(val||'—')+'</td></tr>';
+  const inner = data
+    ? '<div style="font-weight:800;letter-spacing:.32em;color:#0c3aa6;font-size:22px">S E T U</div><div style="color:#536471;font-size:13px;margin-bottom:16px">CNG part · Garuda</div>'+
+      '<div style="text-align:left;border:1px solid #e3e6ea;border-radius:12px;padding:18px;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.06)">'+
+        '<div style="font-weight:700;font-size:18px;letter-spacing:.02em">'+esc(data.id)+'</div>'+
+        '<table style="margin-top:12px;font-size:14px;width:100%;border-collapse:collapse">'+row('Item',data.item_name)+row('Vendor',data.vendor)+row('Issue date',data.issue_date)+'</table>'+
+        '<div style="color:#536471;font-size:12.5px;margin-top:16px;border-top:1px solid #eef0f2;padding-top:12px">Signed-in SETU users see the full record — PO, GRN, rate, station and who issued it.</div>'+
+      '</div>'
+    : '<div style="font-weight:800;letter-spacing:.32em;color:#0c3aa6;font-size:22px">S E T U</div><div style="border:1px solid #e3e6ea;border-radius:12px;padding:20px;background:#fff;margin-top:16px;color:#536471">This QR code was not found.</div>';
+  el.innerHTML='<div style="text-align:center;max-width:360px;width:100%">'+inner+'<div style="margin-top:18px"><button class="btn primary" id="gpub-go" style="width:100%">Open SETU</button></div></div>';
+  document.body.appendChild(el);
+  const b=document.getElementById('gpub-go'); if(b) b.onclick=()=>{ el.remove(); try{ history.replaceState(null,'',APP_URL); }catch(e){} if(ME){ render(); } else { hideSplash(); paintSignIn(); } };
+}
 function wireGaruda(v){
   if(!garudaLoaded){ loadGaruda().then(()=>{ if(ROUTE.name==='garuda') render(); }); }
   const col=$('#gar-col',v); if(col) col.onchange=()=>{ garudaTab=col.value; garudaStationSel=''; render(); };
   if($('#gar-exit',v)) $('#gar-exit',v).onclick=()=>go({name:'dash'});
   if($('#g-scan',v)) $('#g-scan',v).onclick=()=>cngScanDialog();
+  if($('#g-scan2',v)) $('#g-scan2',v).onclick=()=>cngScanDialog();
+  if($('#ir-go',v)) $('#ir-go',v).onclick=async()=>{
+    const from=($('#ir-from',v).value||'').trim(), to=($('#ir-to',v).value||'').trim(), stn=($('#ir-stn',v).value||'').trim(), who=($('#ir-to2',v).value||'').trim(), err=$('#ir-err',v);
+    err.textContent='';
+    if(!from) return err.textContent='Enter the first QR.';
+    if(!stn) return err.textContent='Choose a station.';
+    if(!who) return err.textContent='Enter who it is issued to.';
+    busy(true);
+    try{ const n=await rpc('cng_issue_range',{p_from:garTagCode(from),p_to:to?garTagCode(to):garTagCode(from),p_station:stn,p_to_person:who}); await cngReload(); toast(n+' QR'+(n>1?'s':'')+' issued.','ok'); }
+    catch(e){ err.textContent=(e.message||'').replace(/^.*?: /,''); }
+    busy(false);
+  };
   const wireSearch=(id,set)=>{ const el=$('#'+id,v); if(el) el.oninput=()=>{ set(el.value); const p=el.selectionStart; render(); const n=document.getElementById(id); if(n){n.focus();try{n.setSelectionRange(p,p);}catch(e){}} }; };
   wireSearch('g-procsearch',x=>garudaProcQ=x);
   wireSearch('g-isearch',x=>garudaItemQ=x);
@@ -2946,7 +3031,7 @@ function cngScanDialog(){
       '<div id="sc-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="sc-cam">Use camera</button>',
     onOpen:(mv,close)=>{
-      const open=async(code)=>{ const c=(code||$('#sc-code',mv).value||'').trim(); if(!c) return $('#sc-err',mv).textContent='Type a QR code.';
+      const open=async(code)=>{ const raw=(code||$('#sc-code',mv).value||'').trim(); if(!raw) return $('#sc-err',mv).textContent='Type a QR code.'; const c=garTagCode(raw);
         const t=await cngFetchTag(c); if(!t){ $('#sc-err',mv).textContent='No QR found for '+c+'.'; return; } stop(); close(); setTimeout(()=>cngTagPanel(t.id),0); };
       $('#sc-find',mv).onclick=()=>open();
       $('#sc-code',mv).onkeydown=e=>{ if(e.key==='Enter') open(); };
@@ -3046,7 +3131,7 @@ function qrLotDialog(lotId){
       ensureQR().then(()=>{ tags.forEach(t=>{ const cell=document.createElement('div'); cell.className='qr-cell';
           cell.style.cssText='text-align:center;padding:8px;border:1px solid var(--line);border-radius:8px';
           const box=document.createElement('div'); cell.appendChild(box);
-          try{ new QRCode(box,{text:t.id,width:118,height:118,correctLevel:QRCode.CorrectLevel.M}); }catch(e){}
+          try{ new QRCode(box,{text:garTagUrl(t.id),width:118,height:118,correctLevel:QRCode.CorrectLevel.M}); }catch(e){}
           const cap=document.createElement('div'); cap.className='num'; cap.style.cssText='margin-top:6px;font-size:12px;font-weight:600'; cap.textContent=t.id; cell.appendChild(cap);
           grid.appendChild(cell);
           let durl=''; try{ const cv=box.querySelector('canvas'); durl=cv?cv.toDataURL('image/png'):((box.querySelector('img')||{}).src||''); }catch(e){}
@@ -4441,6 +4526,9 @@ document.title=CONFIG.APP_NAME||'SETU';
     }
     if(session&&!ME&&!recovering) enter(session);
   });
+  const _pubTag=(location.hash.match(/^#g\/(.+)$/)||[])[1];   // a scanned public QR link
   const {data:{session}}=await SB.auth.getSession();
-  if(session) enter(session); else { hideSplash(); paintSignIn(); }
+  if(session) enter(session);
+  else if(_pubTag){ hideSplash(); garPublicView(decodeURIComponent(_pubTag)); }
+  else { hideSplash(); paintSignIn(); }
 })();
