@@ -214,7 +214,7 @@ async function loadLegacy(){
   tasks.forEach(t=>{const s=S[t.step_id]; if(!s) return;
     s.tasks.push(T[t.id]={id:t.id,userId:t.user_id,task:t.task,status:t.status,note:t.note||'',
       assignedAt:ts(t.assigned_at),closedAt:ts(t.closed_at),files:[]})});
-  files.forEach(f=>{const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0};
+  files.forEach(f=>{const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,_tbl:'legacy',reqId:f.request_id};
     if(f.task_id&&T[f.task_id]) T[f.task_id].files.push(rec);
     else if(f.step_id&&S[f.step_id]) S[f.step_id].files.push(rec);
     else if(R[f.request_id]) R[f.request_id].files.push(rec)});
@@ -255,7 +255,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
       infoRequested:!!s.info_requested,infoText:s.info_text||'',infoBy:s.info_by,infoTo:s.info_to,infoTos:s.info_tos||[],infoReplies:s.info_replies||[],infoAt:ts(s.info_at),infoReply:s.info_reply||'',infoReplyAt:ts(s.info_reply_at),
       actors:[],files:[]}});
   factors.forEach(a=>{const s=FS[a.step_id]; if(s) s.actors.push(a.user_id)});
-  ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by,station:f.station||'',photoDate:f.photo_date||''};
+  ffiles.forEach(f=>{const s=FS[f.step_id]; const rec={id:f.id,name:f.name,path:f.path,size:Number(f.size)||0,by:f.uploaded_by,station:f.station||'',photoDate:f.photo_date||'',_tbl:'flow',reqId:f.request_id};
     if(s) s.files.push(rec); else if(FR[f.request_id]) FR[f.request_id]._files=(FR[f.request_id]._files||[]).concat(rec)});
   faudit.forEach(a=>{const f=FR[a.request_id]; if(f) f.audit.push({ts:ts(a.created_at),actorName:a.actor_name,action:a.action,detail:a.detail||''})});
   list.forEach(f=>f.steps=f.steps.filter(Boolean));
@@ -699,13 +699,33 @@ const bindFiles=(scope,all)=>{
       el.innerHTML='<img src="'+url+'" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:7px">'; el.style.padding='0' }catch(e){} });
 };
 
+// owner deletes a single attachment (flow or legacy); row removed server-side + object from storage
+function flowFileDelete(f){
+  if(!f||!ME.owner) return;
+  modal({title:'Delete this file?',
+    body:'<p style="margin-top:0">Permanently remove <b>'+esc(f.name)+'</b>? This cannot be undone, and the deletion is recorded in the file’s trail.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="df-go" style="background:var(--stop);border-color:var(--stop)">Delete</button>',
+    onOpen:(mv,cl)=>{ $('#df-go',mv).onclick=async()=>{ $('#df-go',mv).disabled=true;
+      try{ const fn=f._tbl==='legacy'?'legacy_delete_file':'flow_delete_file'; const path=await rpc(fn,{p_file:f.id});
+        if(path){ try{ await removeObjects([path]); }catch(e){} }
+        $$('.veil').forEach(x=>x.remove());   // close the confirm and the viewer behind it
+        await load(f._tbl==='legacy'?['legacy','notif']:['flows','notif'], f._tbl==='flow'&&f.reqId?[f.reqId]:null);
+        toast('File deleted.','ok'); render(); }
+      catch(e){ $('#df-go',mv).disabled=false; fail(e); } }; }});
+}
 async function openViewer(f){
   if(!f) return;
+  const canDl=ME&&(ME.owner||ME.admin), canDel=ME&&ME.owner&&(f._tbl==='flow'||f._tbl==='legacy');
   const m=modal({title:f.name,cls:'viewer',body:'<div style="color:#fff;padding:40px"><span class="spin"></span> Opening…</div>',
-    footer:'<span id="vf" class="hint" style="margin-right:auto"></span><span id="vz"></span><button class="btn sm" data-x>Close</button>'});
+    footer:'<span id="vf" class="hint" style="margin-right:auto"></span><span id="vz"></span>'+
+      (canDl?'<button class="btn sm" id="vdl">⬇ Download</button>':'')+
+      (canDel?'<button class="btn sm" id="vdel" style="color:var(--stop)">🗑 Delete</button>':'')+
+      '<button class="btn sm" data-x>Close</button>'});
   const body=$('.c',m.el), foot=$('#vf',m.el), zone=$('#vz',m.el), k=kindOf(f.name);
+  if($('#vdel',m.el)) $('#vdel',m.el).onclick=()=>flowFileDelete(f);
   try{
     const blob=f._blob||await fetchFile(f);
+    if($('#vdl',m.el)) $('#vdl',m.el).onclick=()=>{ try{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=f.name||'file'; document.body.appendChild(a); a.click(); setTimeout(()=>a.remove(),0);}catch(e){fail(e)} };
     if(k==='pdf'){
       const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer()}).promise; let scale=1.35;
       const draw=async()=>{ body.innerHTML='';
