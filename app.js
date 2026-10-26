@@ -207,7 +207,7 @@ async function loadLegacy(){
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
     const step=S[s.id]={id:s.id,userId:s.user_id,status:s.status,remark:s.remark||'',condition:s.condition||'',
-      systemApproved:!!s.system_approved,position:s.position,actedAt:ts(s.acted_at),
+      systemApproved:!!s.system_approved,position:s.position,actedAt:ts(s.acted_at),isDetour:!!s.is_detour,
       erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),files:[],tasks:[]};
     r.chain[s.position]=step});
   const T={};
@@ -248,7 +248,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
-      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,cmdDual:!!s.cmd_dual,cmdTarget:!!s.cmd_target,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,cmdDual:!!s.cmd_dual,cmdTarget:!!s.cmd_target,isDetour:!!s.is_detour,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
       canHold:!!s.can_hold,onHold:!!s.on_hold,holdReason:s.hold_reason||'',holdBy:s.hold_by,
       erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
@@ -1957,8 +1957,11 @@ function viewDetail(id){
       ownerLegacyBtn='<button class="btn ghost sm" data-sys="'+i+'" style="color:var(--indigo);padding:2px 9px">⚡ System-approve to here</button>';
     else if(ME.owner&&(s.status==='approved'||s.status==='conditional'||s.status==='rejected'))
       ownerLegacyBtn='<button class="btn ghost sm" data-rwd="'+i+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
-    const sysBtn=ownerLegacyBtn?'<div style="margin-top:8px">'+ownerLegacyBtn+'</div>':'';
-    nodes+='<div class="node '+cls+'" id="step-'+i+'"><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
+    let detourLegBtn='';
+    if((r.status==='In Progress'||r.status==='Info Requested')&&(s.status==='pending'||s.status==='waiting')&&(r.requesterId===ME.id||ME.admin||ME.owner))
+      detourLegBtn='<button class="btn ghost sm" data-ldetour="'+i+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
+    const sysBtn=(ownerLegacyBtn||detourLegBtn)?'<div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">'+ownerLegacyBtn+detourLegBtn+'</div>':'';
+    nodes+='<div class="node '+cls+'" id="step-'+i+'"'+(s.isDetour?' style="margin-left:22px;border-left:3px solid var(--indigo);padding-left:12px"':'')+'><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+(s.isDetour?'<span class="tag" style="font-size:10px;background:var(--indigo);color:#fff;border-color:var(--indigo)">↪ CROSS-CHECK</span> ':'')+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
       parkedWith+(s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
       (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+
       (s.erpDone?'<div class="meta" style="margin-top:6px;color:var(--seal)">ERP entered'+(s.erpDoneBy?' by '+esc(user(s.erpDoneBy).name):'')+(s.erpDoneAt?' · '+esc(fmtDT(s.erpDoneAt)):'')+'</div>':'')+
@@ -2047,11 +2050,37 @@ function rewindTo(position){
         await load(); toast('Reopened from this step.','ok'); go({name:'detail',id:r.id});
       }); }; }});
 }
+// cross-check detour (legacy chain): insert ordered extra approvers after a position
+function legacyDetourDialog(reqId,afterPos){
+  const r=DB.requests.find(x=>x.id===reqId); if(!r) return;
+  if(!(r.requesterId===ME.id||ME.admin||ME.owner)) return;
+  const afterName=r.chain[afterPos]?user(r.chain[afterPos].userId).name:('step '+(afterPos+2));
+  const chosen=[];
+  const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
+    .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
+  const paint=(mv)=>{ const list=$('#ld-list',mv);
+    list.innerHTML=chosen.length?chosen.map((id,i)=>'<div class="row" style="gap:8px;align-items:center;margin-top:4px"><span class="tag t-prog">'+(i+1)+'</span><b style="flex:1">'+esc(user(id).name)+'</b><button class="btn ghost sm ld-rm" data-i="'+i+'" style="color:var(--stop)">Remove</button></div>').join('')
+      :'<p class="hint" style="margin:6px 0 0">No one added yet.</p>';
+    $$('.ld-rm',mv).forEach(b=>b.onclick=()=>{chosen.splice(+b.dataset.i,1);paint(mv);}); };
+  modal({title:'Add a cross-check',
+    body:'<p class="hint" style="margin-top:0">The request will go to these people — one after another, in this order — right after <b>'+esc(afterName)+'</b>, then carry on down the chain. Each can approve or reject (a reject sends it back to you).</p>'+
+      '<div class="row" style="gap:8px;margin-top:12px"><select id="ld-u" style="flex:1"><option value="">— choose a person —</option>'+opts+'</select><button class="btn sm" id="ld-add">Add</button></div>'+
+      '<div id="ld-list" style="margin-top:8px"></div>'+
+      '<div id="ld-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="ld-go">Insert cross-check</button>',
+    onOpen:(mv,cl)=>{ paint(mv);
+      $('#ld-add',mv).onclick=()=>{ const id=$('#ld-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#ld-err',mv).textContent='Already added.';return;} chosen.push(id); $('#ld-u',mv).value=''; $('#ld-err',mv).textContent=''; paint(mv); };
+      $('#ld-go',mv).onclick=async()=>{ if(!chosen.length) return $('#ld-err',mv).textContent='Add at least one person.';
+        $('#ld-go',mv).disabled=true;
+        try{ const n=await rpc('legacy_add_detour',{p_request:reqId,p_after_pos:afterPos,p_users:chosen}); await load(['legacy','notif']); cl(); toast('Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
+        catch(e){ $('#ld-go',mv).disabled=false; $('#ld-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
+}
 function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
   $('#d-back',v).onclick=()=>{ if(history.length>1) history.back(); else go({name:'all'}); };
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
+  $$('[data-ldetour]',v).forEach(b=>b.onclick=()=>legacyDetourDialog(ROUTE.id,+b.dataset.ldetour));
   if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
   if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
   if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
@@ -4159,7 +4188,11 @@ function flowStepRow(f,s){
   let assignBtn='';
   if((ME.owner||ME.admin)&&f.status==='running'&&s.status!=='done'&&s.actorKind!=='any'&&s.actorKind!=='raiser')
     assignBtn='<button class="btn ghost sm" data-fassign="'+s.id+'" style="color:var(--seal);padding:2px 9px">👤 Change approver</button>';
-  const sysBtn=(ownerBtn||assignBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+'</div>':'';
+  // cross-check detour: the raiser or an admin can insert extra approver(s) after this step (not yet passed)
+  let detourBtn='';
+  if(f.status==='running'&&(s.status==='pending'||s.status==='waiting')&&(f.requesterId===ME.id||ME.admin||ME.owner))
+    detourBtn='<button class="btn ghost sm" data-fdetour="'+s.id+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
+  const sysBtn=(ownerBtn||assignBtn||detourBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+detourBtn+'</div>':'';
   // item 9: show clearly WHO the live step is pending with (the tagged person when parked, else the actors)
   let pendingWith='';
   if(s.status==='pending'){
@@ -4168,8 +4201,8 @@ function flowStepRow(f,s){
     else holder=actors;
     pendingWith='<div class="pending-with'+(s.infoRequested?' tagged':'')+'">Pending with <b>'+esc(holder)+'</b>'+(s.infoRequested&&s.infoBy?' <span class="pw-sub">· asked by '+esc(user(s.infoBy).name)+'</span>':'')+'</div>';
   }
-  return '<div class="flow-step '+(parked?'parked':s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+'">'+
-    '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap"><b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span>'+(s.erpDone?'<span class="tag t-ok" style="font-size:11px">ERP ✓</span>':'')+'</div>'+
+  return '<div class="flow-step '+(parked?'parked':s.status==='pending'?'live':'')+' '+(s.status==='done'?'done':'')+(s.isDetour?' detour':'')+'"'+(s.isDetour?' style="margin-left:24px;border-left:3px solid var(--indigo);padding-left:12px;border-radius:0 8px 8px 0"':'')+'>'+
+    '<span class="flow-dot"></span><div style="flex:1;min-width:0"><div class="row" style="gap:8px;flex-wrap:wrap">'+(s.isDetour?'<span class="tag" style="font-size:10px;background:var(--indigo);color:#fff;border-color:var(--indigo)">↪ CROSS-CHECK</span>':'')+'<b>'+esc(s.label)+'</b><span class="tag '+st[0]+'" style="font-size:11px">'+st[1]+'</span>'+(s.erpDone?'<span class="tag t-ok" style="font-size:11px">ERP ✓</span>':'')+'</div>'+
     '<div class="hint">'+esc(actors)+'</div>'+pendingWith+meta+files+sysBtn+'</div></div>';
 }
 /* item 10: the order an ask travels — "1. A ✓ → 2. B (now) → 3. C → back to asker" */
@@ -4303,6 +4336,7 @@ function wireFlowDetail(v){
   $$('[data-fattach]',v).forEach(b=>b.onclick=()=>flowAttachDialog(b.dataset.fattach));
   $$('[data-frwd]',v).forEach(b=>b.onclick=()=>flowRewind(b.dataset.frwd));
   $$('[data-fassign]',v).forEach(b=>b.onclick=()=>flowAssignActor(b.dataset.fassign));
+  $$('[data-fdetour]',v).forEach(b=>b.onclick=()=>flowDetourDialog(b.dataset.fdetour));
   // requester's reply panel (answer an "ask for more")
   const reply={files:[]};
   if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
@@ -4495,6 +4529,30 @@ function flowAssignActor(stepId){
         else { await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); await load(['flows','notif'],flowIdsOfStep(stepId)); cl(); toast('Approver updated on this file.','ok'); render(); }
       }
       catch(e){ $('#fa-go',mv).disabled=false; $('#fa-err',mv).textContent=(e&&e.message)||'Could not update.'; } }; }});
+}
+// cross-check detour (ALDS): insert ordered extra approvers after a step
+function flowDetourDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s, f=x.f;
+  if(!(f.requesterId===ME.id||ME.admin||ME.owner)) return;
+  const chosen=[];
+  const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
+    .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
+  const paint=(mv)=>{ const list=$('#cd-list',mv);
+    list.innerHTML=chosen.length?chosen.map((id,i)=>'<div class="row" style="gap:8px;align-items:center;margin-top:4px"><span class="tag t-prog">'+(i+1)+'</span><b style="flex:1">'+esc(user(id).name)+'</b><button class="btn ghost sm cd-rm" data-i="'+i+'" style="color:var(--stop)">Remove</button></div>').join('')
+      :'<p class="hint" style="margin:6px 0 0">No one added yet.</p>';
+    $$('.cd-rm',mv).forEach(b=>b.onclick=()=>{chosen.splice(+b.dataset.i,1);paint(mv);}); };
+  modal({title:'Add a cross-check',
+    body:'<p class="hint" style="margin-top:0">The file will go to these people — one after another, in this order — right after <b>'+esc(s.label)+'</b>, then return to the normal flow. Each can approve or reject (a reject sends it back to you to re-raise).</p>'+
+      '<div class="row" style="gap:8px;margin-top:12px"><select id="cd-u" style="flex:1"><option value="">— choose a person —</option>'+opts+'</select><button class="btn sm" id="cd-add">Add</button></div>'+
+      '<div id="cd-list" style="margin-top:8px"></div>'+
+      '<div id="cd-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="cd-go">Insert cross-check</button>',
+    onOpen:(mv,cl)=>{ paint(mv);
+      $('#cd-add',mv).onclick=()=>{ const id=$('#cd-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#cd-err',mv).textContent='Already added.';return;} chosen.push(id); $('#cd-u',mv).value=''; $('#cd-err',mv).textContent=''; paint(mv); };
+      $('#cd-go',mv).onclick=async()=>{ if(!chosen.length) return $('#cd-err',mv).textContent='Add at least one person.';
+        $('#cd-go',mv).disabled=true;
+        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast('Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
+        catch(e){ $('#cd-go',mv).disabled=false; $('#cd-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
 }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
