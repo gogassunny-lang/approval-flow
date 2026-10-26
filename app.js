@@ -248,7 +248,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
-      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,cmdDual:!!s.cmd_dual,cmdTarget:!!s.cmd_target,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
       canHold:!!s.can_hold,onHold:!!s.on_hold,holdReason:s.hold_reason||'',holdBy:s.hold_by,
       erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
@@ -4218,6 +4218,12 @@ function flowSidePanel(f){
       body+='<button class="btn primary" data-fact="'+s.id+'">'+(s.action==='confirm'?'Confirm and pass on':'Approve and pass on')+'</button>'+
         (s.onHold?'<button class="btn" data-frelease="'+s.id+'">Resume (lift the hold)</button>'
                  :'<button class="btn hold" data-fhold="'+s.id+'">Hold (pause here)</button>');
+    } else if(approving&&s.cmdDual){
+      // Nishant's dual step: sign for himself (CMD still signs next), or sign as CMD too (clears the CMD desk)
+      body+='<button class="btn primary" data-fact="'+s.id+'">Approve — send to CMD desk</button>'+
+        '<button class="btn primary" data-factcmd="'+s.id+'" style="background:var(--seal);border-color:var(--seal)">Approve as CMD — clear CMD desk too</button>'+
+        '<button class="btn hold" data-fask="'+s.id+'">Ask the requester for more</button>'+
+        (s.canReject?'<button class="btn bad" data-freject="'+s.id+'">Reject and close</button>':'');
     } else if(approving){
       body+='<button class="btn primary" data-fact="'+s.id+'">'+(s.action==='confirm'?'Confirm and pass on':'Approve and pass on')+'</button>'+
         '<button class="btn" data-fcond="'+s.id+'">Approve with a condition</button>'+
@@ -4229,7 +4235,7 @@ function flowSidePanel(f){
         (s.canReject?'<button class="btn bad" data-freject="'+s.id+'">Reject</button>':'');
     }
     if(canEsc) body+='<button class="btn hold" data-fesc="'+s.id+'">Escalate past CMD</button>';
-    body+='</div><p class="hint" style="margin-top:12px">The document cannot be changed from here. Ask the requester for more, or reject it and have it reissued.</p></div>';
+    body+='</div>'+(s.cmdDual?'<p class="hint" style="margin-top:12px"><b>Approve</b> signs for you and the file still goes to the CMD desk. <b>Approve as CMD</b> signs for you and clears the CMD desk in one go, so the file moves straight on.</p>':'<p class="hint" style="margin-top:12px">The document cannot be changed from here. Ask the requester for more, or reject it and have it reissued.</p>')+'</div>';
     return body;
   }
   if(canEsc) return '<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:6px">With '+esc(withWho)+'. As a division approver you can escalate it past CMD.</p><button class="btn hold" data-fesc="'+s.id+'" style="margin-top:12px;width:100%">Escalate past CMD</button></div>';
@@ -4243,6 +4249,7 @@ function wireFlowDetail(v){
   $$('[data-freject]',v).forEach(b=>b.onclick=()=>flowReject(b.dataset.freject));
   $$('[data-fesc]',v).forEach(b=>b.onclick=()=>flowEscalate(b.dataset.fesc));
   $$('[data-fact]',v).forEach(b=>b.onclick=()=>flowAct(b.dataset.fact));
+  $$('[data-factcmd]',v).forEach(b=>b.onclick=()=>flowAct(b.dataset.factcmd,'approve_cmd'));
   $$('[data-fcond]',v).forEach(b=>b.onclick=()=>flowCondDialog(b.dataset.fcond));
   $$('[data-fask]',v).forEach(b=>b.onclick=()=>flowAskDialog(b.dataset.fask));
   $$('[data-fhold]',v).forEach(b=>b.onclick=()=>flowHoldDialog(b.dataset.fhold));
@@ -4496,7 +4503,7 @@ function flowCancelDialog(id){
         await rpc('flow_cancel',{p_request:id,p_why:why}); cl(); await load(['flows','notif'],[id]); toast('Request deleted.','ok'); go({name:'mine'}); }
       catch(e){ $('#fc-go',mv).disabled=false; $('#fc-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
-function flowAct(stepId){
+function flowAct(stepId,kind){
   const x=flowFindStep(stepId); if(!x) return; const s=x.s, f=x.f;
   // CNG GRN preparation: Prashant records the received lines here; QRs mint on final approval
   const cngGrn=!!(f&&f.department==='CNG'&&s.stage==='GRN'&&s.substep===1);
@@ -4582,7 +4589,7 @@ function flowAct(stepId){
           // save each photo's station + date first; the database attaches them as the step records the files
           if(siteTags&&siteTags.length){ try{ await rpc('flow_photo_tags',{p_items:siteTags}); }catch(e){ fail(e); return; } }
           if(grnLots){ try{ await rpc('cng_save_lots',{p_request:f.id,p_lots:grnLots}); }catch(e){ fail(e); return; } }
-          flowCall(stepId,'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,cngGrn?'GRN lines saved.':'Signed.'); });
+          flowCall(stepId,kind||'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,cngGrn?'GRN lines saved.':(kind==='approve_cmd'?'Approved as CMD — the CMD desk is cleared.':'Signed.')); });
       };
     }});
 }
