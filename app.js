@@ -4459,16 +4459,27 @@ async function flowRewindCall(stepId){ busy(true);
 function flowAssignActor(stepId){
   const x=flowFindStep(stepId); if(!x||!(ME.owner||ME.admin)) return; const s=x.s;
   const cur=s.actors.map(id=>user(id).name).join(', ')||'— nobody yet —';
+  // the blueprint name of this step (the part after the "—"), used to map it everywhere
+  const mm=(s.label||'').match(/.*—\s*(.+)$/); const srcName=(mm?mm[1]:'').trim();
+  const canAll=!!srcName && s.actorKind==='person';   // name→person map is unambiguous only for single-approver steps
   const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
     .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
   modal({title:'Change approver',
     body:'<p class="hint" style="margin-top:0"><b>'+esc(s.label)+'</b><br>Currently with: <b>'+esc(cur)+'</b>. Pick the right person — they can act straight away, and the change is recorded in the trail.</p>'+
       '<div style="margin-top:12px"><label for="fa-u">Approver</label><select id="fa-u"><option value="">— choose a person —</option>'+opts+'</select></div>'+
-      '<div id="fa-err" class="hint" style="color:var(--stop);margin-top:6px"></div>',
+      (canAll?'<label style="display:flex;align-items:flex-start;gap:9px;margin:14px 0 0"><input type="checkbox" id="fa-all" style="width:auto;margin-top:3px"> <span><b>Apply to every flow</b><div class="hint">Make “'+esc(srcName)+'” mean this person on <b>all</b> PO / WO / CNG flows — the ones running now and all new ones — until you change it again. Leave unticked to change only this one file.</div></span></label>':'<p class="hint" style="margin-top:10px">This changes the approver on this file only.</p>')+
+      '<div id="fa-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Set approver</button>',
     onOpen:(mv,cl)=>{ $('#fa-go',mv).onclick=async()=>{ const uid=$('#fa-u',mv).value; if(!uid) return $('#fa-err',mv).textContent='Choose a person.';
+      const all=canAll&&$('#fa-all',mv)&&$('#fa-all',mv).checked;
       $('#fa-go',mv).disabled=true;
-      try{ await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); await load(['flows','notif'],flowIdsOfStep(stepId)); cl(); toast('Approver updated.','ok'); render(); }
+      try{
+        if(all){ const n=await rpc('admin_map_actor',{p_src:srcName,p_user:uid});
+          try{ await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); }catch(e){}   // make sure THIS step updates too
+          await load(['flows','notif']); cl();
+          toast('Set for every flow. '+(n?('Updated '+n+' live file'+(n===1?'':'s')+'.'):'This file updated.'),'ok'); render(); }
+        else { await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); await load(['flows','notif'],flowIdsOfStep(stepId)); cl(); toast('Approver updated on this file.','ok'); render(); }
+      }
       catch(e){ $('#fa-go',mv).disabled=false; $('#fa-err',mv).textContent=(e&&e.message)||'Could not update.'; } }; }});
 }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
