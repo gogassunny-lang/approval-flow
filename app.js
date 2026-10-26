@@ -2540,6 +2540,44 @@ function profileDialog(){
       catch(e){ $('#q-e',v).textContent=(e.message||'').replace(/^.*?: /,'') }}}});
 }
 let peopleQ='';
+// Admin: map a flow/blueprint name to the right person, system-wide (migration 77).
+async function renderNameMap(c){
+  if(!(ME.admin||ME.owner)){ c.innerHTML=''; return; }
+  let maps=[], stuck=[];
+  try{
+    const m=await SB.from('flow_actor_map').select('*').order('set_at',{ascending:false});
+    if(m.error) throw m.error; maps=m.data||[];
+    stuck=(await rpc('flow_unmapped_names',{}))||[];
+  }catch(e){ c.innerHTML='<p class="hint" style="color:var(--stop)">Could not load corrections: '+esc((e&&e.message)||'')+'</p>'; return; }
+  const opts='<option value="">— choose the real person —</option>'+DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
+    .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
+  const stuckHtml=stuck.length
+    ? '<div class="hint" style="margin-bottom:10px">Names in live flows with <b>no approver</b> — tap one to fill it in below: '+stuck.map(x=>'<button class="btn ghost sm nm-stuck" data-nm="'+esc(x.nm)+'" style="margin:3px 2px">'+esc(x.nm)+' · '+x.stuck_flows+' file'+(x.stuck_flows===1?'':'s')+'</button>').join(' ')+'</div>'
+    : '<div class="hint" style="margin-bottom:10px;color:var(--seal)">✓ No live flow is stuck on an unmatched name.</div>';
+  const rows=maps.length
+    ? '<table class="cards"><thead><tr><th>Flow name</th><th>Maps to</th><th>Note</th><th></th></tr></thead><tbody>'+maps.map(m=>{const u=user(m.user_id);
+        return '<tr><td><b>'+esc(m.src_name)+'</b></td><td>'+esc(u&&u.id?u.name:'(account removed)')+'</td><td class="hint meta">'+esc(m.note||'')+'</td><td style="text-align:right"><button class="btn sm nm-del" data-src="'+esc(m.src_name)+'" style="color:var(--stop)">Remove</button></td></tr>'}).join('')+'</tbody></table>'
+    : '<p class="hint">No corrections set yet.</p>';
+  c.innerHTML=stuckHtml+
+    '<div class="row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin:4px 0 12px">'+
+      '<div style="flex:1;min-width:180px"><label for="nm-src">Name as it appears in the flow</label><input id="nm-src" type="text" placeholder="e.g. Pawnit Batra" autocomplete="off"></div>'+
+      '<div style="flex:1;min-width:210px"><label for="nm-u">Real person</label><select id="nm-u">'+opts+'</select></div>'+
+      '<button class="btn primary" id="nm-go">Apply to all flows</button></div>'+
+    '<div id="nm-err" class="hint" style="color:var(--stop);margin-bottom:12px"></div>'+rows;
+  $$('.nm-stuck',c).forEach(b=>b.onclick=()=>{ $('#nm-src',c).value=b.dataset.nm; const sel=$('#nm-u',c); sel.focus(); $('#nm-err',c).textContent=''; });
+  $('#nm-go',c).onclick=async()=>{ const src=($('#nm-src',c).value||'').trim(), uid=$('#nm-u',c).value;
+    if(!src) return $('#nm-err',c).textContent='Enter the name as it appears in the flow.';
+    if(!uid) return $('#nm-err',c).textContent='Choose the real person.';
+    $('#nm-go',c).disabled=true; $('#nm-err',c).textContent='';
+    try{ const n=await rpc('admin_map_actor',{p_src:src,p_user:uid}); await load(['flows','notif']);
+      toast('Saved for the whole system. '+(n?('Corrected '+n+' live step'+(n===1?'':'s')+' — open the file to see the new approver.'):'No file currently needed fixing.'),'ok');
+      renderNameMap(c); }
+    catch(e){ $('#nm-go',c).disabled=false; $('#nm-err',c).textContent=(e&&e.message)||'Could not save.'; } };
+  $$('.nm-del',c).forEach(b=>b.onclick=()=>modal({title:'Remove this correction?',
+    body:'<p style="margin-top:0">New flows will go back to matching “<b>'+esc(b.dataset.src)+'</b>” by name. Files already corrected keep the approver they have now.</p>',
+    footer:'<button class="btn" data-x>Keep it</button><button class="btn primary" id="nmd-go">Remove</button>',
+    onOpen:(mv,cl)=>{ $('#nmd-go',mv).onclick=async()=>{ try{ await rpc('admin_unmap_actor',{p_src:b.dataset.src}); cl(); toast('Correction removed.','ok'); renderNameMap(c); }catch(e){ fail(e); } }; }}));
+}
 function viewPeople(){
   const typed={}; DB.requests.forEach(r=>{const n=r.f.siteName; if(n&&!byName.has(String(n).toLowerCase())) typed[n]=1}); const unlisted=Object.keys(typed);
   const stuck=DB.requests.filter(r=>r.status==='In Progress'&&r.chain[r.current]);
@@ -2559,6 +2597,9 @@ function viewPeople(){
      DB.departments.map(d=>'<span class="tag t-wait">'+esc(d)+' <button class="btn ghost sm" data-dd="'+esc(d)+'" style="padding:0 4px" title="Remove">×</button></span>').join('')+'</div><div class="row" style="gap:8px;margin-top:14px"><input id="dp-new" type="text" placeholder="Add a department" style="max-width:280px"><button class="btn sm" id="dp-add">Add</button></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Requests stuck on an absent approver</h3><p class="hint" style="margin-top:5px">Only an admin can move a request off someone who is unavailable. The original assignment stays in the trail.</p>'+
      (stuck.length?'<div style="margin-top:12px">'+stuck.map(r=>'<div class="filerow"><div style="min-width:0;flex:1"><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(r.ref)+' · with '+esc(user(r.chain[r.current].userId).name)+' for '+daysBetween(r.chain[r.current].actedAt||r.createdAt,Date.now())+' days</div></div><button class="btn sm" data-re="'+r.id+'">Reassign</button></div>').join('')+'</div>':'<p class="hint" style="margin-top:10px">Nothing is currently in progress.</p>')+'</div>':'')+
+   ((ME.admin||ME.owner)?'<div class="card pad" style="margin-top:16px"><h3>Approver name corrections</h3>'+
+     '<p class="hint" style="margin-top:5px">When a name used in the fixed PO / WO / CNG flows does not match a real account, that step gets <b>no approver</b> and the file stops. Map the flow name to the right person here — it applies to <b>every</b> flow, the ones running now and all new ones, until you change it again. (Different from “Change approver” on a single flow, which only fixes that one file.)</p>'+
+     '<div id="p-namemap" style="margin-top:12px"><p class="hint">Loading…</p></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Bulk set “Reports to”</h3><p class="hint" style="margin-top:5px">Upload a sheet with two columns — the <b>person</b> and their <b>manager</b> — each by employee code or name. Headers like “Employee”/“Name” and “Manager”/“Reports to” are detected automatically. This is what makes hierarchy-ordered tagging and teams work.</p><div id="p-mgrupload" style="margin-top:12px"></div><div id="p-mgrres" style="margin-top:10px"></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Data departments (ALDS / CNG…)</h3><p class="hint" style="margin-top:5px">These decide what data each person sees. A person only sees their own department’s indents and PO/WO flows (gate pass stays open to everyone). Set a person’s department in their <b>Edit</b>, or in bulk below. ALDS is the default.</p><div class="row" style="flex-wrap:wrap;gap:7px;margin-top:12px">'+WALL_DEPTS().map(d=>'<span class="tag '+(d==='ALDS'?'t-wait':'t-hold')+'">'+esc(d)+'</span>').join('')+'</div><div class="row" style="gap:8px;margin-top:14px"><input id="un-new" type="text" placeholder="New department name" style="max-width:280px"><button class="btn sm" id="un-add">Create department</button></div></div>':'')+
    (ME.admin?'<div class="card pad" style="margin-top:16px"><h3>Bulk set department</h3><p class="hint" style="margin-top:5px">Move many people into a department at once. Paste their <b>emails</b> or <b>employee IDs</b> (or names), one per line — email or ID is safest when names repeat. Pick the department and apply.</p><div class="row" style="gap:8px;margin-top:12px;align-items:center;flex-wrap:wrap"><label style="margin:0;font-weight:600">Department</label><select id="bd-dept" style="max-width:220px">'+WALL_DEPTS().map(d=>'<option '+(d==='CNG'?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select><button class="btn primary sm" id="bd-go">Set department</button></div><textarea id="bd-list" rows="5" placeholder="one email / employee ID / name per line" style="margin-top:10px;width:100%"></textarea><div id="bd-res" style="margin-top:8px"></div></div>':'')+
@@ -2608,6 +2649,7 @@ function wirePeople(v){
     onOpen:(mv,cl)=>{$('#rs-go',mv).onclick=async()=>{$('#rs-go',mv).disabled=true;
       try{ const n=await rpc('flow_resync_actors',{}); cl(); await load(); toast(n?('Added approvers to '+n+' step'+(n===1?'':'s')+'. Refresh the flow to see them.'):'Nothing to fix — every live flow already has its approvers.','ok'); render(); }
       catch(e){ $('#rs-go',mv).disabled=false; fail(e); } }; }});
+  if($('#p-namemap',v)) renderNameMap($('#p-namemap',v));
   if($('#p-purge-all',v)) $('#p-purge-all',v).onclick=purgeAllDialog;
   $$('[data-rmu]',v).forEach(b=>b.onclick=()=>purgeUserDialog(user(b.dataset.rmu)));
   $('#p-pw',v).onclick=()=>newPasswordDialog({title:'Change your password',cancellable:true});
