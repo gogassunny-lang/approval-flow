@@ -3473,14 +3473,13 @@ function nativeCameraCapture(){
     document.body.appendChild(inp); inp.click();
   });
 }
-/* ---- selfie look: fixed orientation + gentle filters ----
-   The phone's front camera delivers a MIRRORED feed. Standard selfie behaviour:
-   - the LIVE framing view is left mirror-like (the raw feed, no transform) so it
-     feels like a mirror and the person frames themselves without tilting;
-   - on CAPTURE the frame is flipped (mirror=true) so the SAVED photo and the
-     confirm preview are the true way round — as others see them, so writing on a
-     badge or shirt reads correctly, and the face stays usable as identity proof.
-   There is no flip button. Filters are mild light-and-colour looks only. */
+/* ---- selfie look: WYSIWYG, like the phone's normal camera ----
+   The live view shows the raw front-camera feed and CAPTURE saves exactly that
+   (mirror=false) — no flip, so what you frame is what you get and there is no
+   mirror mismatch to "tilt" against (the user's repeated complaint). No face-oval
+   guide, no flip button. Filters are mild light-and-colour looks only. The face
+   stays usable as identity proof; only left/right of any text may read as a
+   mirror, which is the trade-off the user asked for over the tilting. */
 const SF_FILTERS=[
   {id:'natural',label:'Natural',css:''},
   {id:'bright', label:'Bright', css:'brightness(1.12) contrast(1.04) saturate(1.08)'},
@@ -3547,7 +3546,7 @@ function captureSelfie(title){
     let src='live';            // 'live' camera in the app, or 'native' (the phone's camera app)
     let mode='';               // 'live' view or 'preview' of the captured frame
     let filt=sfFilter(sfPref.get('filter','natural'));
-    const LIVE_MSG='Fit your face inside the circle and look at the camera. The photo is live and time-stamped — it cannot be uploaded, and a held-up photograph will not line up in the ring.';
+    const LIVE_MSG='Look at the camera and tap Capture. The photo is live and time-stamped — it cannot be uploaded from the gallery.';
     const finish=v=>{ if(done)return; done=true; if(stream)stream.getTracks().forEach(t=>t.stop()); resolve(v); };
     modal({title:title||'Take a live selfie',cls:'selfie',
       body:'<div id="sf-stage" class="selfie-stage"><div class="selfie-hint"><span class="spin"></span> Starting the camera…</div></div>'+
@@ -3603,7 +3602,6 @@ function captureSelfie(title){
           const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
           video.muted=true; video.className='selfie-video'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
           const tint=document.createElement('div'); tint.className='sf-tint'; stage.appendChild(tint);   // colour wash for the Warm / Cool / Glow / Retro looks
-          const ring=document.createElement('div'); ring.className='selfie-ring'; stage.appendChild(ring);   // face guide: a real face fills the oval, a held-up photo won't line up
           look.hidden=false; centreChip(); applyLook();
           // once real frames arrive, put a still of the person in each round filter preview
           video.addEventListener('playing',()=>setTimeout(()=>{ if(video.isConnected&&video.videoWidth) paintChips(video,video.videoWidth,video.videoHeight); },350),{once:true});
@@ -3644,7 +3642,7 @@ function captureSelfie(title){
             return;
           }
           const video=$('video.selfie-video',stage); if(!video||!video.videoWidth) return;
-          raw=sfRender(video,video.videoWidth,video.videoHeight,SF_FILTERS[0],true,1000);   // flip the mirrored front-camera frame → true orientation (as others see you); look applied on save
+          raw=sfRender(video,video.videoWidth,video.videoHeight,SF_FILTERS[0],false,1000);   // WYSIWYG: save exactly what the live view showed (no flip) so there is no mirror mismatch — like the phone's normal camera
           showPreview();
         };
         retake.onclick=()=>{ if(src==='native') useNative(); else showLive(); };
