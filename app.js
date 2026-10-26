@@ -2873,7 +2873,12 @@ function wirePeople(v){
 /* ============================================================
    Garuda — CNG stock (Stage 2a: masters browser; GRN/QR/Processed next)
    ============================================================ */
-let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaItemSel='', garudaItemType='', garudaItemDetQ='', garudaStnItemQ='', garudaStnMin='', garudaStnMax='', garudaLoaded=false, garudaLoading=false;
+let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaItemSel='', garudaItemType='', garudaItemDetQ='', garudaStnItemQ='', garudaStnMin='', garudaStnMax='', garudaAdminTab='items', garudaAdmQ='', garudaAdmType='', garudaLoaded=false, garudaLoading=false;
+// live stock for an item: Opening (imported) + Received (minted QR) − Issued (out of store)
+const garStock=code=>{ const t=(DB.garudaTags||[]).filter(x=>x.item_code===code); const received=t.length;
+  const issued=t.filter(x=>x.status==='issued'||x.status==='allotted'||x.status==='consumed').length;
+  const it=(DB.garudaItems||[]).find(i=>i.code===code), opening=it?(it.opening||0):0;
+  return {opening,received,issued,total:opening+received,remaining:opening+received-issued}; };
 const garTile=(label,val)=>'<div class="card pad" style="padding:13px"><div class="hint" style="font-size:11px;letter-spacing:.05em;text-transform:uppercase">'+esc(label)+'</div><div style="font-size:24px;font-weight:800;margin-top:4px">'+esc(val)+'</div></div>';
 const garField=(label,val)=>'<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px"><div class="hint" style="font-size:10.5px;letter-spacing:.04em;text-transform:uppercase">'+esc(label)+'</div><div style="margin-top:3px;font-weight:600">'+esc(val||'—')+'</div></div>';
 function garTagFields(t){  // the full item-in-station detail card (image 1)
@@ -2896,12 +2901,12 @@ async function loadGaruda(force){
   garudaLoading=true;
   try{
     const [it,st,lots,tags]=await Promise.all([
-      SB.from('cng_items').select('code,name,item_type,part_life').order('code'),
+      SB.from('cng_items').select('code,name,item_type,part_life,opening_qty').order('code'),
       SB.from('cng_stations').select('station_no,station_name').order('station_no'),
       SB.from('cng_lots').select('id,request_id,item_code,item_name,item_type,vendor,po_no,grn_no,grn_date,invoice_no,order_qty,delivered_qty,accepted_qty,rejected_qty,rate,series_prefix,series_from,series_to').eq('minted',true).order('created_at',{ascending:false}),
       SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,vendor,rate,po_no,grn_no,status,station_no,issued_to,issued_by,issued_by_name,issued_at,allotted_by,allotted_by_name,allotted_at,allot_photo,consumed_by,consumed_by_name,consume_remark,consumed_at,returned_by,returned_by_name,returned_at,replaced_from,replaced_at').order('id')
     ]);
-    DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||''}));
+    DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||'',opening:Number(r.opening_qty)||0}));
     DB.garudaStations=(st.data||[]).map(r=>({no:r.station_no,name:r.station_name||''}));
     DB.garudaLots=(lots.data||[]);
     DB.garudaTags=(tags.data||[]);
@@ -2922,6 +2927,37 @@ function garDownloadReport(){
   try{ const ws=XLSX.utils.json_to_sheet(rows), wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Garuda QR');
     XLSX.writeFile(wb,'garuda-report-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Report downloaded.','ok'); }
   catch(e){ fail(e); }
+}
+function garConfirmRemove(kind,key){
+  modal({title:'Remove this '+kind+'?',
+    body:'<p style="margin-top:0">Remove <b>'+esc(key)+'</b> from the '+kind+' master? Any QR already created is untouched.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="gr-go" style="background:var(--stop);border-color:var(--stop)">Remove</button>',
+    onOpen:(mv,cl)=>{ $('#gr-go',mv).onclick=async()=>{ $('#gr-go',mv).disabled=true;
+      try{ await rpc(kind==='item'?'cng_item_remove':'cng_station_remove', kind==='item'?{p_code:key}:{p_no:key}); cl(); await cngReload(); toast((kind==='item'?'Item':'Station')+' removed.','ok'); render(); }
+      catch(e){ $('#gr-go',mv).disabled=false; fail(e); } }; }});
+}
+function garItemsExport(){
+  const items=DB.garudaItems||[];
+  const rows=items.map(i=>{const s=garStock(i.code); return {'Item code':i.code,'Item name':i.name,'Type':i.type||'','Life':i.partLife||'','Opening':s.opening,'Received':s.received,'Issued':s.issued,'Closing':s.remaining};});
+  try{ const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{'Item code':'','Item name':''}]), wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Items'); XLSX.writeFile(wb,'garuda-items-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Items exported.','ok'); }catch(e){ fail(e); }
+}
+function garStationsExport(){
+  const rows=(DB.garudaStations||[]).map(s=>({'Station number':s.no,'Station name':s.name||''}));
+  try{ const ws=XLSX.utils.json_to_sheet(rows.length?rows:[{'Station number':'','Station name':''}]), wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Stations'); XLSX.writeFile(wb,'garuda-stations-'+new Date().toISOString().slice(0,10)+'.xlsx'); toast('Stations exported.','ok'); }catch(e){ fail(e); }
+}
+function garImportExcel(kind){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='.xlsx,.xls,.csv';
+  inp.onchange=async()=>{ const f=inp.files&&inp.files[0]; if(!f) return;
+    try{ const wb=XLSX.read(await f.arrayBuffer(),{type:'array'}), ws=wb.Sheets[wb.SheetNames[0]], data=XLSX.utils.sheet_to_json(ws,{defval:''});
+      const norm=o=>{const m={}; Object.keys(o).forEach(k=>m[String(k).toLowerCase().replace(/[^a-z0-9]/g,'')]=o[k]); return m;};
+      if(kind==='item'){ const rows=data.map(norm).map(m=>({code:String(m.itemcode||m.code||'').trim(),name:String(m.itemname||m.name||'').trim(),type:String(m.type||'').trim(),life:String(m.life||m.partlife||'').trim(),opening:parseInt(m.openingqty||m.opening||'0',10)||0})).filter(r=>r.code);
+        if(!rows.length) return toast('No rows with an item code found — check the column headers.','bad');
+        busy(true); const n=await rpc('cng_items_import',{p_rows:rows}); await cngReload(); busy(false); toast(n+' item'+(n===1?'':'s')+' imported.','ok'); render(); }
+      else { const rows=data.map(norm).map(m=>({no:String(m.stationnumber||m.stationno||m.no||'').trim(),name:String(m.stationname||m.name||'').trim()})).filter(r=>r.no);
+        if(!rows.length) return toast('No rows with a station number found — check the column headers.','bad');
+        busy(true); const n=await rpc('cng_stations_import',{p_rows:rows}); await cngReload(); busy(false); toast(n+' station'+(n===1?'':'s')+' imported.','ok'); render(); }
+    }catch(e){ busy(false); fail(e); } };
+  inp.click();
 }
 function viewGaruda(){
   if(!garudaLoaded) return garTopBar()+'<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>';
@@ -3125,13 +3161,35 @@ function garTrace(){
 }
 /* Admin — masters (add/edit arrives in a later update) */
 function garAdmin(){
+  const tab=garudaAdminTab||'items';
+  const sub='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(tab==='items'?'primary':'')+'" data-admtab="items">Item master</button><button class="btn sm '+(tab==='stations'?'primary':'')+'" data-admtab="stations">Station master</button></div>';
+  return sub+(tab==='stations'?garStationMaster():garItemMaster());
+}
+function garItemMaster(){
   const admin=!!(ME&&(ME.owner||ME.admin));
-  const items=(DB.garudaItems||[]).length, stations=(DB.garudaStations||[]).length;
-  const itemCard='<div class="card pad"><h3 style="margin:0 0 3px">Item master</h3><p class="hint" style="margin:0 0 10px">'+items+' items. <button class="btn ghost sm" data-garcol="items" id="ga-openitems">Browse</button></p>'+
-    (admin?'<div class="grid" style="gap:8px"><input id="ai-code" placeholder="Item code (ERP)" autocomplete="off" style="text-transform:uppercase"><input id="ai-name" placeholder="Item name" autocomplete="off"><div class="grid g2" style="gap:8px"><input id="ai-type" placeholder="Type (optional)" autocomplete="off"><input id="ai-life" placeholder="Part life (optional)" autocomplete="off"></div><div class="row" style="gap:10px;align-items:center"><button class="btn primary sm" id="ai-go">Add / update item</button><span id="ai-err" class="hint" style="color:var(--stop)"></span></div><div class="hint">Adding an existing code updates it.</div></div>':'<p class="hint">Only an administrator can add items.</p>')+'</div>';
-  const stnCard='<div class="card pad"><h3 style="margin:0 0 3px">Station master</h3><p class="hint" style="margin:0 0 10px">'+stations+' stations. <button class="btn ghost sm" data-garcol="stations" id="ga-openstns">Browse</button></p>'+
-    (admin?'<div class="grid" style="gap:8px"><input id="as-no" placeholder="Station number" autocomplete="off"><input id="as-name" placeholder="Station name" autocomplete="off"><div class="row" style="gap:10px;align-items:center"><button class="btn primary sm" id="as-go">Add / update station</button><span id="as-err" class="hint" style="color:var(--stop)"></span></div><div class="hint">Adding an existing number updates it.</div></div>':'<p class="hint">Only an administrator can add stations.</p>')+'</div>';
-  return '<div class="grid g2" style="gap:12px;align-items:start">'+itemCard+stnCard+'</div>';
+  const items=DB.garudaItems||[], q=garudaAdmQ.trim().toLowerCase();
+  const types=[...new Set(items.map(i=>i.type).filter(Boolean))].sort();
+  let list=items.filter(i=>!q||(i.code+' '+i.name+' '+(i.type||'')).toLowerCase().includes(q));
+  if(garudaAdmType) list=list.filter(i=>i.type===garudaAdmType);
+  const shown=list.slice(0,500);
+  const addForm=admin?'<div class="card pad" style="margin-bottom:12px"><div class="hint" style="margin:0 0 10px">Stock sheet columns: Item code, Item name, Opening qty. Name & ERP everywhere else come from here.</div>'+
+    '<div class="row" style="gap:8px;flex-wrap:wrap"><input id="ai-code" placeholder="Item code (ERP)" autocomplete="off" style="flex:1;min-width:120px;text-transform:uppercase"><input id="ai-name" placeholder="Item name" autocomplete="off" style="flex:2;min-width:160px"><input id="ai-type" placeholder="Type" autocomplete="off" style="flex:1;min-width:90px"><input id="ai-open" type="number" placeholder="Opening" autocomplete="off" style="width:110px"><button class="btn primary" id="ai-go">Add / update</button></div><div id="ai-err" class="hint" style="color:var(--stop);margin-top:6px"></div></div>':'';
+  const bar='<div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:10px"><input id="adm-isearch" type="text" placeholder="Search item name or code" value="'+esc(garudaAdmQ)+'" style="flex:1;min-width:200px"><select id="adm-itype" style="width:auto"><option value="">All types</option>'+types.map(t=>'<option '+(garudaAdmType===t?'selected':'')+'>'+esc(t)+'</option>').join('')+'</select>'+(admin?'<button class="btn sm" id="adm-iexport">Export Excel</button><button class="btn sm" id="adm-iimport">Import Excel</button>':'')+'</div>';
+  const rows=shown.length?shown.map(i=>{const s=garStock(i.code);
+    return '<tr><td class="num"><b>'+esc(i.code)+'</b></td><td>'+esc(i.name)+'</td><td class="hint meta">'+esc(i.type||'—')+'</td><td class="hint meta">'+esc(i.partLife||'—')+'</td><td class="num">'+s.opening+'</td><td class="num">'+s.issued+'</td><td class="num">'+s.remaining+'</td>'+(admin?'<td style="text-align:right"><button class="btn ghost sm adm-irm" data-code="'+esc(i.code)+'" style="color:var(--stop)">Remove</button></td>':'<td></td>')+'</tr>';}).join('')
+    :'<tr><td colspan="8"><div class="empty" style="padding:18px"><p class="hint">No item matches.</p></div></td></tr>';
+  return addForm+bar+'<div class="card"><table class="cards"><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Life</th><th>Opening</th><th>Issued</th><th>Closing</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>'+(list.length>500?'<div class="hint" style="padding:10px 16px">Showing the first 500 — search to narrow.</div>':'')+'</div>';
+}
+function garStationMaster(){
+  const admin=!!(ME&&(ME.owner||ME.admin));
+  const stations=DB.garudaStations||[], q=garudaAdmQ.trim().toLowerCase();
+  const list=stations.filter(s=>!q||(s.no+' '+(s.name||'')).toLowerCase().includes(q));
+  const addForm=admin?'<div class="card pad" style="margin-bottom:12px"><div class="hint" style="margin:0 0 10px">Station name and station number only. The issue station has to be one of these.</div>'+
+    '<div class="row" style="gap:8px;flex-wrap:wrap"><input id="as-no" placeholder="Station number" autocomplete="off" style="flex:1;min-width:120px"><input id="as-name" placeholder="Station name" autocomplete="off" style="flex:2;min-width:180px"><button class="btn primary" id="as-go">Add / update</button></div><div id="as-err" class="hint" style="color:var(--stop);margin-top:6px"></div></div>':'';
+  const bar='<div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:10px"><input id="adm-ssearch" type="text" placeholder="Search station number or name" value="'+esc(garudaAdmQ)+'" style="flex:1;min-width:200px">'+(admin?'<button class="btn sm" id="adm-sexport">Export Excel</button><button class="btn sm" id="adm-simport">Import Excel</button>':'')+'</div>';
+  const rows=list.length?list.map(s=>'<tr><td class="num"><b>'+esc(s.no)+'</b></td><td>'+esc(s.name||'')+'</td>'+(admin?'<td style="text-align:right"><button class="btn ghost sm adm-srm" data-no="'+esc(s.no)+'" style="color:var(--stop)">Remove</button></td>':'<td></td>')+'</tr>').join('')
+    :'<tr><td colspan="3"><div class="empty" style="padding:18px"><p class="hint">No station matches.</p></div></td></tr>';
+  return addForm+bar+'<div class="card"><table class="cards"><thead><tr><th>Station no.</th><th>Station name</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
 /* show an arbitrary set of QR stickers — scan from screen, tap one to open it, or print all */
 function garQrDialog(title,tags){
@@ -3215,18 +3273,27 @@ function wireGaruda(v){
   const smx=$('#g-stnmax',v); if(smx) smx.oninput=()=>{ garudaStnMax=smx.value; const p=smx.selectionStart; render(); const n=$('#g-stnmax'); if(n){n.focus();try{n.setSelectionRange(p,p)}catch(e){}} };
   $$('[data-stnitemqr]',v).forEach(b=>b.onclick=()=>{ const code=b.dataset.stnitemqr; garQrDialog('QR — '+code+' · station '+garudaStationSel,(DB.garudaTags||[]).filter(t=>t.item_code===code&&t.station_no===garudaStationSel&&t.status!=='in_store')); });
   $$('[data-hist]',v).forEach(b=>b.onclick=()=>{ garudaHistTab=b.dataset.hist; render(); });
-  // #2 Admin: Browse buttons switch columns; the master cards no longer auto-divert
+  // Garuda Admin masters (item / station)
   $$('[data-garcol]',v).forEach(b=>b.onclick=()=>garGo(b.dataset.garcol));
+  $$('[data-admtab]',v).forEach(b=>b.onclick=()=>{ garudaAdminTab=b.dataset.admtab; garudaAdmQ=''; garudaAdmType=''; render(); });
+  wireSearch('adm-isearch',x=>garudaAdmQ=x); wireSearch('adm-ssearch',x=>garudaAdmQ=x);
+  const aty=$('#adm-itype',v); if(aty) aty.onchange=()=>{ garudaAdmType=aty.value; render(); };
   if($('#ai-go',v)) $('#ai-go',v).onclick=async()=>{ const code=($('#ai-code',v).value||'').trim(), name=($('#ai-name',v).value||'').trim(), err=$('#ai-err',v);
     err.textContent=''; if(!code) return err.textContent='Enter the item code.'; if(!name) return err.textContent='Enter the item name.';
     $('#ai-go',v).disabled=true;
-    try{ await rpc('cng_item_save',{p_code:code,p_name:name,p_type:($('#ai-type',v).value||'').trim(),p_life:($('#ai-life',v).value||'').trim()}); await cngReload(); toast('Item saved.','ok'); render(); }
+    try{ await rpc('cng_item_save',{p_code:code,p_name:name,p_type:($('#ai-type',v).value||'').trim(),p_opening:parseInt($('#ai-open',v).value||'0',10)||0}); await cngReload(); toast('Item saved.','ok'); render(); }
     catch(e){ $('#ai-go',v).disabled=false; err.textContent=(e.message||'').replace(/^.*?: /,''); } };
   if($('#as-go',v)) $('#as-go',v).onclick=async()=>{ const no=($('#as-no',v).value||'').trim(), name=($('#as-name',v).value||'').trim(), err=$('#as-err',v);
     err.textContent=''; if(!no) return err.textContent='Enter the station number.';
     $('#as-go',v).disabled=true;
     try{ await rpc('cng_station_save',{p_no:no,p_name:name}); await cngReload(); toast('Station saved.','ok'); render(); }
     catch(e){ $('#as-go',v).disabled=false; err.textContent=(e.message||'').replace(/^.*?: /,''); } };
+  $$('.adm-irm',v).forEach(b=>b.onclick=()=>garConfirmRemove('item',b.dataset.code));
+  $$('.adm-srm',v).forEach(b=>b.onclick=()=>garConfirmRemove('station',b.dataset.no));
+  if($('#adm-iexport',v)) $('#adm-iexport',v).onclick=garItemsExport;
+  if($('#adm-sexport',v)) $('#adm-sexport',v).onclick=garStationsExport;
+  if($('#adm-iimport',v)) $('#adm-iimport',v).onclick=()=>garImportExcel('item');
+  if($('#adm-simport',v)) $('#adm-simport',v).onclick=()=>garImportExcel('station');
   const tgo=()=>{ const el=$('#g-tracesearch',v); const qq=(el?el.value:'').trim(); garudaTraceQ=qq; garudaTraceSel=garResolvePO(qq); render(); };
   if($('#g-tracego',v)) $('#g-tracego',v).onclick=tgo;
   const tsel=$('#g-tracesearch',v); if(tsel) tsel.onkeydown=e=>{ if(e.key==='Enter') tgo(); };
