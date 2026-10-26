@@ -443,10 +443,21 @@ tr.row-await>td:first-child{box-shadow:inset 4px 0 0 var(--line-2)}
 .selfie-hint,.selfie-err{padding:18px;text-align:center;font-size:14px}
 .selfie-err{color:#fff}
 /* selfie looks: colour wash, round filter previews */
-/* Garuda (CNG stock) takeover */
-.garuda-mode .side,.garuda-mode .tabbar,.garuda-mode .main>.top{display:none!important}
-.garuda-mode .main{grid-column:1/-1}
+/* Garuda (CNG stock) — sections live in SETU's left sidebar; keep SETU theme */
+.garuda-mode .tabbar,.garuda-mode .main>.top{display:none!important}
 .garuda-mode #view{padding-top:0}
+/* sidebar "Back to SETU" + a scan shortcut shown above the Garuda sections */
+.gar-side-top{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.gar-side-top .btn{width:100%;justify-content:center}
+/* slim in-content header (back/scan + mobile section bar); desktop uses the sidebar */
+.gar-head{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 16px;margin:-16px -16px 14px}
+.gar-head h2{font-size:17px;margin:0}
+.gar-head .gar-actions{margin-left:auto;display:flex;gap:8px}
+.gar-chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:0 2px 2px;margin:0 0 12px}
+.gar-chips button{white-space:nowrap;font:inherit;font-weight:600;font-size:13px;padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--steel)}
+.gar-chips button.on{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+@media(min-width:901px){.gar-chips,.gar-head .gar-mob{display:none}}
+@media(max-width:900px){.gar-head{margin:-16px -16px 12px}}
 .gar-top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:linear-gradient(120deg,#0c3aa6,#0a2c78);color:#fff;padding:12px 16px;border-radius:0 0 var(--r) var(--r);margin:-4px 0 14px}
 .gar-brand{font-weight:800;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
 .gar-brand img{height:20px}
