@@ -622,6 +622,21 @@ async function parseCngPO(blob){
       if(qty>0 && /^(NOS|SET|PCS|KG|MTR|LTR|UNIT|NO|EA)$/i.test(unit) && desc.length>1) out.lines.push({desc:desc,qty:qty,unit:unit,rate:rate}); } }
   return out;
 }
+/* CNG GRN — the GRN PDF DOES carry the ERP code in-line, e.g. "BATTERY 12V 100AH(S01051644)",
+   and names the PO it fulfils (Order No). Best-effort pre-fill; user reviews take-now per line. */
+async function parseCngGRN(blob){
+  const {all:L}=await readPdfAll(blob), out={grn_no:'',grn_date:'',po_no:'',invoice_no:'',invoice_date:'',vendor:'',lines:[]};
+  out.grn_no=grab(L,/GRN\s*NO\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i)||'';
+  const gd=grab(L,/GRN\s*Date\s*:?\s*(\d{2}-\d{2}-\d{4})/i); if(gd) out.grn_date=toISO(gd);
+  out.po_no=grab(L,/Order\s*No\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i)||'';
+  out.invoice_no=grab(L,/Party\s*Bill\s*No\.?\s*:?\s*(\S+)/i)||'';
+  const idt=grab(L,/Party\s*Bill\s*Dt\.?\s*:?\s*(\d{2}-\d{2}-\d{4})/i); if(idt) out.invoice_date=toISO(idt);
+  // each item line carries the ERP code in parentheses + a received quantity
+  for(const l of L){ const m=(l.text||'').match(/(.+?)\(([A-Z]\d{4,})\)\s+(?:[A-Za-z]{2,4}\s+)?([\d,]+\.\d{1,3})/);
+    if(m){ const code=m[2].toUpperCase(), qty=parseFloat(m[3].replace(/,/g,'')), desc=m[1].replace(/^\s*\d{1,3}\s+/,'').replace(/\s+/g,' ').trim();
+      if(qty>0) out.lines.push({code:code,desc:desc,qty:qty}); } }
+  return out;
+}
 
 /* ============================================================
    Files: uploaded straight into the person's own folder in the
@@ -4976,19 +4991,24 @@ function flowAct(stepId,kind){
   // CNG GRN preparation: Prashant records the received lines here; QRs mint on final approval
   const cngGrn=!!(f&&f.department==='CNG'&&s.stage==='GRN'&&s.substep===1);
   const cngPO=!!(f&&f.department==='CNG'&&/^Purchase/.test(s.stage||'')&&s.substep===1);
-  const grn={no:'',invoice:'',lines:[{code:'',acc:'',rate:''}]};
+  const grn={no:'',date:'',invoice:'',invDate:'',invPhoto:[],ewayPhoto:[],poLines:[],free:[{code:'',acc:'',rate:''}]};
   const po={no:'',vendor:'',expected:'',lines:[{code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''}]};
   if((cngGrn||cngPO)&&!garudaLoaded) loadGaruda();
   const local={files:[],support:[]};   // uploaded file records
   let dt=''; const dataFields={}; let payMode='full'; const advices=[{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null}];
   let body='<p style="margin-top:0">'+esc(s.label)+'</p>';
   if(cngGrn){
-    body+='<div class="card pad" style="margin:4px 0 2px"><h4 style="margin:0 0 6px;font-size:13px">Received lines</h4>'+
-      '<p class="hint" style="margin:0 0 10px">Add each item received against this PO and the quantity accepted. One QR sticker is made per accepted unit when the GRN is finally approved.</p>'+
-      '<div class="grid g2" style="gap:10px"><div><label for="gr-no">GRN number</label><input id="gr-no" type="text" placeholder="e.g. GRN-9"></div>'+
-      '<div><label for="gr-inv">Invoice number <span class="hint" style="font-weight:400">optional</span></label><input id="gr-inv" type="text"></div></div>'+
-      '<div id="fa-grn-lines" style="margin-top:10px"></div>'+
-      '<button class="btn sm" id="gr-add" style="margin-top:8px">+ Add a line</button>'+
+    body+='<div class="card pad" style="margin:4px 0 2px"><h4 style="margin:0 0 6px;font-size:13px">Goods received (GRN)</h4>'+
+      '<p class="hint" style="margin:0 0 10px">Attach the GRN PDF to auto-fill, then enter how many of each item came in <b>now</b>. One QR sticker is made per unit received, when the GRN is finally approved. A delivery can be partial — the rest of the PO stays open for later.</p>'+
+      '<div class="grid g2" style="gap:10px">'+
+      '<div><label for="gr-no">GRN number</label><input id="gr-no" type="text"></div>'+
+      '<div><label for="gr-date">GRN date</label><input id="gr-date" type="date"></div>'+
+      '<div><label for="gr-inv">Invoice number</label><input id="gr-inv" type="text"></div>'+
+      '<div><label for="gr-invdate">Invoice date</label><input id="gr-invdate" type="date"></div></div>'+
+      '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label>Invoice photo</label><div id="gr-invphoto"></div></div>'+
+      '<div><label>E-way bill photo <span class="hint" style="font-weight:400">optional</span></label><div id="gr-ewayphoto"></div></div></div>'+
+      '<div id="fa-grn-lines" style="margin-top:12px"></div>'+
+      '<div id="gr-note" class="hint" style="margin-top:6px"></div>'+
       '<datalist id="cng-items-dl"></datalist></div>';
   }
   if(cngPO){
@@ -5023,11 +5043,13 @@ function flowAct(stepId,kind){
       // item 14: at the site-proof step each photo gets its station + date (gallery allowed)
       const siteMeta={}, siteRepaint=$('#fa-sitetags',mv)?sitePhotoTagger($('#fa-sitetags',mv),local.files,siteMeta):null;
       flowAct._siteMeta=siteMeta;
-      let poFill=null;
+      let poFill=null, grnFill=null;
       if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,siteRepaint
         ?{mode:'support',single:false,gallery:true,onChange:siteRepaint,label:'Add site photos from the gallery or camera — several at once is fine'}
         :cngPO
         ?{mode:'support',single:false,label:'Attach the PO PDF — its fields auto-fill below',onFile:async(file)=>{ if(poFill&&/\.pdf$/i.test(file.name)) await poFill(file); }}
+        :cngGrn
+        ?{mode:'support',single:false,label:'Attach the GRN PDF — its fields auto-fill below',onFile:async(file)=>{ if(grnFill&&/\.pdf$/i.test(file.name)) await grnFill(file); }}
         :{mode:'support',single:false,label:'Tap to upload (PDF, image, Excel, Word) — add more than one if needed'});
       if($('#fa-supp',mv)) uploader($('#fa-supp',mv),local.support,{mode:'support',single:false,label:'Add supporting files (optional)'});
       if($('#fp-adv',mv)){ const paint=()=>{ $('#fp-adv',mv).innerHTML=advices.map((a,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center"><input type="number" min="0" max="100" placeholder="%" data-pct="'+i+'" value="'+esc(a.pct)+'" style="width:80px"><div style="flex:1" id="adv-f-'+i+'"></div></div>').join('');
@@ -5037,19 +5059,47 @@ function flowAct(stepId,kind){
       if(cngGrn){
         const dl=$('#cng-items-dl',mv), fillDl=()=>{ if(dl&&!dl.children.length) dl.innerHTML=(DB.garudaItems||[]).map(i=>'<option value="'+esc(i.code)+'">'+esc(i.name)+'</option>').join(''); };
         fillDl(); if(!garudaLoaded) loadGaruda().then(fillDl);
-        const no=$('#gr-no',mv); if(no) no.oninput=e=>grn.no=e.target.value; const inv=$('#gr-inv',mv); if(inv) inv.oninput=e=>grn.invoice=e.target.value;
+        const gi=(id,set)=>{ const el=$(id,mv); if(el) el.oninput=e=>set(e.target.value); };
+        gi('#gr-no',v=>grn.no=v); gi('#gr-date',v=>grn.date=v); gi('#gr-inv',v=>grn.invoice=v); gi('#gr-invdate',v=>grn.invDate=v);
+        if($('#gr-invphoto',mv)) uploader($('#gr-invphoto',mv),grn.invPhoto,{mode:'support',single:true,label:'Take / attach invoice photo'});
+        if($('#gr-ewayphoto',mv)) uploader($('#gr-ewayphoto',mv),grn.ewayPhoto,{mode:'support',single:true,label:'Take / attach e-way photo'});
+        const note=$('#gr-note',mv);
         const paintLines=()=>{ const box=$('#fa-grn-lines',mv); if(!box) return;
-          box.innerHTML=grn.lines.map((ln,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">'+
-            '<input class="gl-code" data-i="'+i+'" list="cng-items-dl" placeholder="Item code" value="'+esc(ln.code)+'" style="flex:2;min-width:150px">'+
-            '<input class="gl-acc" data-i="'+i+'" type="number" min="0" placeholder="Qty accepted" value="'+esc(ln.acc)+'" style="width:130px">'+
-            '<input class="gl-rate" data-i="'+i+'" type="text" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:90px">'+
-            (grn.lines.length>1?'<button class="btn ghost sm gl-del" data-i="'+i+'" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div>').join('');
-          $$('.gl-code',box).forEach(el=>el.oninput=e=>grn.lines[+e.target.dataset.i].code=e.target.value.trim());
-          $$('.gl-acc',box).forEach(el=>el.oninput=e=>grn.lines[+e.target.dataset.i].acc=e.target.value);
-          $$('.gl-rate',box).forEach(el=>el.oninput=e=>grn.lines[+e.target.dataset.i].rate=e.target.value);
-          $$('.gl-del',box).forEach(el=>el.onclick=()=>{ grn.lines.splice(+el.dataset.i,1); paintLines(); }); };
+          if(grn.poLines.length){
+            box.innerHTML='<div class="hint" style="margin-bottom:6px">Receive against the purchase order — enter how many came in now (max = still open).</div>'+
+              grn.poLines.map((ln,i)=>'<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
+                '<div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1;min-width:120px">'+esc(ln.item_name||ln.item_code)+'</b><span class="hint num">'+esc(ln.item_code)+'</span><span class="tag t-ok">open '+ln.remaining+' / '+ln.ordered+'</span></div>'+
+                '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><label style="margin:0;font-size:12px">Take now</label><input class="gl-take" data-i="'+i+'" type="number" min="0" max="'+ln.remaining+'" value="'+esc(ln.take||'')+'" style="width:100px"><span class="hint">QR: <b class="gl-qr" data-i="'+i+'">'+(Number(ln.take)||0)+'</b></span><div style="flex:1;min-width:150px" id="grp-'+i+'"></div></div></div>').join('');
+            grn.poLines.forEach((ln,i)=>{ ln.photo=ln.photo||[]; const m=$('#grp-'+i,box); if(m) uploader(m,ln.photo,{mode:'support',single:true,label:'Material photo'}); });
+            $$('.gl-take',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, max=grn.poLines[i].remaining; let n=Number(e.target.value)||0; if(n>max){n=max;e.target.value=max;} grn.poLines[i].take=e.target.value; const q=box.querySelector('.gl-qr[data-i="'+i+'"]'); if(q) q.textContent=n; });
+          } else {
+            box.innerHTML='<div class="hint" style="margin-bottom:6px">No PO lines found for this flow — enter the received items directly (from the CNG master).</div>'+
+              grn.free.map((ln,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">'+
+                '<input class="gf-code" data-i="'+i+'" list="cng-items-dl" placeholder="Item code" value="'+esc(ln.code)+'" style="flex:2;min-width:150px">'+
+                '<input class="gf-acc" data-i="'+i+'" type="number" min="0" placeholder="Qty received" value="'+esc(ln.acc)+'" style="width:130px">'+
+                '<input class="gf-rate" data-i="'+i+'" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:90px">'+
+                (grn.free.length>1?'<button class="btn ghost sm gf-del" data-i="'+i+'" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div>').join('')+
+              '<button class="btn sm" id="gf-add" style="margin-top:8px">+ Add a line</button>';
+            $$('.gf-code',box).forEach(el=>el.oninput=e=>grn.free[+e.target.dataset.i].code=e.target.value.trim());
+            $$('.gf-acc',box).forEach(el=>el.oninput=e=>grn.free[+e.target.dataset.i].acc=e.target.value);
+            $$('.gf-rate',box).forEach(el=>el.oninput=e=>grn.free[+e.target.dataset.i].rate=e.target.value);
+            $$('.gf-del',box).forEach(el=>el.onclick=()=>{ grn.free.splice(+el.dataset.i,1); paintLines(); });
+            if($('#gf-add',box)) $('#gf-add',box).onclick=()=>{ grn.free.push({code:'',acc:'',rate:''}); paintLines(); };
+          } };
         paintLines();
-        if($('#gr-add',mv)) $('#gr-add',mv).onclick=()=>{ grn.lines.push({code:'',acc:'',rate:''}); paintLines(); };
+        rpc('cng_po_open',{p_request:f.id}).then(rows=>{ grn.poLines=(rows||[]).filter(r=>Number(r.remaining)>0).map(r=>({po_line_id:r.po_line_id,item_code:r.item_code,item_name:r.item_name,unit:r.unit,rate:r.rate,ordered:Number(r.ordered),received:Number(r.received),remaining:Number(r.remaining),take:'',photo:[]})); paintLines(); if(note&&!grn.poLines.length) note.textContent='No open PO lines for this flow — enter items by hand below.'; }).catch(()=>{});
+        grnFill=async(file)=>{ if(note) note.textContent='Reading the GRN…';
+          try{ const r=await parseCngGRN(file);
+            if(r.grn_no){ grn.no=r.grn_no; const el=$('#gr-no',mv); if(el) el.value=r.grn_no; }
+            if(r.grn_date){ grn.date=r.grn_date; const el=$('#gr-date',mv); if(el) el.value=r.grn_date; }
+            if(r.invoice_no){ grn.invoice=r.invoice_no; const el=$('#gr-inv',mv); if(el) el.value=r.invoice_no; }
+            if(r.invoice_date){ grn.invDate=r.invoice_date; const el=$('#gr-invdate',mv); if(el) el.value=r.invoice_date; }
+            let matched=0;
+            if(grn.poLines.length){ (r.lines||[]).forEach(rl=>{ const pl=grn.poLines.find(p=>p.item_code===rl.code&&!p.take); if(pl){ pl.take=String(Math.min(rl.qty,pl.remaining)); matched++; } }); }
+            else if(r.lines&&r.lines.length){ const ff=r.lines.filter(x=>resolveCngCode(x.code)).map(x=>({code:x.code,acc:String(x.qty),rate:''})); if(ff.length){ grn.free=ff; matched=ff.length; } }
+            paintLines();
+            if(note) note.textContent=(matched?matched+' line(s) read'+(grn.poLines.length?' and matched to the PO':'')+' — ':'GRN details read — ')+'check the quantities, then Continue.'; }
+          catch(e){ if(note) note.textContent='Could not read that GRN automatically — enter the details by hand.'; } };
       }
       if(cngPO){
         const its=()=>DB.garudaItems||[];
@@ -5103,8 +5153,14 @@ function flowAct(stepId,kind){
         let siteTags=null;
         if(isSiteStep(s)){ const r=siteTagItems(local.files,flowAct._siteMeta||{}); if(r.err) return err.textContent=r.err; siteTags=r.items; }
         let grnLots=null;
-        if(cngGrn){ grnLots=grn.lines.filter(l=>l.code&&Number(l.acc)>0).map(l=>({item_code:l.code,order_qty:Number(l.acc)||0,delivered_qty:Number(l.acc)||0,accepted_qty:Number(l.acc)||0,rate:l.rate||'',grn_no:grn.no||'',invoice_no:grn.invoice||''}));
-          if(!grnLots.length) return err.textContent='Add at least one item with a quantity accepted.'; }
+        if(cngGrn){ const pth=list=>list&&list[0]?list[0].path:''; const inv=pth(grn.invPhoto), eway=pth(grn.ewayPhoto);
+          if(grn.poLines.length){
+            grnLots=grn.poLines.filter(l=>Number(l.take)>0).map(l=>({po_line_id:l.po_line_id,item_code:l.item_code,order_qty:0,delivered_qty:Number(l.take),accepted_qty:Number(l.take),rate:l.rate||'',grn_no:grn.no||'',grn_date:grn.date||'',invoice_no:grn.invoice||'',invoice_date:grn.invDate||'',material_photo:pth(l.photo),invoice_photo:inv,eway_photo:eway,po_no:''}));
+          } else {
+            const bad=grn.free.find(l=>l.code&&!resolveCngCode(l.code)); if(bad) return err.textContent='"'+bad.code+'" is not in the CNG item master.';
+            grnLots=grn.free.filter(l=>l.code&&Number(l.acc)>0).map(l=>({item_code:String(l.code).trim().toUpperCase(),order_qty:Number(l.acc)||0,delivered_qty:Number(l.acc)||0,accepted_qty:Number(l.acc)||0,rate:l.rate||'',grn_no:grn.no||'',grn_date:grn.date||'',invoice_no:grn.invoice||'',invoice_date:grn.invDate||'',invoice_photo:inv,eway_photo:eway}));
+          }
+          if(!grnLots.length) return err.textContent='Enter at least one item with a quantity received now.'; }
         let poData=null;
         if(cngPO){ const lines=po.lines.filter(l=>l.code&&Number(l.qty)>0).map(l=>({item_code:String(l.code).trim().toUpperCase(),item_name:l.name||'',unit:l.unit||'NOS',order_qty:Number(l.qty)||0,rate:l.rate||''}));
           const bad=po.lines.find(l=>l.code&&!resolveCngCode(l.code));
