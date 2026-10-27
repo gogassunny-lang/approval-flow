@@ -2885,20 +2885,38 @@ function garRepRange(){
   return {from:'',to:''};   // all time / all dates
 }
 function garReportRows(){
-  const items=DB.garudaItems||[], tags=DB.garudaTags||[], {from,to}=garRepRange();
+  const items=DB.garudaItems||[], {from,to}=garRepRange();
   const q=garudaRepQ.trim().toLowerCase(), stn=garudaRepStn.trim();
-  const inRange=d=>(!from||d>=from)&&(!to||d<=to);
+  const filtered=!!(stn||from||to), inRange=d=>(!from||d>=from)&&(!to||d<=to);
+  // only when a station or date filter is set do we need to look at each tag; group once
+  let byCode=null;
+  if(filtered){ byCode={}; for(const x of (DB.garudaTags||[])){ (byCode[x.item_code]=byCode[x.item_code]||[]).push(x); } }
   return items.filter(i=>!q||(i.code+' '+i.name).toLowerCase().includes(q)).map(i=>{
-    const t=tags.filter(x=>x.item_code===i.code), opening=i.opening||0, received=t.length;
-    const issued=t.filter(x=>(x.status==='issued'||x.status==='allotted'||x.status==='consumed')&&(!stn||x.station_no===stn)&&(x.issued_at?inRange(String(x.issued_at).slice(0,10)):(!from&&!to))).length;
+    const opening=i.opening||0, received=garCount(i.code).received;
+    let issued;
+    if(!filtered){ const s=garCount(i.code).s; issued=(s.issued||0)+(s.allotted||0)+(s.consumed||0); }
+    else { issued=(byCode[i.code]||[]).filter(x=>(x.status==='issued'||x.status==='allotted'||x.status==='consumed')&&(!stn||x.station_no===stn)&&(x.issued_at?inRange(String(x.issued_at).slice(0,10)):(!from&&!to))).length; }
     return {code:i.code,name:i.name,opening,received,issued,total:opening+received,remaining:opening+received-issued};
   });
 }
+// Count every QR once, grouped by item code, and cache it against the current
+// tags/items arrays. Scanning all tags for each of 1,300+ items on every render
+// (and on every keystroke) was what made the Garuda page feel frozen.
+let _garIdx=null, _garIdxTags=null, _garIdxItems=null;
+function garIndex(){
+  const tags=DB.garudaTags||[], items=DB.garudaItems||[];
+  if(_garIdx&&_garIdxTags===tags&&_garIdxItems===items) return _garIdx;
+  const idx={};
+  for(const i of items){ idx[i.code]={opening:i.opening||0,received:0,s:{}}; }
+  for(const t of tags){ let e=idx[t.item_code]; if(!e) e=idx[t.item_code]={opening:0,received:0,s:{}};
+    e.received++; e.s[t.status]=(e.s[t.status]||0)+1; }
+  _garIdx=idx; _garIdxTags=tags; _garIdxItems=items; return idx;
+}
+const garCount=code=>garIndex()[code]||{opening:0,received:0,s:{}};
 // live stock for an item: Opening (imported) + Received (minted QR) − Issued (out of store)
-const garStock=code=>{ const t=(DB.garudaTags||[]).filter(x=>x.item_code===code); const received=t.length;
-  const issued=t.filter(x=>x.status==='issued'||x.status==='allotted'||x.status==='consumed').length;
-  const it=(DB.garudaItems||[]).find(i=>i.code===code), opening=it?(it.opening||0):0;
-  return {opening,received,issued,total:opening+received,remaining:opening+received-issued}; };
+const garStock=code=>{ const e=garCount(code), s=e.s;
+  const issued=(s.issued||0)+(s.allotted||0)+(s.consumed||0);
+  return {opening:e.opening,received:e.received,issued,total:e.opening+e.received,remaining:e.opening+e.received-issued}; };
 const garTile=(label,val)=>'<div class="card pad" style="padding:13px"><div class="hint" style="font-size:11px;letter-spacing:.05em;text-transform:uppercase">'+esc(label)+'</div><div style="font-size:24px;font-weight:800;margin-top:4px">'+esc(val)+'</div></div>';
 const garField=(label,val)=>'<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px"><div class="hint" style="font-size:10.5px;letter-spacing:.04em;text-transform:uppercase">'+esc(label)+'</div><div style="margin-top:3px;font-weight:600">'+esc(val||'—')+'</div></div>';
 function garTagFields(t){  // the full item-in-station detail card (image 1)
@@ -3015,7 +3033,7 @@ function garProcessed(){
   const q=garudaProcQ.trim().toLowerCase();
   const byItem={};
   lots.forEach(l=>{ const g=byItem[l.item_code]=byItem[l.item_code]||{code:l.item_code,name:l.item_name||'',grns:new Set(),pos:new Set()}; if(l.grn_no)g.grns.add(l.grn_no); if(l.po_no)g.pos.add(l.po_no); });
-  let items=Object.values(byItem).map(g=>({code:g.code,name:g.name,grns:[...g.grns],pos:[...g.pos],qrs:tags.filter(t=>t.item_code===g.code).length}));
+  let items=Object.values(byItem).map(g=>({code:g.code,name:g.name,grns:[...g.grns],pos:[...g.pos],qrs:garCount(g.code).received}));
   if(q) items=items.filter(g=>(g.code+' '+g.name+' '+g.grns.join(' ')+' '+g.pos.join(' ')).toLowerCase().includes(q)||tags.some(t=>t.item_code===g.code&&t.id.toLowerCase().includes(q)));
   items.sort((a,b)=>a.code.localeCompare(b.code));
   const head='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="g-procsearch" type="text" placeholder="Search item, ERP, PO, GRN or QR" value="'+esc(garudaProcQ)+'" style="flex:1;min-width:220px"><span class="tag t-prog" style="align-self:center">'+items.length+' item'+(items.length===1?'':'s')+'</span></div>';
@@ -3091,8 +3109,8 @@ function garConsumed(){
 function garItems(){
   if(garudaItemSel) return garItemDetail(garudaItemSel);
   const items=DB.garudaItems||[], tags=DB.garudaTags||[], q=garudaItemQ.trim().toLowerCase();
-  const inStoreOf=code=>tags.filter(t=>t.item_code===code&&t.status==='in_store').length;
-  const issuedOf=code=>tags.filter(t=>t.item_code===code&&t.status==='issued').length;
+  const inStoreOf=code=>garCount(code).s.in_store||0;
+  const issuedOf=code=>garCount(code).s.issued||0;
   const totStore=tags.filter(t=>t.status==='in_store').length, totIssued=tags.filter(t=>t.status==='issued').length;
   const outTypes=items.filter(i=>inStoreOf(i.code)===0).length;
   const types=[...new Set(items.map(i=>i.type).filter(Boolean))].sort();
