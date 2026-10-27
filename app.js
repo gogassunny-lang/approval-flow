@@ -3476,10 +3476,22 @@ function cngScanDialog(){
       const veil=mv.closest?mv.closest('.veil'):null; if(veil){ const mo=new MutationObserver(()=>{ if(!document.body.contains(veil)){ stop(); mo.disconnect(); } }); mo.observe(document.body,{childList:true,subtree:true}); }
     }});
 }
+// load a script by trying each source in turn until the global appears; the LOCAL
+// copy is first so a network that blocks the CDN (that was the scanner bug) still works
+function loadScriptChain(globalName, sources){
+  if(window[globalName]) return Promise.resolve();
+  return sources.reduce((p,src)=>p.catch(()=>new Promise((res,rej)=>{
+    if(window[globalName]) return res();
+    const sc=document.createElement('script'); sc.src=src;
+    sc.onload=()=>window[globalName]?res():rej(new Error('loaded but '+globalName+' missing: '+src));
+    sc.onerror=()=>rej(new Error('load failed: '+src)); document.head.appendChild(sc);
+  })), Promise.reject()).then(()=>{ if(!window[globalName]) throw new Error(globalName+' could not load'); });
+}
 let _jsqrP=null;
 function ensureJsQR(){ if(window.jsQR) return Promise.resolve();
-  if(!_jsqrP) _jsqrP=new Promise((res,rej)=>{ const sc=document.createElement('script');
-    sc.src='https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js'; sc.onload=()=>res(); sc.onerror=()=>rej(new Error('scanner load failed')); document.head.appendChild(sc); });
+  if(!_jsqrP) _jsqrP=loadScriptChain('jsQR',['./jsqr.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js',
+    'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js']).catch(e=>{ _jsqrP=null; throw e; });
   return _jsqrP; }
 async function cngTagPanel(code){
   const t=await cngFetchTag(code); if(!t) return toast('QR not found.','bad');
@@ -3593,9 +3605,9 @@ function cngReplaceDialog(t,parentClose){
 /* load a QR renderer on demand (no change to index.html) */
 let _qrLibP=null;
 function ensureQR(){ if(window.QRCode) return Promise.resolve();
-  if(!_qrLibP) _qrLibP=new Promise((res,rej)=>{ const sc=document.createElement('script');
-    sc.src='https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'; sc.onload=()=>res(); sc.onerror=()=>rej(new Error('QR load failed')); document.head.appendChild(sc); });
-  return _qrLibP; }
+  return loadScriptChain('QRCode',['./qrcode.min.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
+    'https://cdn.jsdelivr.net/npm/qrcodejs2@0.0.2/qrcode.min.js']); }
 function qrLotDialog(lotId){
   const lot=(DB.garudaLots||[]).find(l=>l.id===lotId), tags=(DB.garudaTags||[]).filter(t=>t.lot_id===lotId);
   if(!tags.length) return toast('No QR codes for this line.','bad');
