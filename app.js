@@ -3409,23 +3409,36 @@ function cngScanDialog(){
       $('#sc-find',mv).onclick=()=>open();
       $('#sc-code',mv).onkeydown=e=>{ if(e.key==='Enter') open(); };
       $('#sc-cam',mv).onclick=async()=>{
-        const btn=$('#sc-cam',mv); btn.disabled=true; $('#sc-err',mv).textContent='';
+        const btn=$('#sc-cam',mv); btn.disabled=true; const errEl=$('#sc-err',mv); errEl.textContent='';
         const md=navigator.mediaDevices;
-        if(!md||!md.getUserMedia){ btn.disabled=false; $('#sc-err',mv).textContent='This browser blocks camera access — type the code instead.'; return; }
-        // prefer the rear camera but fall back to ANY camera (environment as a hard
-        // constraint throws on devices that can't satisfy it — that was the bug)
-        const getCam=async()=>{ try{ return await md.getUserMedia({video:{facingMode:{ideal:'environment'}}}); }catch(e){ return await md.getUserMedia({video:true}); } };
-        try{ await ensureJsQR(); stream=await getCam();
-          const vid=$('#sc-vid',mv); vid.style.display='block'; vid.setAttribute('playsinline',''); vid.srcObject=stream; await vid.play();
-          $('#sc-hint',mv).textContent='Scanning… hold the sticker steady.';
-          const cv=document.createElement('canvas'), ctx=cv.getContext('2d');
-          const tick=()=>{ if(stopped) return; if(vid.readyState===vid.HAVE_ENOUGH_DATA){ cv.width=vid.videoWidth; cv.height=vid.videoHeight; ctx.drawImage(vid,0,0,cv.width,cv.height);
-              try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height); if(r&&r.data){ open(r.data); return; } }catch(e){} }
-            raf=requestAnimationFrame(tick); };
-          tick();
-        }catch(e){ btn.disabled=false;
-          const n=e&&e.name;
-          $('#sc-err',mv).textContent=n==='NotAllowedError'?'Camera permission was denied — allow camera for SETU, then try again (or type the code).':n==='NotFoundError'?'No camera found on this device — type the code instead.':'Camera could not start — type the code instead.'; }
+        if(!md||!md.getUserMedia){ btn.disabled=false;
+          errEl.textContent=location.protocol==='https:'?'This browser blocks camera access — type the code instead.':'The camera only works over a secure (https) link — type the code instead.'; return; }
+        // prefer the rear camera, then any camera, then the plainest request — each
+        // level throws on devices that can't satisfy it, so try them in turn
+        const getCam=async()=>{ try{ return await md.getUserMedia({video:{facingMode:{ideal:'environment'}}}); }
+          catch(e){ try{ return await md.getUserMedia({video:true}); }
+          catch(e2){ if(e2&&e2.name==='OverconstrainedError') return await md.getUserMedia({video:{}}); throw e2; } } };
+        // 1) start the camera first, so a slow/blocked scanner library never stops the preview
+        try{ stream=await getCam(); }
+        catch(e){ btn.disabled=false; const n=(e&&e.name)||'', m=(e&&e.message)||'';
+          errEl.textContent =
+            n==='NotAllowedError'||n==='SecurityError' ? 'Camera permission is blocked. Allow the camera for SETU in the browser/app settings, then try again — or type the code.' :
+            n==='NotFoundError'||n==='OverconstrainedError' ? 'No usable camera was found on this device — type the code instead.' :
+            n==='NotReadableError'||n==='AbortError' ? 'The camera is busy in another app (close Camera, Zoom, Teams, Meet…) and try again — or type the code.' :
+            ('Camera could not start'+(n?' ('+n+')':m?' ('+m+')':'')+' — type the code instead.');
+          return; }
+        // 2) show the live preview
+        const vid=$('#sc-vid',mv); vid.style.display='block'; vid.setAttribute('playsinline',''); vid.srcObject=stream;
+        try{ await vid.play(); }catch(e){}
+        // 3) load the QR reader; if it can't load (offline/CDN blocked) the preview still shows and they can type
+        try{ await ensureJsQR(); }
+        catch(e){ $('#sc-hint',mv).textContent='Live view is on, but the QR reader could not load — type the code below.'; return; }
+        $('#sc-hint',mv).textContent='Scanning… hold the sticker steady.';
+        const cv=document.createElement('canvas'), ctx=cv.getContext('2d');
+        const tick=()=>{ if(stopped) return; if(vid.readyState===vid.HAVE_ENOUGH_DATA){ cv.width=vid.videoWidth; cv.height=vid.videoHeight; ctx.drawImage(vid,0,0,cv.width,cv.height);
+            try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height); if(r&&r.data){ open(r.data); return; } }catch(e){} }
+          raf=requestAnimationFrame(tick); };
+        tick();
       };
       // closing the modal (X / back) must stop the camera
       const veil=mv.closest?mv.closest('.veil'):null; if(veil){ const mo=new MutationObserver(()=>{ if(!document.body.contains(veil)){ stop(); mo.disconnect(); } }); mo.observe(document.body,{childList:true,subtree:true}); }
