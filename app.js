@@ -4991,6 +4991,8 @@ function flowAct(stepId,kind){
   // CNG GRN preparation: Prashant records the received lines here; QRs mint on final approval
   const cngGrn=!!(f&&f.department==='CNG'&&s.stage==='GRN'&&s.substep===1);
   const cngPO=!!(f&&f.department==='CNG'&&/^Purchase/.test(s.stage||'')&&s.substep===1);
+  // the CNG PO/GRN steps use their own structured forms + photos, not the old per-station site-photo path
+  const siteStep=isSiteStep(s)&&!cngGrn&&!cngPO;
   const grn={no:'',date:'',invoice:'',invDate:'',invPhoto:[],ewayPhoto:[],poLines:[],free:[{code:'',acc:'',rate:''}]};
   const po={no:'',vendor:'',expected:'',lines:[{code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''}]};
   if((cngGrn||cngPO)&&!garudaLoaded) loadGaruda();
@@ -5031,8 +5033,8 @@ function flowAct(stepId,kind){
       (s.needsFile?'<div style="margin-top:10px"><label>Attach copy</label><div id="fa-files"></div></div>':'');
   } else {
     if(s.needsFile){ const multiPO=(s.stage==='Purchase'&&s.action==='initiate');
-      body+='<div style="margin-top:10px"><label>'+(multiPO?'Attach purchase order(s) — one indent can have several':isSiteStep(s)?'Site photos — add photos from every station where the work was done':'Upload document(s)')+'</label><div id="fa-files"></div>'+
-        (isSiteStep(s)?'<div id="fa-sitetags" style="margin-top:8px"></div>':'')+'</div>'; }
+      body+='<div style="margin-top:10px"><label>'+(multiPO?'Attach purchase order(s) — one indent can have several':siteStep?'Site photos — add photos from every station where the work was done':'Upload document(s)')+'</label><div id="fa-files"></div>'+
+        (siteStep?'<div id="fa-sitetags" style="margin-top:8px"></div>':'')+'</div>'; }
   }
   if(s.needsDatetime) body+='<div style="margin-top:10px"><label for="fa-dt">Confirmation date & time</label><input type="datetime-local" id="fa-dt"></div>';
   // supporting documents are allowed on every step (quotations, comparisons, photos…)
@@ -5151,19 +5153,22 @@ function flowAct(stepId,kind){
         }
         const remark=$('#fa-rem',mv).value.trim();
         let siteTags=null;
-        if(isSiteStep(s)){ const r=siteTagItems(local.files,flowAct._siteMeta||{}); if(r.err) return err.textContent=r.err; siteTags=r.items; }
+        if(siteStep){ const r=siteTagItems(local.files,flowAct._siteMeta||{}); if(r.err) return err.textContent=r.err; siteTags=r.items; }
         let grnLots=null;
         if(cngGrn){ const pth=list=>list&&list[0]?list[0].path:''; const inv=pth(grn.invPhoto), eway=pth(grn.ewayPhoto);
           if(grn.poLines.length){
             grnLots=grn.poLines.filter(l=>Number(l.take)>0).map(l=>({po_line_id:l.po_line_id,item_code:l.item_code,order_qty:0,delivered_qty:Number(l.take),accepted_qty:Number(l.take),rate:l.rate||'',grn_no:grn.no||'',grn_date:grn.date||'',invoice_no:grn.invoice||'',invoice_date:grn.invDate||'',material_photo:pth(l.photo),invoice_photo:inv,eway_photo:eway,po_no:''}));
           } else {
-            const bad=grn.free.find(l=>l.code&&!resolveCngCode(l.code)); if(bad) return err.textContent='"'+bad.code+'" is not in the CNG item master.';
+            const master=DB.garudaItems||[];
+            const bad=master.length?grn.free.find(l=>l.code&&!master.some(x=>x.code===String(l.code).trim().toUpperCase())):null;
+            if(bad) return err.textContent='"'+bad.code+'" is not in the CNG item master.';
             grnLots=grn.free.filter(l=>l.code&&Number(l.acc)>0).map(l=>({item_code:String(l.code).trim().toUpperCase(),order_qty:Number(l.acc)||0,delivered_qty:Number(l.acc)||0,accepted_qty:Number(l.acc)||0,rate:l.rate||'',grn_no:grn.no||'',grn_date:grn.date||'',invoice_no:grn.invoice||'',invoice_date:grn.invDate||'',invoice_photo:inv,eway_photo:eway}));
           }
           if(!grnLots.length) return err.textContent='Enter at least one item with a quantity received now.'; }
         let poData=null;
         if(cngPO){ const lines=po.lines.filter(l=>l.code&&Number(l.qty)>0).map(l=>({item_code:String(l.code).trim().toUpperCase(),item_name:l.name||'',unit:l.unit||'NOS',order_qty:Number(l.qty)||0,rate:l.rate||''}));
-          const bad=po.lines.find(l=>l.code&&!resolveCngCode(l.code));
+          const master=DB.garudaItems||[];
+          const bad=master.length?po.lines.find(l=>l.code&&!master.some(x=>x.code===String(l.code).trim().toUpperCase())):null;
           if(bad) return err.textContent='"'+bad.code+'" is not in the CNG item master — pick an item from the list.';
           if(!lines.length) return err.textContent='Add at least one item (from the CNG master) with an order quantity.';
           if(!po.no.trim()) return err.textContent='Enter the PO number.';
