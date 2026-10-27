@@ -597,6 +597,31 @@ async function parseDocument(blob,expect){
   const type=/WORK\s*ORDER/i.test(head)?'workorder':(/\bINDENT\b/i.test(head)?'indent':expect);
   const res=type==='workorder'?parseWorkOrder(doc):parseIndent(doc); res.detected=type; return res;
 }
+/* read every page's lines (PO/GRN tables can run past page 1) */
+async function readPdfAll(blob){
+  const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer()}).promise;
+  let all=[]; const n=Math.min(pdf.numPages,12);
+  for(let p=1;p<=n;p++){ const page=await pdf.getPage(p), vp=page.getViewport({scale:1}), tc=await page.getTextContent();
+    const items=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({str:i.str,x:i.transform[4],y:vp.height-i.transform[5],w:i.width||0}));
+    all=all.concat(groupLines(items)); }
+  return {all};
+}
+/* CNG Purchase Order — best-effort pre-fill (user reviews). The PO carries NO ERP
+   code, so each line's description is pre-filled and the preparer picks the master item. */
+async function parseCngPO(blob){
+  const {all:L}=await readPdfAll(blob), out={po_no:'',po_date:'',vendor:'',site:'',expected_date:'',lines:[]};
+  const no=grab(L,/Order\s*No\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i); if(no) out.po_no=no;
+  const ordLine=findLine(L,/Order\s*No\.?/i); if(ordLine){ const d=(ordLine.text.match(/Date\s*:?\s*(\d{2}-\d{2}-\d{4})/i)||[])[1]; if(d) out.po_date=toISO(d); }
+  const iSup=L.findIndex(l=>/Details\s+of\s+Supplier/i.test(l.text));
+  if(iSup>-1){ for(let k=iSup+1;k<Math.min(iSup+4,L.length);k++){ const t=(L[k].text||'').trim(); if(t&&!/^(State|GSTIN|PAN|Contact|Billing)/i.test(t)){ out.vendor=t; break; } } }
+  const fp=grab(L,/File\/Project\s*:?\s*(.+)$/i)||'';
+  out.site=((fp.match(/\b(\d{3,4})\b/)||[])[1])||(grab(L,/CNG\s*SITE\s*[:#]?\s*(\d{3,4})/i)||'');
+  // line rows: "<sr> <description> <qty>.000 <UNIT> <rate> <amount> ..."
+  for(const l of L){ const m=(l.text||'').match(/^\s*(\d{1,3})\s+(.+?)\s+([\d,]+\.\d{2,3})\s+([A-Za-z]{2,4})\s+([\d,]+\.\d{2})/);
+    if(m){ const qty=parseFloat(m[3].replace(/,/g,'')), unit=m[4].toUpperCase(), rate=m[5].replace(/,/g,''), desc=m[2].replace(/\s+/g,' ').trim();
+      if(qty>0 && /^(NOS|SET|PCS|KG|MTR|LTR|UNIT|NO|EA)$/i.test(unit) && desc.length>1) out.lines.push({desc:desc,qty:qty,unit:unit,rate:rate}); } }
+  return out;
+}
 
 /* ============================================================
    Files: uploaded straight into the person's own folder in the
@@ -2913,6 +2938,8 @@ function garIndex(){
   _garIdx=idx; _garIdxTags=tags; _garIdxItems=items; return idx;
 }
 const garCount=code=>garIndex()[code]||{opening:0,received:0,s:{}};
+// is this code a real CNG master item? (used to keep PO/GRN lines to the master)
+const resolveCngCode=code=>{ const t=String(code||'').trim().toUpperCase(); return (DB.garudaItems||[]).some(x=>x.code===t); };
 // live stock for an item: Opening (imported) + Received (minted QR) − Issued (out of store)
 const garStock=code=>{ const e=garCount(code), s=e.s;
   const issued=(s.issued||0)+(s.allotted||0)+(s.consumed||0);
@@ -4948,8 +4975,10 @@ function flowAct(stepId,kind){
   const x=flowFindStep(stepId); if(!x) return; const s=x.s, f=x.f;
   // CNG GRN preparation: Prashant records the received lines here; QRs mint on final approval
   const cngGrn=!!(f&&f.department==='CNG'&&s.stage==='GRN'&&s.substep===1);
+  const cngPO=!!(f&&f.department==='CNG'&&/^Purchase/.test(s.stage||'')&&s.substep===1);
   const grn={no:'',invoice:'',lines:[{code:'',acc:'',rate:''}]};
-  if(cngGrn&&!garudaLoaded) loadGaruda();
+  const po={no:'',vendor:'',expected:'',lines:[{code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''}]};
+  if((cngGrn||cngPO)&&!garudaLoaded) loadGaruda();
   const local={files:[],support:[]};   // uploaded file records
   let dt=''; const dataFields={}; let payMode='full'; const advices=[{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null}];
   let body='<p style="margin-top:0">'+esc(s.label)+'</p>';
@@ -4961,6 +4990,17 @@ function flowAct(stepId,kind){
       '<div id="fa-grn-lines" style="margin-top:10px"></div>'+
       '<button class="btn sm" id="gr-add" style="margin-top:8px">+ Add a line</button>'+
       '<datalist id="cng-items-dl"></datalist></div>';
+  }
+  if(cngPO){
+    body+='<div class="card pad" style="margin:4px 0 2px"><h4 style="margin:0 0 6px;font-size:13px">Purchase order</h4>'+
+      '<p class="hint" style="margin:0 0 10px">Raising a PO makes no QR codes — those are generated at GRN, for the quantity actually received. Attach the PO PDF below and its fields fill in; pick each item from the CNG master so the ERP code is set.</p>'+
+      '<div class="grid g3" style="gap:10px"><div><label for="po-no">PO number</label><input id="po-no" type="text" placeholder="PD26…"></div>'+
+      '<div><label for="po-ven">Vendor</label><input id="po-ven" type="text"></div>'+
+      '<div><label for="po-exp">Expected date <span class="hint" style="font-weight:400">optional</span></label><input id="po-exp" type="date"></div></div>'+
+      '<div id="po-lines" style="margin-top:10px"></div>'+
+      '<button class="btn sm" id="po-add" type="button" style="margin-top:8px">+ Add item</button>'+
+      '<div id="po-note" class="hint" style="margin-top:6px"></div>'+
+      '<datalist id="cng-po-items-dl"></datalist></div>';
   }
   if(s.action==='payment'){
     body+='<div class="seg" id="fp-mode" style="margin:8px 0"><button data-m="full" class="on">Full advice</button><button data-m="partial">Partial advice</button></div>'+
@@ -4983,8 +5023,11 @@ function flowAct(stepId,kind){
       // item 14: at the site-proof step each photo gets its station + date (gallery allowed)
       const siteMeta={}, siteRepaint=$('#fa-sitetags',mv)?sitePhotoTagger($('#fa-sitetags',mv),local.files,siteMeta):null;
       flowAct._siteMeta=siteMeta;
+      let poFill=null;
       if($('#fa-files',mv)) uploader($('#fa-files',mv),local.files,siteRepaint
         ?{mode:'support',single:false,gallery:true,onChange:siteRepaint,label:'Add site photos from the gallery or camera — several at once is fine'}
+        :cngPO
+        ?{mode:'support',single:false,label:'Attach the PO PDF — its fields auto-fill below',onFile:async(file)=>{ if(poFill&&/\.pdf$/i.test(file.name)) await poFill(file); }}
         :{mode:'support',single:false,label:'Tap to upload (PDF, image, Excel, Word) — add more than one if needed'});
       if($('#fa-supp',mv)) uploader($('#fa-supp',mv),local.support,{mode:'support',single:false,label:'Add supporting files (optional)'});
       if($('#fp-adv',mv)){ const paint=()=>{ $('#fp-adv',mv).innerHTML=advices.map((a,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center"><input type="number" min="0" max="100" placeholder="%" data-pct="'+i+'" value="'+esc(a.pct)+'" style="width:80px"><div style="flex:1" id="adv-f-'+i+'"></div></div>').join('');
@@ -5008,6 +5051,42 @@ function flowAct(stepId,kind){
         paintLines();
         if($('#gr-add',mv)) $('#gr-add',mv).onclick=()=>{ grn.lines.push({code:'',acc:'',rate:''}); paintLines(); };
       }
+      if(cngPO){
+        const its=()=>DB.garudaItems||[];
+        const dl=$('#cng-po-items-dl',mv), fillDl=()=>{ if(dl&&!dl.children.length) dl.innerHTML=its().map(i=>'<option value="'+esc(i.code)+'">'+esc(i.name)+'</option>').join(''); };
+        fillDl(); if(!garudaLoaded) loadGaruda().then(fillDl);
+        const noI=$('#po-no',mv); if(noI) noI.oninput=e=>po.no=e.target.value;
+        const venI=$('#po-ven',mv); if(venI) venI.oninput=e=>po.vendor=e.target.value;
+        const expI=$('#po-exp',mv); if(expI) expI.oninput=e=>po.expected=e.target.value;
+        const resolve=v=>{ const t=String(v||'').trim().toUpperCase(); return its().find(x=>x.code===t)||null; };
+        const matchItem=desc=>{ const d=String(desc||'').toLowerCase(), list=its(); if(!d) return null;
+          let hit=list.find(i=>i.name&&(d.includes(i.name.toLowerCase())||(i.name.toLowerCase().length>3&&i.name.toLowerCase().includes(d)))); if(hit) return hit;
+          const words=d.split(/[^a-z0-9]+/).filter(w=>w.length>3); return list.find(i=>{const n=(i.name||'').toLowerCase(); return words.some(w=>n.includes(w));})||null; };
+        const paintPO=()=>{ const box=$('#po-lines',mv); if(!box) return;
+          box.innerHTML=po.lines.map((ln,i)=>'<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
+            (ln.desc?'<div class="hint" style="margin-bottom:4px">From PDF: '+esc(ln.desc)+'</div>':'')+
+            '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">'+
+            '<input class="po-code" data-i="'+i+'" list="cng-po-items-dl" placeholder="Item (code)" value="'+esc(ln.code)+'" style="flex:2;min-width:140px">'+
+            '<span class="po-name hint" data-i="'+i+'" style="flex:1;min-width:110px;font-size:12px">'+esc(ln.name||'—')+'</span>'+
+            '<input class="po-qty" data-i="'+i+'" type="number" min="0" placeholder="Order qty" value="'+esc(ln.qty)+'" style="width:100px">'+
+            '<input class="po-unit" data-i="'+i+'" placeholder="Unit" value="'+esc(ln.unit||'NOS')+'" style="width:64px">'+
+            '<input class="po-rate" data-i="'+i+'" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:88px">'+
+            (po.lines.length>1?'<button class="btn ghost sm po-del" data-i="'+i+'" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div></div>').join('');
+          $$('.po-code',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, r=resolve(e.target.value); po.lines[i].code=e.target.value.trim(); po.lines[i].name=r?r.name:''; const nm=box.querySelector('.po-name[data-i="'+i+'"]'); if(nm) nm.textContent=r?r.name:'—'; });
+          $$('.po-qty',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].qty=e.target.value);
+          $$('.po-unit',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].unit=e.target.value);
+          $$('.po-rate',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].rate=e.target.value);
+          $$('.po-del',box).forEach(el=>el.onclick=()=>{ po.lines.splice(+el.dataset.i,1); paintPO(); }); };
+        paintPO();
+        if($('#po-add',mv)) $('#po-add',mv).onclick=()=>{ po.lines.push({code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''}); paintPO(); };
+        poFill=async(file)=>{ const note=$('#po-note',mv); if(note) note.textContent='Reading the PO…';
+          try{ const r=await parseCngPO(file);
+            if(r.po_no){ po.no=r.po_no; if(noI) noI.value=r.po_no; }
+            if(r.vendor){ po.vendor=r.vendor; if(venI) venI.value=r.vendor; }
+            if(r.lines&&r.lines.length){ po.lines=r.lines.map(l=>{ const m=matchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }); paintPO(); }
+            if(note) note.textContent=(r.lines&&r.lines.length?r.lines.length+' line(s) read — ':'Fields read — ')+'check each item is picked from the CNG master, then Continue.'+(r.site?' (PO site '+esc(r.site)+')':''); }
+          catch(e){ if(note) note.textContent='Could not read that PDF automatically — enter the PO lines by hand.'; } };
+      }
       $('#fa-go',mv).onclick=()=>{
         const err=$('#fa-err',mv); err.textContent='';
         const primary=filesPayload(local.files), supp=filesPayload(local.support);
@@ -5026,11 +5105,19 @@ function flowAct(stepId,kind){
         let grnLots=null;
         if(cngGrn){ grnLots=grn.lines.filter(l=>l.code&&Number(l.acc)>0).map(l=>({item_code:l.code,order_qty:Number(l.acc)||0,delivered_qty:Number(l.acc)||0,accepted_qty:Number(l.acc)||0,rate:l.rate||'',grn_no:grn.no||'',invoice_no:grn.invoice||''}));
           if(!grnLots.length) return err.textContent='Add at least one item with a quantity accepted.'; }
+        let poData=null;
+        if(cngPO){ const lines=po.lines.filter(l=>l.code&&Number(l.qty)>0).map(l=>({item_code:String(l.code).trim().toUpperCase(),item_name:l.name||'',unit:l.unit||'NOS',order_qty:Number(l.qty)||0,rate:l.rate||''}));
+          const bad=po.lines.find(l=>l.code&&!resolveCngCode(l.code));
+          if(bad) return err.textContent='"'+bad.code+'" is not in the CNG item master — pick an item from the list.';
+          if(!lines.length) return err.textContent='Add at least one item (from the CNG master) with an order quantity.';
+          if(!po.no.trim()) return err.textContent='Enter the PO number.';
+          poData={po:{po_no:po.no.trim(),vendor:(po.vendor||'').trim(),po_date:'',expected_date:po.expected||'',site:''},lines:lines}; }
         cl(); flowPinThen(async()=>{
           // save each photo's station + date first; the database attaches them as the step records the files
           if(siteTags&&siteTags.length){ try{ await rpc('flow_photo_tags',{p_items:siteTags}); }catch(e){ fail(e); return; } }
           if(grnLots){ try{ await rpc('cng_save_lots',{p_request:f.id,p_lots:grnLots}); }catch(e){ fail(e); return; } }
-          flowCall(stepId,kind||'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,cngGrn?'GRN lines saved.':(kind==='approve_cmd'?'Approved as CMD — the CMD desk is cleared.':'Signed.')); });
+          if(poData){ try{ await rpc('cng_save_po',{p_request:f.id,p_po:poData.po,p_lines:poData.lines}); }catch(e){ fail(e); return; } }
+          flowCall(stepId,kind||'act',remark,files.length?files:null,dt?new Date(dt).toISOString():null,data,cngGrn?'GRN lines saved.':cngPO?'PO saved to Garuda.':(kind==='approve_cmd'?'Approved as CMD — the CMD desk is cleared.':'Signed.')); });
       };
     }});
 }
