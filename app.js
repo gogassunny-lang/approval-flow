@@ -484,7 +484,7 @@ setInterval(()=>{ if(ME&&document.visibilityState==='visible'&&navigator.onLine)
 /* ============================================================
    PDF reading — identical to the prototype, verified on both ERP documents
    ============================================================ */
-if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='./pdf.worker.min.js';
 function groupLines(items){
   const sorted=items.slice().sort((a,b)=>a.y-b.y||a.x-b.x);
   const lines=[]; let cur=null;
