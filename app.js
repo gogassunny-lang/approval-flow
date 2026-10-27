@@ -2873,7 +2873,7 @@ function wirePeople(v){
 /* ============================================================
    Garuda — CNG stock (Stage 2a: masters browser; GRN/QR/Processed next)
    ============================================================ */
-let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaItemSel='', garudaItemType='', garudaItemDetQ='', garudaStnItemQ='', garudaStnMin='', garudaStnMax='', garudaAdminTab='items', garudaAdmQ='', garudaAdmType='', garudaRepRange='all', garudaRepQ='', garudaRepStn='', garudaRepFrom='', garudaRepTo='', garudaQrTab='tags', garudaIssueMode='issue', garudaIssueInput='scan', garudaConsumeStage='onsite', garudaLoaded=false, garudaLoading=false;
+let garudaTab='processed', garudaItemQ='', garudaStnQ='', garudaStockQ='', garudaStockF='all', garudaProcQ='', garudaHistTab='issued', garudaHistQ='', garudaTraceQ='', garudaTraceSel='', garudaStationSel='', garudaItemSel='', garudaItemType='', garudaItemDetQ='', garudaStnItemQ='', garudaStnMin='', garudaStnMax='', garudaAdminTab='items', garudaAdmQ='', garudaAdmType='', garudaRepRange='all', garudaRepQ='', garudaRepStn='', garudaRepFrom='', garudaRepTo='', garudaQrTab='tags', garudaIssueMode='issue', garudaIssueInput='scan', garudaConsumeStage='onsite', garudaLoaded=false, garudaLoading=false, garudaLoadError='';
 const garSeg=(cur,opts,attr)=>'<div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">'+opts.map(o=>'<button class="btn sm '+(cur===o[0]?'primary':'')+'" '+attr+'="'+o[0]+'">'+esc(o[1])+'</button>').join('')+'</div>';
 function garRepRange(){
   if(garudaRepFrom||garudaRepTo) return {from:garudaRepFrom||'',to:garudaRepTo||''};
@@ -2936,21 +2936,32 @@ const garTagUrl=id=>APP_URL+'#g/'+encodeURIComponent(id);
 const garTagCode=s=>{ s=String(s||'').trim(); const m=s.match(/GAR-[A-Z]+-\d+/i); return (m?m[0]:s).toUpperCase(); };
 async function loadGaruda(force){
   if(garudaLoading) return; if(garudaLoaded&&!force) return;
-  garudaLoading=true;
+  garudaLoading=true; garudaLoadError='';
+  // abort + hard timeout so one stalled query can never hang the page on "Loading…"
+  let timer=null; const ctrl=(typeof AbortController!=='undefined')?new AbortController():null, sig=ctrl?ctrl.signal:undefined;
+  const q=b=>(sig&&typeof b.abortSignal==='function')?b.abortSignal(sig):b;
+  const timeout=new Promise((_,rej)=>{ timer=setTimeout(()=>{ try{ctrl&&ctrl.abort();}catch(e){} rej(new Error('__timeout__')); },25000); });
   try{
-    const [it,st,lots,tags]=await Promise.all([
-      SB.from('cng_items').select('code,name,item_type,part_life,opening_qty').order('code'),
-      SB.from('cng_stations').select('station_no,station_name').order('station_no'),
-      SB.from('cng_lots').select('id,request_id,item_code,item_name,item_type,vendor,po_no,grn_no,grn_date,invoice_no,order_qty,delivered_qty,accepted_qty,rejected_qty,rate,series_prefix,series_from,series_to').eq('minted',true).order('created_at',{ascending:false}),
-      SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,vendor,rate,po_no,grn_no,status,station_no,issued_to,issued_by,issued_by_name,issued_at,allotted_by,allotted_by_name,allotted_at,allot_photo,consumed_by,consumed_by_name,consume_remark,consumed_at,returned_by,returned_by_name,returned_at,replaced_from,replaced_at').order('id')
-    ]);
+    const [it,st,lots,tags]=await Promise.race([Promise.all([
+      q(SB.from('cng_items').select('code,name,item_type,part_life,opening_qty').order('code')),
+      q(SB.from('cng_stations').select('station_no,station_name').order('station_no')),
+      q(SB.from('cng_lots').select('id,request_id,item_code,item_name,item_type,vendor,po_no,grn_no,grn_date,invoice_no,order_qty,delivered_qty,accepted_qty,rejected_qty,rate,series_prefix,series_from,series_to').eq('minted',true).order('created_at',{ascending:false})),
+      q(SB.from('cng_tags').select('id,lot_id,request_id,item_code,item_name,item_type,vendor,rate,po_no,grn_no,status,station_no,issued_to,issued_by,issued_by_name,issued_at,allotted_by,allotted_by_name,allotted_at,allot_photo,consumed_by,consumed_by_name,consume_remark,consumed_at,returned_by,returned_by_name,returned_at,replaced_from,replaced_at').order('id'))
+    ]), timeout]);
+    // a bad query comes back as {error}, not a throw — surface the first one instead of showing an empty page
+    const bad=[['items',it],['stations',st],['GRN lots',lots],['QR tags',tags]].find(x=>x[1]&&x[1].error);
+    if(bad) throw new Error(bad[0]+' — '+(bad[1].error.message||bad[1].error.code||'query failed'));
     DB.garudaItems=(it.data||[]).map(r=>({code:r.code,name:r.name||'',type:r.item_type||'',partLife:r.part_life||'',opening:Number(r.opening_qty)||0}));
     DB.garudaStations=(st.data||[]).map(r=>({no:r.station_no,name:r.station_name||''}));
     DB.garudaLots=(lots.data||[]);
     DB.garudaTags=(tags.data||[]);
-    garudaLoaded=true;
-  }catch(e){ /* leave unloaded; the view shows a retry */ }
-  finally{ garudaLoading=false; }
+    garudaLoaded=true; garudaLoadError='';
+  }catch(e){
+    garudaLoadError=(e&&e.message==='__timeout__')
+      ? 'The data took too long to load (over 25 seconds). This is usually a slow connection or the free-plan egress limit. Tap Retry.'
+      : ((e&&e.message)||'Could not load Garuda data.');
+  }
+  finally{ if(timer) clearTimeout(timer); garudaLoading=false; }
 }
 function garTopBar(){
   const title=(GAR_NAV().find(c=>c[0]===garudaTab)||['','CNG Garuda'])[1];
@@ -3010,7 +3021,9 @@ function garImportExcel(kind){
   inp.click();
 }
 function viewGaruda(){
-  if(!garudaLoaded) return garTopBar()+'<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>';
+  if(!garudaLoaded) return garTopBar()+(garudaLoadError
+    ? '<div class="card pad"><p style="margin:0 0 8px"><b>Garuda could not load.</b></p><p class="hint" style="margin:0 0 12px">'+esc(garudaLoadError)+'</p><button class="btn primary" id="gar-retry">Retry</button></div>'
+    : '<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>');
   let body;
   switch(garudaTab){
     case 'issue': body=garIssue(); break;
@@ -3331,7 +3344,8 @@ async function garPublicView(id){
   const b=document.getElementById('gpub-go'); if(b) b.onclick=()=>{ el.remove(); try{ history.replaceState(null,'',APP_URL); }catch(e){} if(ME){ render(); } else { hideSplash(); paintSignIn(); } };
 }
 function wireGaruda(v){
-  if(!garudaLoaded){ loadGaruda().then(()=>{ if(ROUTE.name==='garuda') render(); }); }
+  if(!garudaLoaded&&!garudaLoading&&!garudaLoadError){ loadGaruda().then(()=>{ if(ROUTE.name==='garuda') render(); }); }
+  if($('#gar-retry',v)) $('#gar-retry',v).onclick=()=>{ garudaLoadError=''; loadGaruda(true).then(()=>{ if(ROUTE.name==='garuda') render(); }); render(); };
   $$('[data-garchip]',v).forEach(b=>b.onclick=()=>garGo(b.dataset.garchip));
   if($('#gar-exit',v)) $('#gar-exit',v).onclick=garExit;
   if($('#g-scan',v)) $('#g-scan',v).onclick=()=>cngScanDialog();
