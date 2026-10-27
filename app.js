@@ -5000,7 +5000,7 @@ function flowAct(stepId,kind){
   let dt=''; const dataFields={}; let payMode='full'; const advices=[{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null},{pct:'',rec:null}];
   let body='<p style="margin-top:0">'+esc(s.label)+'</p>';
   if(cngGrn){
-    body+='<div class="card pad" style="margin:4px 0 2px"><h4 style="margin:0 0 6px;font-size:13px">Goods received (GRN)</h4>'+
+    body+='<div class="card pad" style="margin:4px 0 2px"><div class="row" style="align-items:center;gap:8px;margin-bottom:6px"><h4 style="margin:0;font-size:13px;flex:1">Goods received (GRN)</h4><button class="btn sm primary" id="gr-upload" type="button">⬆ Upload GRN</button></div>'+
       '<p class="hint" style="margin:0 0 10px">Attach the GRN PDF to auto-fill, then enter how many of each item came in <b>now</b>. One QR sticker is made per unit received, when the GRN is finally approved. A delivery can be partial — the rest of the PO stays open for later.</p>'+
       '<div class="grid g2" style="gap:10px">'+
       '<div><label for="gr-no">GRN number</label><input id="gr-no" type="text"></div>'+
@@ -5014,7 +5014,7 @@ function flowAct(stepId,kind){
       '<datalist id="cng-items-dl"></datalist></div>';
   }
   if(cngPO){
-    body+='<div class="card pad" style="margin:4px 0 2px"><h4 style="margin:0 0 6px;font-size:13px">Purchase order</h4>'+
+    body+='<div class="card pad" style="margin:4px 0 2px"><div class="row" style="align-items:center;gap:8px;margin-bottom:6px"><h4 style="margin:0;font-size:13px;flex:1">Purchase order</h4><button class="btn sm primary" id="po-upload" type="button">⬆ Upload PO</button></div>'+
       '<p class="hint" style="margin:0 0 10px">Raising a PO makes no QR codes — those are generated at GRN, for the quantity actually received. Attach the PO PDF below and its fields fill in; pick each item from the CNG master so the ERP code is set.</p>'+
       '<div class="grid g3" style="gap:10px"><div><label for="po-no">PO number</label><input id="po-no" type="text" placeholder="PD26…"></div>'+
       '<div><label for="po-ven">Vendor</label><input id="po-ven" type="text"></div>'+
@@ -5065,6 +5065,7 @@ function flowAct(stepId,kind){
         gi('#gr-no',v=>grn.no=v); gi('#gr-date',v=>grn.date=v); gi('#gr-inv',v=>grn.invoice=v); gi('#gr-invdate',v=>grn.invDate=v);
         if($('#gr-invphoto',mv)) uploader($('#gr-invphoto',mv),grn.invPhoto,{mode:'support',single:true,label:'Take / attach invoice photo'});
         if($('#gr-ewayphoto',mv)) uploader($('#gr-ewayphoto',mv),grn.ewayPhoto,{mode:'support',single:true,label:'Take / attach e-way photo'});
+        if($('#gr-upload',mv)) $('#gr-upload',mv).onclick=()=>{ const i=$('#fa-files input',mv); if(i) i.click(); };
         const note=$('#gr-note',mv);
         const paintLines=()=>{ const box=$('#fa-grn-lines',mv); if(!box) return;
           if(grn.poLines.length){
@@ -5131,6 +5132,7 @@ function flowAct(stepId,kind){
           $$('.po-del',box).forEach(el=>el.onclick=()=>{ po.lines.splice(+el.dataset.i,1); paintPO(); }); };
         paintPO();
         if($('#po-add',mv)) $('#po-add',mv).onclick=()=>{ po.lines.push({code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''}); paintPO(); };
+        if($('#po-upload',mv)) $('#po-upload',mv).onclick=()=>{ const i=$('#fa-files input',mv); if(i) i.click(); };
         poFill=async(file)=>{ const note=$('#po-note',mv); if(note) note.textContent='Reading the PO…';
           try{ const r=await parseCngPO(file);
             if(r.po_no){ po.no=r.po_no; if(noI) noI.value=r.po_no; }
