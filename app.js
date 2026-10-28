@@ -4397,8 +4397,10 @@ const flowLive=f=>f.steps.find(s=>s.status==='pending');
 const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
 // a flow's first approval group = the division's Indent / Work Order approvers
 const flowFirstApprovers=f=>{const s=(f.steps||[]).filter(x=>x.action==='approve').sort((a,b)=>a.pos-b.pos)[0]; return s?s.actors:[]};
-// only those division approvers may escalate past CMD (accounts team no longer can)
-const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1)};
+// the raiser's HOD = the person the raiser reports to. Only they may escalate past CMD,
+// and only on OLD flows whose step is still marked escalatable (new flows have no escalation).
+const flowRaiserHod=f=>(user(f.requesterId)||{}).managerId||null;
+const flowCanEscalate=f=>{const s=flowLive(f); return !!(s&&s.escalatable&&flowRaiserHod(f)===ME.id)};
 // delete a flow: the requester may, but only before any approval; an admin/owner may anytime
 const flowApprovedYet=f=>(f.steps||[]).some(s=>s.action==='approve'&&s.status==='done');
 const flowCanDelete=f=>f.status!=='cancelled'&&((f.requesterId===ME.id&&!flowApprovedYet(f))||ME.admin||ME.owner);
@@ -4620,7 +4622,7 @@ function flowSidePanel(f){
   const s=flowLive(f);
   if(!s) return '<div class="card pad"><h3>'+(f.status==='completed'?'Completed':f.status==='cancelled'?'Cancelled':'Nothing to do')+'</h3><p class="hint" style="margin-top:6px">This flow has no open step right now.</p></div>';
   const mine=s.actors.indexOf(ME.id)>-1||s.actorKind==='any', isReq=f.requesterId===ME.id;
-  const canEsc=s.escalatable&&flowFirstApprovers(f).indexOf(ME.id)>-1;
+  const canEsc=s.escalatable&&flowRaiserHod(f)===ME.id;
   const withWho=s.actors.map(id=>user(id).name).join(', ')||'—';
   const tg=infoTargets(s);
   // item 10: with several people tagged it travels in order — only the CURRENT one may reply
