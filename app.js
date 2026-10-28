@@ -1908,13 +1908,22 @@ async function flowRaiseSubmit(note){
   const files=filesPayload(draft.files).concat(filesPayload(draft.support));
   const run=async()=>{
     busy(true);
+    let id=null;
+    // 1) create the flow. If this fails, nothing was made — show the error and stop.
+    try{ id=await rpc('flow_create',{p_head:head,p_div:div,p_title:title.trim(),p_fields:f}); }
+    catch(e){ busy(false); return fail(e); }
+    // 2) the flow now exists with step 1 ("Raise…") pending on YOUR desk. Make sure it gets
+    //    signed, or send you to sign it — never claim success unless it signed, and never lose it.
     try{
-      const id=await rpc('flow_create',{p_head:head,p_div:div,p_title:title.trim(),p_fields:f});
       await load();
-      const flow=DB.flows.find(x=>x.id===id), step1=flow&&flow.steps.find(s=>s.status==='pending');
-      if(step1){ await rpc('flow_act',{p_step:step1.id,p_kind:'act',p_remark:'',p_pin:flowCall._pin,p_files:files,p_datetime:null,p_data:null}); await load(); }
-      draft=null; toast((cng?'CNG':'ALDS '+head)+' flow created and signed at step 1.','ok'); go({name:'flowdetail',id});
-    }catch(e){ fail(e) } finally{ busy(false) }
+      let flow=DB.flows.find(x=>x.id===id);
+      if(!flow){ try{ await loadFlowsSome([id]); }catch(_){} flow=DB.flows.find(x=>x.id===id); }   // brand-new flow may not be in the sliced load yet
+      const step1=flow&&flow.steps.find(s=>s.status==='pending'&&s.actors.indexOf(ME.id)>-1);
+      if(!step1){ draft=null; busy(false); toast('Request created — open it and tap “Submit & sign” to send step 1.','bad'); return go({name:'flowdetail',id}); }
+      await rpc('flow_act',{p_step:step1.id,p_kind:'act',p_remark:'',p_pin:flowCall._pin,p_files:files,p_datetime:null,p_data:null});
+      await load();
+      draft=null; busy(false); toast((cng?'CNG':'ALDS '+head)+' created and signed at step 1.','ok'); go({name:'flowdetail',id});
+    }catch(e){ busy(false); fail(e); draft=null; toast('Created, but step 1 was not signed — open it and tap “Submit & sign”.','bad'); go({name:'flowdetail',id}); }
   };
   flowPinThen(run);
 }
