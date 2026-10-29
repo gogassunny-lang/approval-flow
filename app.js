@@ -3284,7 +3284,7 @@ function garGrnDialog(reqId,pre){
     lines:src.map(r=>({po_line_id:r.po_line_id,item_code:r.item_code,item_name:r.item_name,unit:r.unit,rate:r.rate,ordered:Number(r.ordered)||0,remaining:Number(r.remaining)||0,take:'',photo:[]}))};
   (pre.lines||[]).forEach(rl=>{ const pl=g.lines.find(p=>p.item_code===rl.code&&!p.take); if(pl) pl.take=String(Math.min(rl.qty,pl.remaining)); });
   modal({title:'GRN — PO '+(po.po_no||po.ref),
-    body:'<p class="hint" style="margin-top:0">Enter how many of each item came in <b>now</b> (max = still open). One QR sticker is made per unit received, when the GRN is approved. A delivery can be partial — the rest stays open.</p>'+
+    body:'<p class="hint" style="margin-top:0">For each item, enter how many came in <b>now</b> (max = still open) and take a <b>photo of the material</b> — the photo box is under the item. One QR sticker is made per unit received, when the GRN is approved. A delivery can be partial — the rest stays open.</p>'+
       '<div id="gg-lines"></div>'+
       '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label for="gg-no">GRN number *</label><input id="gg-no" value="'+esc(g.no)+'"></div><div><label for="gg-date">GRN date *</label><input id="gg-date" type="date" value="'+esc(g.date)+'"></div><div><label for="gg-inv">Invoice number *</label><input id="gg-inv" value="'+esc(g.invoice)+'"></div><div><label for="gg-invdate">Invoice date *</label><input id="gg-invdate" type="date" value="'+esc(g.invDate)+'"></div></div>'+
       '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label>Invoice photo *</label><div id="gg-invphoto"></div></div><div><label>E-way bill photo <span class="hint">optional</span></label><div id="gg-ewayphoto"></div></div></div>'+
@@ -3297,9 +3297,11 @@ function garGrnDialog(reqId,pre){
       uploader($('#gg-invphoto',mv),g.invPhoto,{mode:'support',single:true,label:'Take / attach invoice photo'});
       uploader($('#gg-ewayphoto',mv),g.ewayPhoto,{mode:'support',single:true,label:'Take / attach e-way photo'});
       const paint=()=>{ const box=$('#gg-lines',mv); if(!box) return;
-        box.innerHTML='<div class="scroll-x"><table class="cards" style="margin-top:4px;min-width:640px"><thead><tr><th>Item</th><th>ERP</th><th>Received / ordered</th><th>Take now</th><th>QR</th><th>Material photo *</th></tr></thead><tbody>'+
-          g.lines.map((ln,i)=>'<tr><td>'+esc(ln.item_name||ln.item_code)+'</td><td class="num hint">'+esc(ln.item_code)+'</td><td class="num">'+(ln.ordered-ln.remaining)+' / '+ln.ordered+' '+esc(ln.unit||'')+'</td><td><input class="gg-take" data-i="'+i+'" type="number" min="0" max="'+ln.remaining+'" value="'+esc(ln.take)+'" placeholder="'+ln.remaining+'" style="width:90px"></td><td class="num gg-qr" data-i="'+i+'">'+(Number(ln.take)||0)+'</td><td><div id="ggp-'+i+'" style="min-width:150px"></div></td></tr>').join('')+'</tbody></table></div>';
-        g.lines.forEach((ln,i)=>{ const m=$('#ggp-'+i,box); if(m) uploader(m,ln.photo,{mode:'support',single:true,label:'Photo'}); });
+        box.innerHTML=g.lines.map((ln,i)=>'<div id="ggl-'+i+'" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
+            '<div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1;min-width:120px">'+esc(ln.item_name||ln.item_code)+'</b><span class="hint num">'+esc(ln.item_code)+'</span><span class="tag '+(ln.remaining>0?'t-ok':'t-hold')+'">open '+ln.remaining+' / '+ln.ordered+' '+esc(ln.unit||'')+'</span></div>'+
+            '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><label style="margin:0;font-size:12px" for="ggt-'+i+'">Take now</label><input id="ggt-'+i+'" class="gg-take" data-i="'+i+'" type="number" min="0" max="'+ln.remaining+'" value="'+esc(ln.take)+'" placeholder="'+ln.remaining+'" style="width:100px"><span class="hint">QR stickers: <b class="gg-qr" data-i="'+i+'">'+(Number(ln.take)||0)+'</b></span></div>'+
+            '<div style="margin-top:6px"><label style="font-size:12px">Material photo <span class="hint">needed for every item you take now</span></label><div id="ggp-'+i+'"></div></div></div>').join('');
+        g.lines.forEach((ln,i)=>{ const m=$('#ggp-'+i,box); if(m) uploader(m,ln.photo,{mode:'support',single:true,label:'Take / attach the material photo'}); });
         $$('.gg-take',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, max=g.lines[i].remaining; let n=Number(e.target.value)||0; if(n>max){ n=max; e.target.value=max; } g.lines[i].take=e.target.value; const q=box.querySelector('.gg-qr[data-i="'+i+'"]'); if(q) q.textContent=n; }); };
       paint();
       uploader($('#gg-pdf',mv),g.pdf,{mode:'support',single:true,label:'Attach the GRN PDF',onFile:async(file)=>{ if(!/\.pdf$/i.test(file.name)) return; const note=$('#gg-note',mv); if(note) note.textContent='Reading the GRN…';
@@ -3314,7 +3316,9 @@ function garGrnDialog(reqId,pre){
         if(!g.no.trim()) return err.textContent='Enter the GRN number.'; if(!g.date) return err.textContent='Enter the GRN date.';
         if(!g.invoice.trim()) return err.textContent='Enter the invoice number.'; if(!g.invDate) return err.textContent='Enter the invoice date.';
         if(!g.invPhoto.length) return err.textContent='Attach the invoice photo.';
-        const miss=take.find(l=>!l.photo.length); if(miss) return err.textContent='Add the material photo for '+(miss.item_name||miss.item_code)+'.';
+        const miss=take.find(l=>!l.photo.length);
+        if(miss){ const card=$('#ggl-'+g.lines.indexOf(miss),mv); if(card){ card.style.borderColor='var(--stop)'; try{ card.scrollIntoView({behavior:'smooth',block:'center'}); }catch(_){} }
+          return err.textContent='Add the material photo for '+(miss.item_name||miss.item_code)+' — use the photo box under that item (scroll up).'; }
         const pth=list=>list&&list[0]?list[0].path:''; const inv=pth(g.invPhoto), eway=pth(g.ewayPhoto);
         const lots=take.map(l=>({po_line_id:l.po_line_id,item_code:l.item_code,order_qty:0,delivered_qty:Number(l.take),accepted_qty:Number(l.take),rate:l.rate||'',grn_no:g.no.trim(),grn_date:g.date,invoice_no:g.invoice.trim(),invoice_date:g.invDate,material_photo:pth(l.photo),invoice_photo:inv,eway_photo:eway,po_no:po.po_no||''}));
         const files=filesPayload(g.invPhoto).concat(filesPayload(g.ewayPhoto),filesPayload(g.pdf));
