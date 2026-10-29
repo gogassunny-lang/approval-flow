@@ -1529,6 +1529,7 @@ function render(){
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
   // Garuda takes over the screen (its own top bar + column dropdown); SETU nav hides
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
+  if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
   const v=$('#view');
   switch(ROUTE.name){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
@@ -1584,7 +1585,7 @@ function viewDash(){
   const warn=!pinOK(ME)?'<div class="banner hold"><div><b>Your PIN is not set for today.</b><div class="hint" style="color:var(--hold)">You cannot approve, reject or send anything back until you set it.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-pin">Set PIN</button></div>':'';
   const flowTurn=flowMyTurn().length;
   // recent activity merges the legacy request trail and the ALDS flow trail
-  const flowFeed=[]; DB.flows.forEach(f=>f.audit.forEach(a=>flowFeed.push({ts:a.ts,actorName:a.actorName,action:a.action,detail:a.detail,ref:f.ref,flowId:f.id})));
+  const flowFeed=[]; SETU_FLOWS().forEach(f=>f.audit.forEach(a=>flowFeed.push({ts:a.ts,actorName:a.actorName,action:a.action,detail:a.detail,ref:f.ref,flowId:f.id})));
   const feed=DB.audit.map(a=>({ts:a.ts,actorName:a.actorName,action:a.action,detail:a.detail,ref:a.ref,reqId:a.reqId}))
     .concat(flowFeed).sort((a,b)=>b.ts-a.ts).slice(0,16);
   return warn+'<div class="grid g4">'+
@@ -1613,7 +1614,7 @@ function viewDash(){
    live flow activity even for people not sitting in a legacy approval chain. */
 let dashQ='';   // dashboard quick-search text (flows + legacy by any number / file no.)
 function flowDashCard(){
-  const running=DB.flows.filter(f=>f.status==='running').sort((a,b)=>b.createdAt-a.createdAt);
+  const running=SETU_FLOWS().filter(f=>f.status==='running').sort((a,b)=>b.createdAt-a.createdAt);
   const turn=flowMyTurn().length, recent=running.slice(0,8);
   return '<div class="card" style="margin-top:14px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>ALDS PO / WO flows</h3>'+
     '<span class="tag t-prog" style="margin-left:auto">'+running.length+' in progress</span>'+(turn?'<span class="tag t-wait" style="margin-left:6px">'+turn+' waiting on you</span>':'')+'</div>'+
@@ -1637,7 +1638,7 @@ function wireDash(v){
   if(fq&&fres){
     const run=()=>{ const s=fq.value.trim().toLowerCase(); dashQ=fq.value; const c=$('#d-flowcount',v);
       if(s.length<2){ fres.innerHTML=''; if(c)c.textContent=''; return; }
-      const fl=DB.flows.filter(f=>_flowHay(f).includes(s)).slice(0,8)
+      const fl=SETU_FLOWS().filter(f=>_flowHay(f).includes(s)).slice(0,8)
         .map(f=>({k:'flowdetail',id:f.id,ref:f.ref,sub:flowHeadLabel(f.head)+' · '+(f.title||'(no number)')+' · '+flowWhere(f)}));
       const lg=DB.requests.filter(r=>_legHay(r).includes(s)).slice(0,6)
         .map(r=>({k:'detail',id:r.id,ref:r.ref,sub:typeLabel(r)+' · '+docTitle(r)}));
@@ -2976,7 +2977,7 @@ function garTagFields(t){  // the full item-in-station detail card (image 1)
     garField('Issue date',t.issued_at?String(t.issued_at).slice(0,10):'')+garField('Issue station no',t.station_no)+garField('Issued to',t.issued_to)+
     garField('Issued by',t.issued_by_name)+'</div>';
 }
-const GAR_COLS=[['processed','Processed'],['issue','Issue'],['consumed','Consumed'],['items','Items'],['stations','Stations'],['qr','QR management'],['trace','Trace'],['history','History'],['admin','Admin']];
+const GAR_COLS=[['procurement','Procurement'],['inward','Inward & GRN'],['approvals','Approvals'],['processed','Processed'],['issue','Issue'],['consumed','Consumed'],['items','Items'],['stations','Stations'],['qr','QR management'],['trace','Trace'],['history','History'],['admin','Admin']];
 // a QR encodes a URL so a random phone camera opens the public page; the in-app
 // scanner pulls the GAR-… code back out of whatever it reads (URL or bare code)
 const garTagUrl=id=>APP_URL+'#g/'+encodeURIComponent(id);
@@ -3073,6 +3074,9 @@ function viewGaruda(){
     : '<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>');
   let body;
   switch(garudaTab){
+    case 'procurement': body=garProcurement(); break;
+    case 'inward': body=garInward(); break;
+    case 'approvals': body=garApprovals(); break;
     case 'issue': body=garIssue(); break;
     case 'consumed': body=garConsumed(); break;
     case 'items': body=garItems(); break;
@@ -3086,6 +3090,257 @@ function viewGaruda(){
   }
   return garTopBar()+'<div id="g-body">'+body+'</div>';
 }
+/* ============================================================
+   Garuda direct procurement (SETU_integration_changes_4.docx)
+   Procurement (raise / upload / mass-upload a PO) → Inward & GRN (take the
+   GRN against open PO lines) → Approvals (Bangalore, Rohit HO) → Processed.
+   A direct PO is a small CNG file marked division 'Direct'; it lives only
+   inside Garuda (hidden from SETU's lists) but uses the same engine.
+   ============================================================ */
+const isDirectFlow=f=>!!f&&f.department==='CNG'&&f.division==='Direct';
+const SETU_FLOWS=()=>DB.flows.filter(f=>!isDirectFlow(f));          // what SETU's own lists show
+const canRaiseDirect=()=>!!(ME&&(ME.owner||ME.admin||ME.cngPo));    // "Can raise CNG PO/WO" tick
+let garDock={inward:[],approvals:[],pos:[],grns:[],at:0,loading:false,err:''};
+let garudaInwardQ='', garudaInwardVen='', garudaInwardFrom='', garudaInwardTo='', garudaPoQ='', garudaPoAll=false, garudaGrnAll=false;
+const garDockTab=()=>['procurement','inward','approvals'].indexOf(garudaTab)>-1;
+async function loadDock(force){
+  if(garDock.loading) return;
+  if(!force&&Date.now()-garDock.at<15000) return;
+  garDock.loading=true; garDock.err='';
+  try{ const [a,b,c,d]=await Promise.all([rpc('cng_inward_lines'),rpc('cng_garuda_approvals'),rpc('cng_po_list'),rpc('cng_grn_recent')]);
+    garDock={inward:a||[],approvals:b||[],pos:c||[],grns:d||[],at:Date.now(),loading:false,err:''}; }
+  catch(e){ garDock.loading=false; garDock.err=(e&&e.message)||'Could not load.'; garDock.at=Date.now(); }
+  if(ROUTE.name==='garuda') render();
+}
+// best-effort match of a PDF line description to a master item (same rule as the flow step)
+function garMatchItem(desc){ const d=String(desc||'').toLowerCase(), list=DB.garudaItems||[]; if(!d) return null;
+  let hit=list.find(i=>i.name&&(d.includes(i.name.toLowerCase())||(i.name.toLowerCase().length>3&&i.name.toLowerCase().includes(d)))); if(hit) return hit;
+  const words=d.split(/[^a-z0-9]+/).filter(w=>w.length>3); return list.find(i=>{const n=(i.name||'').toLowerCase(); return words.some(w=>n.includes(w));})||null; }
+const garResolveItem=v=>{ const t=String(v||'').trim().toUpperCase(); return (DB.garudaItems||[]).find(x=>x.code===t)||null; };
+const garStageTag=r=>'<span class="tag '+(r.status==='completed'?'t-ok':r.status==='running'?'t-prog':'t-wait')+'">'+esc(r.stage||r.status||'')+'</span>'+(r.direct?' <span class="tag t-hold" style="font-size:10px">DIRECT</span>':'');
+const garDockHead=(title,sub)=>'<div style="margin-bottom:10px"><h3 style="margin:0">'+esc(title)+'</h3><p class="hint" style="margin:4px 0 0;max-width:720px">'+sub+'</p></div>';
+function garDockState(){
+  if(garDock.err) return '<div class="card pad"><p class="hint" style="margin:0;color:var(--stop)">'+esc(garDock.err)+'</p><button class="btn sm" id="gd-retry" style="margin-top:8px">Retry</button></div>';
+  if(!garDock.at) return '<div class="card pad"><p class="hint" style="margin:0">Loading…</p></div>';
+  return '';
+}
+const garNum=n=>esc(String(Number(n)||0));
+/* ---- Procurement ---- */
+function garProcurement(){
+  const can=canRaiseDirect();
+  let html=garDockHead('Purchase order','Raise a purchase order straight into Garuda — no indent needed. Raising a PO makes <b>no QR codes</b>; they are generated when the goods are received, for the quantity that actually came in. A raised PO appears under <b>Inward &amp; GRN</b>; after its GRN is approved the items show under <b>Processed</b>.');
+  if(can) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn primary" id="gp-raise">＋ Raise a PO</button><button class="btn" id="gp-upload">⬆ Upload a PO PDF</button><button class="btn" id="gp-mass">⬆ Mass upload — up to 10 PDFs</button><input type="file" id="gp-file" accept=".pdf" class="hide"></div>';
+  else html+='<p class="hint" style="margin:0 0 12px">Only people ticked <b>Can raise CNG PO/WO</b> (and admins) can raise a PO here. You can still see what was raised.</p>';
+  const st=garDockState(); if(st) return html+st;
+  const today=DAY(), q=garudaPoQ.trim().toLowerCase();
+  let rows=garDock.pos||[]; if(!garudaPoAll) rows=rows.filter(r=>istDay(r.raised_at)===today);
+  if(q) rows=rows.filter(r=>((r.po_no||'')+' '+(r.item_name||'')+' '+(r.item_code||'')+' '+(r.vendor||'')+' '+(r.ref||'')).toLowerCase().includes(q));
+  html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap;align-items:center"><div><b>'+(garudaPoAll?'All purchase orders':'Raised today')+'</b><div class="hint">'+(garudaPoAll?'Every PO line on a CNG file, newest first.':'Only purchase orders raised today. Older ones are under View all.')+'</div></div><input id="gp-q" type="text" placeholder="Search PO, item, ERP or vendor" value="'+esc(garudaPoQ)+'" style="flex:1;min-width:200px"><button class="btn sm" id="gp-all">'+(garudaPoAll?'Today only':'View all')+'</button></div>'+
+    '<table class="cards"><thead><tr><th>PO</th><th>Item</th><th>ERP</th><th>Vendor</th><th>In / ordered</th><th>Unit</th><th>Rate</th><th>Stage</th></tr></thead><tbody>'+
+    (rows.length?rows.map(r=>'<tr><td><b class="num">'+esc(r.po_no||'—')+'</b><div class="hint">'+esc(r.ref||'')+'</div></td><td>'+esc(r.item_name||'')+'</td><td class="num hint">'+esc(r.item_code||'')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.received)+' / '+garNum(r.ordered)+'</td><td class="hint">'+esc(r.unit||'')+'</td><td class="num hint">'+esc(r.rate||'—')+'</td><td>'+garStageTag(r)+'</td></tr>').join('')
+    :'<tr><td colspan="8"><div class="empty" style="padding:18px"><p class="hint">'+(garudaPoAll?'No purchase orders yet.':'No purchase order raised today.')+'</p></div></td></tr>')+'</tbody></table></div>';
+  return html;
+}
+/* ---- Inward & GRN ---- */
+function garInward(){
+  let html=garDockHead('Inward and GRN','A delivery can be part of the PO — 100 of 200 comes in now; the rest stays open, including other items on the same PO. Open a line to take its GRN. One QR sticker is made per unit received, once the GRN is approved.');
+  html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:12px"><button class="btn primary" id="gi-upload">⬆ Upload GRN</button><button class="btn" id="gi-allgrn">'+(garudaGrnAll?'GRN taken today':'View all GRN')+'</button><button class="btn sm" id="gd-refresh">↻ Refresh</button><input type="file" id="gi-file" accept=".pdf" class="hide"></div>';
+  const st=garDockState(); if(st) return html+st;
+  const q=garudaInwardQ.trim().toLowerCase(), ven=garudaInwardVen.trim().toLowerCase();
+  let rows=garDock.inward||[];
+  if(garudaInwardFrom) rows=rows.filter(r=>istDay(r.raised_at)>=garudaInwardFrom);
+  if(garudaInwardTo) rows=rows.filter(r=>istDay(r.raised_at)<=garudaInwardTo);
+  if(q) rows=rows.filter(r=>((r.po_no||'')+' '+(r.item_code||'')+' '+(r.item_name||'')+' '+(r.ref||'')).toLowerCase().includes(q));
+  if(ven) rows=rows.filter(r=>(r.vendor||'').toLowerCase().includes(ven));
+  const byReq={}, order=[]; rows.forEach(r=>{ if(!byReq[r.request_id]){ byReq[r.request_id]=[]; order.push(r.request_id); } byReq[r.request_id].push(r); });
+  html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><input id="gi-from" type="date" value="'+esc(garudaInwardFrom)+'" title="Raised from"><input id="gi-to" type="date" value="'+esc(garudaInwardTo)+'" title="Raised to"><input id="gi-q" type="text" placeholder="PO, Sr. no. or ERP" value="'+esc(garudaInwardQ)+'" style="flex:1;min-width:160px"><input id="gi-ven" type="text" placeholder="Vendor name" value="'+esc(garudaInwardVen)+'" style="flex:1;min-width:140px"></div>'+
+    '<table class="cards"><thead><tr><th>PO</th><th>Item</th><th>ERP</th><th>Vendor</th><th>In / ordered</th><th>Unit</th><th>GRN by</th></tr></thead><tbody>'+
+    (order.length?order.map(id=>{ const g=byReq[id]; return g.map((r,i)=>'<tr data-grnreq="'+esc(r.request_id)+'" style="cursor:pointer">'+
+        (i===0?'<td rowspan="'+g.length+'"><b class="num">'+esc(r.po_no||'—')+'</b><div class="hint">'+esc(r.ref||'')+(r.direct?' · Direct':'')+'</div><div class="hint">'+esc(fmtD(ts(r.raised_at)))+'</div></td>':'')+
+        '<td>'+esc(r.item_name||'')+'</td><td class="num hint">'+esc(r.item_code||'')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.received)+' / '+garNum(r.ordered)+'</td><td class="hint">'+esc(r.unit||'')+'</td>'+
+        (i===0?'<td rowspan="'+g.length+'" class="hint">'+esc(r.taker||'—')+(r.can_take?'<div><span class="tag t-ok">tap to take the GRN</span></div>':'')+'</td>':'')+'</tr>').join(''); }).join('')
+    :'<tr><td colspan="7"><div class="empty" style="padding:18px"><p class="hint">Nothing is waiting for a GRN.</p></div></td></tr>')+'</tbody></table></div>';
+  const today=DAY(); let gr=garDock.grns||[]; if(!garudaGrnAll) gr=gr.filter(x=>istDay(x.taken_at)===today);
+  html+='<div style="margin-top:18px"><b>'+(garudaGrnAll?'All GRNs taken':'GRN taken today')+'</b></div>'+
+    (gr.length?'<div class="card" style="margin-top:8px"><table class="cards"><thead><tr><th>GRN</th><th>PO</th><th>Item</th><th>Qty</th><th>Taken</th><th>Stage</th></tr></thead><tbody>'+gr.map(x=>'<tr><td><b class="num">'+esc(x.grn_no||'—')+'</b><div class="hint">'+esc(x.invoice_no||'')+'</div></td><td class="num hint">'+esc(x.po_no||'—')+'</td><td>'+esc(x.item_name||x.item_code||'')+' <span class="hint num">'+esc(x.item_code||'')+'</span></td><td class="num">'+garNum(x.accepted_qty)+(x.minted?' <span class="tag t-ok" style="font-size:10px">QR</span>':'')+'</td><td class="hint meta">'+esc(fmtDT(ts(x.taken_at)))+(x.taken_by?'<br>'+esc(x.taken_by):'')+'</td><td>'+garStageTag(x)+'</td></tr>').join('')+'</tbody></table></div>'
+    :'<p class="hint" style="margin:6px 0 0">'+(garudaGrnAll?'No GRN taken yet.':'Nothing received today yet.')+'</p>');
+  return html;
+}
+/* ---- Approvals ---- */
+function garApprovals(){
+  let html=garDockHead('Approvals','GRNs waiting for approval — Bangalore first, then Rohit (HO). After the final approval the QR codes are generated and the items appear under Processed.');
+  html+='<div class="row" style="gap:8px;margin-bottom:12px"><button class="btn sm" id="gd-refresh">↻ Refresh</button></div>';
+  const st=garDockState(); if(st) return html+st;
+  const rows=garDock.approvals||[];
+  html+='<div class="card"><table class="cards"><thead><tr><th>File</th><th>PO · GRN</th><th>Vendor</th><th>Items</th><th>Step</th><th>With</th><th></th></tr></thead><tbody>'+
+    (rows.length?rows.map(r=>'<tr><td><b class="num">'+esc(r.ref||'')+'</b>'+(r.direct?' <span class="tag t-hold" style="font-size:10px">DIRECT</span>':'')+'<div class="hint">'+esc(r.raised_by||'')+' · '+esc(fmtD(ts(r.raised_at)))+'</div></td><td class="num hint">'+esc(r.po_no||'—')+'<br>'+esc(r.grn_no||'—')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.lines)+' line'+(Number(r.lines)===1?'':'s')+' · '+garNum(r.qty)+' pcs</td><td>'+esc(r.step_label||'')+(r.on_hold?'<div><span class="tag t-hold">On hold</span> <span class="hint">'+esc(r.hold_reason||'')+'</span></div>':'')+'</td><td class="hint">'+esc(r.approvers||'—')+'</td><td style="text-align:right">'+(r.mine?'<button class="btn sm primary" data-gact="'+esc(r.step_id)+'">Act</button>':'<span class="hint">not yours</span>')+'</td></tr>').join('')
+    :'<tr><td colspan="7"><div class="empty" style="padding:18px"><p class="hint">Nothing is waiting for approval.</p></div></td></tr>')+'</tbody></table></div>';
+  return html;
+}
+/* ---- dialogs ---- */
+const garPoLine=()=>({code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''});
+function garPoDialog(pre){
+  pre=pre||{};
+  const po={no:pre.po_no||'',vendor:pre.vendor||'',expected:pre.expected_date||'',lines:(pre.lines&&pre.lines.length?pre.lines:[garPoLine()]),pdf:pre.pdf||[]};
+  modal({title:'Raise a purchase order',
+    body:'<p class="hint" style="margin-top:0">Raising a PO makes no QR codes — those come at GRN, for the quantity received. Pick each item from the CNG master so the ERP code is set.</p>'+
+      '<div class="grid g3" style="gap:10px"><div><label for="gp-no">PO number *</label><input id="gp-no" type="text" value="'+esc(po.no)+'" placeholder="PD26…"></div><div><label for="gp-ven">Vendor *</label><input id="gp-ven" type="text" value="'+esc(po.vendor)+'"></div><div><label for="gp-exp">Expected date</label><input id="gp-exp" type="date" value="'+esc(po.expected)+'"></div></div>'+
+      '<div id="gp-lines" style="margin-top:10px"></div><button class="btn sm" id="gp-add" type="button" style="margin-top:8px">+ Add item</button>'+
+      '<div style="margin-top:10px"><label>PO PDF <span class="hint">optional — attaching it fills the fields</span></label><div id="gp-pdf"></div></div>'+
+      '<div id="gp-note" class="hint" style="margin-top:6px"></div><div id="gp-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div><datalist id="gp-items-dl"></datalist>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="gp-go">Raise PO</button>',
+    onOpen:(mv,cl)=>{
+      const dl=$('#gp-items-dl',mv), fillDl=()=>{ if(dl&&!dl.children.length) dl.innerHTML=(DB.garudaItems||[]).map(i=>'<option value="'+esc(i.code)+'">'+esc(i.name)+'</option>').join(''); };
+      fillDl(); if(!garudaLoaded) loadGaruda().then(fillDl);
+      $('#gp-no',mv).oninput=e=>po.no=e.target.value; $('#gp-ven',mv).oninput=e=>po.vendor=e.target.value; $('#gp-exp',mv).oninput=e=>po.expected=e.target.value;
+      const paint=()=>{ const box=$('#gp-lines',mv); if(!box) return;
+        box.innerHTML=po.lines.map((ln,i)=>'<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
+          (ln.desc?'<div class="hint" style="margin-bottom:4px">From PDF: '+esc(ln.desc)+'</div>':'')+
+          '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">'+
+          '<input class="gpl-code" data-i="'+i+'" list="gp-items-dl" placeholder="Item (code or name)" value="'+esc(ln.code)+'" style="flex:2;min-width:140px">'+
+          '<span class="gpl-name hint" data-i="'+i+'" style="flex:1;min-width:110px;font-size:12px">'+esc(ln.name||'—')+'</span>'+
+          '<input class="gpl-qty" data-i="'+i+'" type="number" min="0" placeholder="Order qty" value="'+esc(ln.qty)+'" style="width:100px">'+
+          '<input class="gpl-unit" data-i="'+i+'" placeholder="Unit" value="'+esc(ln.unit||'NOS')+'" style="width:64px">'+
+          '<input class="gpl-rate" data-i="'+i+'" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:88px">'+
+          (po.lines.length>1?'<button class="btn ghost sm gpl-del" data-i="'+i+'" type="button" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div></div>').join('');
+        $$('.gpl-code',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, r=garResolveItem(e.target.value); po.lines[i].code=e.target.value.trim(); po.lines[i].name=r?r.name:''; const nm=box.querySelector('.gpl-name[data-i="'+i+'"]'); if(nm) nm.textContent=r?r.name:'—'; });
+        $$('.gpl-qty',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].qty=e.target.value);
+        $$('.gpl-unit',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].unit=e.target.value);
+        $$('.gpl-rate',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].rate=e.target.value);
+        $$('.gpl-del',box).forEach(el=>el.onclick=()=>{ po.lines.splice(+el.dataset.i,1); paint(); }); };
+      paint();
+      $('#gp-add',mv).onclick=()=>{ po.lines.push(garPoLine()); paint(); };
+      uploader($('#gp-pdf',mv),po.pdf,{mode:'support',single:true,label:'Attach the PO PDF',onFile:async(file)=>{ if(!/\.pdf$/i.test(file.name)) return; const note=$('#gp-note',mv); if(note) note.textContent='Reading the PO…';
+        try{ const r=await parseCngPO(file);
+          if(r.po_no){ po.no=r.po_no; $('#gp-no',mv).value=r.po_no; }
+          if(r.vendor){ po.vendor=r.vendor; $('#gp-ven',mv).value=r.vendor; }
+          if(r.lines&&r.lines.length){ po.lines=r.lines.map(l=>{ const m=garMatchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }); paint(); }
+          if(note) note.textContent=(r.lines&&r.lines.length?r.lines.length+' line(s) read — ':'Fields read — ')+'check each item is picked from the CNG master.'; }
+        catch(e){ if(note) note.textContent='Could not read that PDF — enter the lines by hand.'; } }});
+      $('#gp-go',mv).onclick=()=>{ const err=$('#gp-err',mv); err.textContent='';
+        const bad=(DB.garudaItems||[]).length?po.lines.find(l=>l.code&&!garResolveItem(l.code)):null;
+        if(bad) return err.textContent='"'+bad.code+'" is not in the CNG item master — pick an item from the list.';
+        const lines=po.lines.filter(l=>l.code&&Number(l.qty)>0).map(l=>({item_code:String(l.code).trim().toUpperCase(),unit:l.unit||'NOS',order_qty:Number(l.qty),rate:l.rate||''}));
+        if(!po.no.trim()) return err.textContent='Enter the PO number.';
+        if(!po.vendor.trim()) return err.textContent='Enter the vendor.';
+        if(!lines.length) return err.textContent='Add at least one item (from the CNG master) with an order quantity.';
+        cl(); flowPinThen(async()=>{ busy(true);
+          try{ await rpc('cng_direct_po_raise',{p_po:{po_no:po.no.trim(),vendor:po.vendor.trim(),po_date:'',expected_date:po.expected||'',site:''},p_lines:lines,p_pin:flowCall._pin,p_files:filesPayload(po.pdf)});
+            toast('PO '+po.no.trim()+' raised — it is now under Inward & GRN.','ok'); garudaTab='inward'; paintNav(); await loadDock(true); try{ await load(['flows','notif']); }catch(_){} render(); }
+          catch(e){ fail(e); } finally{ busy(false); } }); };
+    }});
+}
+function garPoMassDialog(){
+  const state={items:[]};
+  const ready=p=>!p.done&&!!p.po_no.trim()&&!!p.vendor.trim()&&p.lines.length>0&&p.lines.every(l=>garResolveItem(l.code)&&Number(l.qty)>0);
+  modal({title:'Mass upload — up to 10 PO PDFs',
+    body:'<p class="hint" style="margin-top:0">Pick up to 10 PO PDFs. Each one is read and shown below with its items matched to the CNG master where possible — fill in any blank item or vendor before raising. Each PDF becomes its own purchase order; raising is signed once with your PIN.</p>'+
+      '<input type="file" id="gm-files" accept=".pdf" multiple style="width:auto"><div id="gm-list" style="margin-top:10px"></div><div id="gm-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div><datalist id="gm-items-dl"></datalist>',
+    footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="gm-go" disabled>Raise all ready POs</button>',
+    onOpen:(mv,cl)=>{
+      const dl=$('#gm-items-dl',mv), fillDl=()=>{ if(dl&&!dl.children.length) dl.innerHTML=(DB.garudaItems||[]).map(i=>'<option value="'+esc(i.code)+'">'+esc(i.name)+'</option>').join(''); };
+      fillDl(); if(!garudaLoaded) loadGaruda().then(fillDl);
+      const paint=()=>{ const box=$('#gm-list',mv); if(!box) return;
+        box.innerHTML=state.items.map((p,i)=>'<div class="card pad" style="margin-top:8px;padding:10px">'+
+          '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap"><b style="flex:1;min-width:160px">'+esc(p.file.name)+'</b><span class="tag gm-status '+(p.done?'t-ok':ready(p)?'t-prog':'t-hold')+'" data-i="'+i+'">'+(p.done?'raised':ready(p)?'ready':'needs attention')+'</span></div>'+
+          (p.err?'<div class="hint" style="color:var(--stop);margin-top:4px">'+esc(p.err)+'</div>':'')+
+          '<div class="grid g3" style="gap:8px;margin-top:6px"><input class="gm-no" data-i="'+i+'" placeholder="PO number *" value="'+esc(p.po_no)+'"'+(p.done?' disabled':'')+'><input class="gm-ven" data-i="'+i+'" placeholder="Vendor *" value="'+esc(p.vendor)+'"'+(p.done?' disabled':'')+'><input class="gm-exp" data-i="'+i+'" type="date" value="'+esc(p.expected)+'"'+(p.done?' disabled':'')+'></div>'+
+          p.lines.map((l,j)=>'<div class="row" style="gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">'+(l.desc?'<span class="hint" style="flex-basis:100%">From PDF: '+esc(l.desc)+'</span>':'')+
+            '<input class="gm-code" data-i="'+i+'" data-j="'+j+'" list="gm-items-dl" placeholder="Item code" value="'+esc(l.code)+'" style="flex:2;min-width:130px"'+(p.done?' disabled':'')+'><span class="gm-name hint" data-i="'+i+'" data-j="'+j+'" style="flex:1;min-width:100px;font-size:12px">'+esc(l.name||'—')+'</span>'+
+            '<input class="gm-qty" data-i="'+i+'" data-j="'+j+'" type="number" min="0" placeholder="Qty" value="'+esc(l.qty)+'" style="width:80px"'+(p.done?' disabled':'')+'><input class="gm-unit" data-i="'+i+'" data-j="'+j+'" value="'+esc(l.unit||'NOS')+'" style="width:60px"'+(p.done?' disabled':'')+'><input class="gm-rate" data-i="'+i+'" data-j="'+j+'" placeholder="Rate" value="'+esc(l.rate)+'" style="width:80px"'+(p.done?' disabled':'')+'></div>').join('')+
+          (p.done?'':'<button class="btn sm gm-addline" data-i="'+i+'" type="button" style="margin-top:6px">+ Add item</button>')+'</div>').join('');
+        const on=(cls,fn)=>$$('.'+cls,box).forEach(el=>el.oninput=e=>{ const p=state.items[+el.dataset.i], l=el.dataset.j!==undefined?p.lines[+el.dataset.j]:null; fn(p,l,e.target.value,el); const go=$('#gm-go',mv); if(go) go.disabled=!state.items.some(ready);
+          const st=box.querySelector('.gm-status[data-i="'+el.dataset.i+'"]'); if(st&&!p.done){ const r=ready(p); st.textContent=r?'ready':'needs attention'; st.className='tag gm-status '+(r?'t-prog':'t-hold'); } });
+        on('gm-no',(p,l,v)=>p.po_no=v); on('gm-ven',(p,l,v)=>p.vendor=v); on('gm-exp',(p,l,v)=>p.expected=v);
+        on('gm-code',(p,l,v,el)=>{ l.code=v.trim(); const r=garResolveItem(v); l.name=r?r.name:''; const nm=box.querySelector('.gm-name[data-i="'+el.dataset.i+'"][data-j="'+el.dataset.j+'"]'); if(nm) nm.textContent=r?r.name:'—'; });
+        on('gm-qty',(p,l,v)=>l.qty=v); on('gm-unit',(p,l,v)=>l.unit=v); on('gm-rate',(p,l,v)=>l.rate=v);
+        $$('.gm-addline',box).forEach(b=>b.onclick=()=>{ state.items[+b.dataset.i].lines.push(garPoLine()); paint(); });
+        const go=$('#gm-go',mv); if(go) go.disabled=!state.items.some(ready); };
+      $('#gm-files',mv).onchange=async e=>{ const files=Array.from(e.target.files||[]).filter(f=>/\.pdf$/i.test(f.name)); const err=$('#gm-err',mv); err.textContent=''; e.target.value=''; if(!files.length) return;
+        if(state.items.length+files.length>10) return err.textContent='Up to 10 PDFs at a time — '+state.items.length+' already added.';
+        busy(true);
+        for(const f of files){ const p={file:f,po_no:'',vendor:'',expected:'',lines:[],err:'',done:false};
+          try{ const r=await parseCngPO(f); p.po_no=r.po_no||''; p.vendor=r.vendor||''; p.lines=(r.lines||[]).map(l=>{ const m=garMatchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }); }
+          catch(x){ p.err='Could not read this PDF — fill it in by hand.'; }
+          if(!p.lines.length) p.lines=[garPoLine()];
+          state.items.push(p); }
+        busy(false); paint(); };
+      $('#gm-go',mv).onclick=()=>{ const todo=state.items.filter(ready); if(!todo.length) return; $('#gm-go',mv).disabled=true;
+        flowPinThen(async()=>{ busy(true); let ok=0;
+          for(const p of todo){
+            try{ let files=[]; try{ const up=await uploadFile(p.file,'primary'); files=[{name:up.name,path:up.path,size:up.size,kind:'primary'}]; }catch(_){}
+              await rpc('cng_direct_po_raise',{p_po:{po_no:p.po_no.trim(),vendor:p.vendor.trim(),po_date:'',expected_date:p.expected||'',site:''},p_lines:p.lines.map(l=>({item_code:String(l.code).trim().toUpperCase(),unit:l.unit||'NOS',order_qty:Number(l.qty),rate:l.rate||''})),p_pin:flowCall._pin,p_files:files});
+              p.done=true; p.err=''; ok++; }
+            catch(e){ p.err=((e&&e.message)||'Could not raise.').replace(/^.*?: /,''); } }
+          busy(false); paint(); toast(ok+' PO'+(ok===1?'':'s')+' raised.',ok?'ok':'bad'); await loadDock(true); try{ await load(['flows','notif']); }catch(_){} }); };
+    }});
+}
+function garGrnDialog(reqId,pre){
+  pre=pre||{};
+  const src=(garDock.inward||[]).filter(r=>r.request_id===reqId); if(!src.length) return toast('No open PO lines on this file.','bad');
+  if(!src[0].can_take) return toast('This GRN is with '+(src[0].taker||'someone else')+' — only they can take it.','bad');
+  const po=src[0];
+  const g={no:pre.grn_no||'',date:pre.grn_date||DAY(),invoice:pre.invoice_no||'',invDate:pre.invoice_date||'',invPhoto:[],ewayPhoto:[],pdf:pre.pdf||[],
+    lines:src.map(r=>({po_line_id:r.po_line_id,item_code:r.item_code,item_name:r.item_name,unit:r.unit,rate:r.rate,ordered:Number(r.ordered)||0,remaining:Number(r.remaining)||0,take:'',photo:[]}))};
+  (pre.lines||[]).forEach(rl=>{ const pl=g.lines.find(p=>p.item_code===rl.code&&!p.take); if(pl) pl.take=String(Math.min(rl.qty,pl.remaining)); });
+  modal({title:'GRN — PO '+(po.po_no||po.ref),
+    body:'<p class="hint" style="margin-top:0">Enter how many of each item came in <b>now</b> (max = still open). One QR sticker is made per unit received, when the GRN is approved. A delivery can be partial — the rest stays open.</p>'+
+      '<div id="gg-lines"></div>'+
+      '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label for="gg-no">GRN number *</label><input id="gg-no" value="'+esc(g.no)+'"></div><div><label for="gg-date">GRN date *</label><input id="gg-date" type="date" value="'+esc(g.date)+'"></div><div><label for="gg-inv">Invoice number *</label><input id="gg-inv" value="'+esc(g.invoice)+'"></div><div><label for="gg-invdate">Invoice date *</label><input id="gg-invdate" type="date" value="'+esc(g.invDate)+'"></div></div>'+
+      '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label>Invoice photo *</label><div id="gg-invphoto"></div></div><div><label>E-way bill photo <span class="hint">optional</span></label><div id="gg-ewayphoto"></div></div></div>'+
+      '<div style="margin-top:10px"><label>GRN PDF <span class="hint">optional — attaching it fills the fields</span></label><div id="gg-pdf"></div></div>'+
+      '<div id="gg-note" class="hint" style="margin-top:6px"></div><div id="gg-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Back to list</button><button class="btn primary" id="gg-go">Update</button>',
+    onOpen:(mv,cl)=>{
+      const gi=(id,set)=>{ const el=$(id,mv); if(el) el.oninput=e=>set(e.target.value); };
+      gi('#gg-no',v=>g.no=v); gi('#gg-date',v=>g.date=v); gi('#gg-inv',v=>g.invoice=v); gi('#gg-invdate',v=>g.invDate=v);
+      uploader($('#gg-invphoto',mv),g.invPhoto,{mode:'support',single:true,label:'Take / attach invoice photo'});
+      uploader($('#gg-ewayphoto',mv),g.ewayPhoto,{mode:'support',single:true,label:'Take / attach e-way photo'});
+      const paint=()=>{ const box=$('#gg-lines',mv); if(!box) return;
+        box.innerHTML='<div class="scroll-x"><table class="cards" style="margin-top:4px;min-width:640px"><thead><tr><th>Item</th><th>ERP</th><th>Received / ordered</th><th>Take now</th><th>QR</th><th>Material photo *</th></tr></thead><tbody>'+
+          g.lines.map((ln,i)=>'<tr><td>'+esc(ln.item_name||ln.item_code)+'</td><td class="num hint">'+esc(ln.item_code)+'</td><td class="num">'+(ln.ordered-ln.remaining)+' / '+ln.ordered+' '+esc(ln.unit||'')+'</td><td><input class="gg-take" data-i="'+i+'" type="number" min="0" max="'+ln.remaining+'" value="'+esc(ln.take)+'" placeholder="'+ln.remaining+'" style="width:90px"></td><td class="num gg-qr" data-i="'+i+'">'+(Number(ln.take)||0)+'</td><td><div id="ggp-'+i+'" style="min-width:150px"></div></td></tr>').join('')+'</tbody></table></div>';
+        g.lines.forEach((ln,i)=>{ const m=$('#ggp-'+i,box); if(m) uploader(m,ln.photo,{mode:'support',single:true,label:'Photo'}); });
+        $$('.gg-take',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, max=g.lines[i].remaining; let n=Number(e.target.value)||0; if(n>max){ n=max; e.target.value=max; } g.lines[i].take=e.target.value; const q=box.querySelector('.gg-qr[data-i="'+i+'"]'); if(q) q.textContent=n; }); };
+      paint();
+      uploader($('#gg-pdf',mv),g.pdf,{mode:'support',single:true,label:'Attach the GRN PDF',onFile:async(file)=>{ if(!/\.pdf$/i.test(file.name)) return; const note=$('#gg-note',mv); if(note) note.textContent='Reading the GRN…';
+        try{ const r=await parseCngGRN(file);
+          if(r.grn_no){ g.no=r.grn_no; $('#gg-no',mv).value=r.grn_no; } if(r.grn_date){ g.date=r.grn_date; $('#gg-date',mv).value=r.grn_date; }
+          if(r.invoice_no){ g.invoice=r.invoice_no; $('#gg-inv',mv).value=r.invoice_no; } if(r.invoice_date){ g.invDate=r.invoice_date; $('#gg-invdate',mv).value=r.invoice_date; }
+          let m=0; (r.lines||[]).forEach(rl=>{ const pl=g.lines.find(p=>p.item_code===rl.code&&!p.take); if(pl){ pl.take=String(Math.min(rl.qty,pl.remaining)); m++; } }); paint();
+          if(note) note.textContent=(m?m+' line(s) matched to the PO — ':'GRN details read — ')+'check the quantities, then Update.'; }
+        catch(e){ if(note) note.textContent='Could not read that GRN — enter the details by hand.'; } }});
+      $('#gg-go',mv).onclick=()=>{ const err=$('#gg-err',mv); err.textContent='';
+        const take=g.lines.filter(l=>Number(l.take)>0); if(!take.length) return err.textContent='Enter a "take now" quantity for at least one item.';
+        if(!g.no.trim()) return err.textContent='Enter the GRN number.'; if(!g.date) return err.textContent='Enter the GRN date.';
+        if(!g.invoice.trim()) return err.textContent='Enter the invoice number.'; if(!g.invDate) return err.textContent='Enter the invoice date.';
+        if(!g.invPhoto.length) return err.textContent='Attach the invoice photo.';
+        const miss=take.find(l=>!l.photo.length); if(miss) return err.textContent='Add the material photo for '+(miss.item_name||miss.item_code)+'.';
+        const pth=list=>list&&list[0]?list[0].path:''; const inv=pth(g.invPhoto), eway=pth(g.ewayPhoto);
+        const lots=take.map(l=>({po_line_id:l.po_line_id,item_code:l.item_code,order_qty:0,delivered_qty:Number(l.take),accepted_qty:Number(l.take),rate:l.rate||'',grn_no:g.no.trim(),grn_date:g.date,invoice_no:g.invoice.trim(),invoice_date:g.invDate,material_photo:pth(l.photo),invoice_photo:inv,eway_photo:eway,po_no:po.po_no||''}));
+        const files=filesPayload(g.invPhoto).concat(filesPayload(g.ewayPhoto),filesPayload(g.pdf));
+        cl(); flowPinThen(async()=>{ busy(true);
+          try{ await rpc('cng_grn_take',{p_request:reqId,p_lots:lots,p_pin:flowCall._pin,p_files:files,p_remark:''});
+            toast('GRN '+g.no.trim()+' taken — sent for approval.','ok'); await loadDock(true); try{ await load(['flows','notif']); }catch(_){} render(); }
+          catch(e){ fail(e); } finally{ busy(false); } }); };
+    }});
+}
+async function garGrnUpload(file){
+  busy(true);
+  try{ const r=await parseCngGRN(file); const po=(r.po_no||'').toUpperCase();
+    const row=(garDock.inward||[]).find(x=>(x.po_no||'').toUpperCase()===po);
+    if(!row){ busy(false); return toast(po?('No open PO '+po+' is waiting for a GRN.'):'Could not read the PO number from that GRN — open the PO line and attach the PDF there.','bad'); }
+    let up=[]; try{ up=[await uploadFile(file,'primary')]; }catch(_){}
+    busy(false); garGrnDialog(row.request_id,{grn_no:r.grn_no,grn_date:r.grn_date,invoice_no:r.invoice_no,invoice_date:r.invoice_date,lines:r.lines,pdf:up}); }
+  catch(e){ busy(false); fail(e); }
+}
+async function garPoUpload(file){
+  busy(true);
+  try{ const r=await parseCngPO(file); let up=[]; try{ up=[await uploadFile(file,'primary')]; }catch(_){}
+    busy(false);
+    garPoDialog({po_no:r.po_no,vendor:r.vendor,lines:(r.lines||[]).map(l=>{ const m=garMatchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }),pdf:up}); }
+  catch(e){ busy(false); fail(e); }
+}
+
 /* Processed — goods past both approvals, grouped by item; open an item to see/print its QRs */
 function garProcessed(){
   const lots=DB.garudaLots||[], tags=DB.garudaTags||[];
@@ -3466,6 +3721,27 @@ function wireGaruda(v){
   const tgo=()=>{ const el=$('#g-tracesearch',v); const qq=(el?el.value:'').trim(); garudaTraceQ=qq; garudaTraceSel=garResolvePO(qq); render(); };
   if($('#g-tracego',v)) $('#g-tracego',v).onclick=tgo;
   const tsel=$('#g-tracesearch',v); if(tsel) tsel.onkeydown=e=>{ if(e.key==='Enter') tgo(); };
+  // ---- direct procurement pages (Procurement · Inward & GRN · Approvals) ----
+  if(garDockTab()) loadDock();
+  if($('#gd-retry',v)) $('#gd-retry',v).onclick=()=>{ garDock.err=''; loadDock(true); };
+  if($('#gd-refresh',v)) $('#gd-refresh',v).onclick=()=>loadDock(true);
+  if($('#gp-raise',v)) $('#gp-raise',v).onclick=()=>garPoDialog();
+  if($('#gp-upload',v)) $('#gp-upload',v).onclick=()=>{ const i=$('#gp-file',v); if(i) i.click(); };
+  if($('#gp-file',v)) $('#gp-file',v).onchange=e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=''; if(f) garPoUpload(f); };
+  if($('#gp-mass',v)) $('#gp-mass',v).onclick=()=>garPoMassDialog();
+  if($('#gp-all',v)) $('#gp-all',v).onclick=()=>{ garudaPoAll=!garudaPoAll; render(); };
+  wireSearch('gp-q',x=>garudaPoQ=x);
+  if($('#gi-upload',v)) $('#gi-upload',v).onclick=()=>{ const i=$('#gi-file',v); if(i) i.click(); };
+  if($('#gi-file',v)) $('#gi-file',v).onchange=e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=''; if(f) garGrnUpload(f); };
+  if($('#gi-allgrn',v)) $('#gi-allgrn',v).onclick=()=>{ garudaGrnAll=!garudaGrnAll; render(); };
+  wireSearch('gi-q',x=>garudaInwardQ=x); wireSearch('gi-ven',x=>garudaInwardVen=x);
+  const gif=$('#gi-from',v); if(gif) gif.onchange=()=>{ garudaInwardFrom=gif.value; render(); };
+  const git=$('#gi-to',v); if(git) git.onchange=()=>{ garudaInwardTo=git.value; render(); };
+  $$('[data-grnreq]',v).forEach(tr=>tr.onclick=()=>garGrnDialog(tr.dataset.grnreq));
+  $$('[data-gact]',v).forEach(b=>b.onclick=async()=>{ const id=b.dataset.gact, row=(garDock.approvals||[]).find(x=>x.step_id===id);
+    if(!flowFindStep(id)&&row){ try{ await loadFlowsSome([row.request_id]); }catch(_){} }
+    if(!flowFindStep(id)) return toast('Could not open this step — tap Refresh and try again.','bad');
+    flowAct(id); });
 }
 
 /* ---------- CNG QR lifecycle: scan / find a sticker, then act on it ---------- */
@@ -4371,10 +4647,10 @@ const flowTaggedToMe=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return fa
   return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
 const flowAwaitingMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
   return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
-const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowActionableByMe(f)||flowCanEscalate(f)));
-const flowTagged=()=>DB.flows.filter(f=>f.status==='running'&&flowTaggedToMe(f));
-const flowAwaitingReply=()=>DB.flows.filter(f=>f.status==='running'&&flowAwaitingMyReply(f));
-const flowMine=()=>DB.flows.filter(f=>f.requesterId===ME.id);
+const flowMyTurn=()=>SETU_FLOWS().filter(f=>f.status==='running'&&(flowActionableByMe(f)||flowCanEscalate(f)));
+const flowTagged=()=>SETU_FLOWS().filter(f=>f.status==='running'&&flowTaggedToMe(f));
+const flowAwaitingReply=()=>SETU_FLOWS().filter(f=>f.status==='running'&&flowAwaitingMyReply(f));
+const flowMine=()=>SETU_FLOWS().filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
 const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const s=flowLive(f); return s?(s.stage+' · '+s.label):'—'; };
 const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed</span>':f.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">In progress</span>';
@@ -4398,7 +4674,7 @@ function flowSection(ctx){
   else if(ctx==='tagged') list=flowTagged();
   else if(ctx==='awaiting') list=flowAwaitingReply();
   else if(ctx==='mine') list=flowMine();
-  else list=DB.flows.slice();
+  else list=SETU_FLOWS();
   if(!list.length) return '';
   const ft=flowFilter[ctx]||(flowFilter[ctx]={req:'',q:'',stage:''});
   // the people who raised the flows in this section (so an approver sees only the
@@ -4831,29 +5107,37 @@ async function flowRewindCall(stepId){ busy(true);
 /* Admin/owner: map the right person onto a step whose approver didn't resolve (or needs changing) */
 function flowAssignActor(stepId){
   const x=flowFindStep(stepId); if(!x||!(ME.owner||ME.admin)) return; const s=x.s;
-  const cur=s.actors.map(id=>user(id).name).join(', ')||'— nobody yet —';
   // the blueprint name of this step (the part after the "—"), used to map it everywhere
   const mm=(s.label||'').match(/.*—\s*(.+)$/); const srcName=(mm?mm[1]:'').trim();
   const canAll=!!srcName && s.actorKind==='person';   // name→person map is unambiguous only for single-approver steps
+  const sel=s.actors.slice();                           // the people on the step, edited here (case 3: several people, add / remove / swap)
   const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
     .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
-  modal({title:'Change approver',
-    body:'<p class="hint" style="margin-top:0"><b>'+esc(s.label)+'</b><br>Currently with: <b>'+esc(cur)+'</b>. Pick the right person — they can act straight away, and the change is recorded in the trail.</p>'+
-      '<div style="margin-top:12px"><label for="fa-u">Approver</label><select id="fa-u"><option value="">— choose a person —</option>'+opts+'</select></div>'+
-      (canAll?'<label style="display:flex;align-items:flex-start;gap:9px;margin:14px 0 0"><input type="checkbox" id="fa-all" style="width:auto;margin-top:3px"> <span><b>Apply to every flow</b><div class="hint">Make “'+esc(srcName)+'” mean this person on <b>all</b> PO / WO / CNG flows — the ones running now and all new ones — until you change it again. Leave unticked to change only this one file.</div></span></label>':'<p class="hint" style="margin-top:10px">This changes the approver on this file only.</p>')+
+  modal({title:'Change approver'+(s.actorKind==='oneof'||s.actorKind==='team'?'s':''),
+    body:'<p class="hint" style="margin-top:0"><b>'+esc(s.label)+'</b><br>The people on this step — any one of them can act. Remove with ×, add from the list. The change is recorded in the trail.</p>'+
+      '<div id="fa-cur" style="margin-top:10px"></div>'+
+      '<div class="row" style="gap:8px;margin-top:10px;align-items:flex-end"><div style="flex:1;min-width:200px"><label for="fa-u">Add a person</label><select id="fa-u"><option value="">— choose a person —</option>'+opts+'</select></div><button class="btn" id="fa-addp" type="button">Add</button></div>'+
+      (canAll?'<label style="display:flex;align-items:flex-start;gap:9px;margin:14px 0 0"><input type="checkbox" id="fa-all" style="width:auto;margin-top:3px"> <span><b>Apply to every flow</b><div class="hint">Make “'+esc(srcName)+'” mean this person on <b>all</b> PO / WO / CNG flows — the ones running now and all new ones — until you change it again. (Only when exactly one person is on the step.)</div></span></label>':'')+
       '<div id="fa-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
-    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Set approver</button>',
-    onOpen:(mv,cl)=>{ $('#fa-go',mv).onclick=async()=>{ const uid=$('#fa-u',mv).value; if(!uid) return $('#fa-err',mv).textContent='Choose a person.';
-      const all=canAll&&$('#fa-all',mv)&&$('#fa-all',mv).checked;
-      $('#fa-go',mv).disabled=true;
-      try{
-        if(all){ const n=await rpc('admin_map_actor',{p_src:srcName,p_user:uid});
-          try{ await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); }catch(e){}   // make sure THIS step updates too
-          await load(['flows','notif']); cl();
-          toast('Set for every flow. '+(n?('Updated '+n+' live file'+(n===1?'':'s')+'.'):'This file updated.'),'ok'); render(); }
-        else { await rpc('flow_assign_actor',{p_step:stepId,p_user:uid}); await load(['flows','notif'],flowIdsOfStep(stepId)); cl(); toast('Approver updated on this file.','ok'); render(); }
-      }
-      catch(e){ $('#fa-go',mv).disabled=false; $('#fa-err',mv).textContent=(e&&e.message)||'Could not update.'; } }; }});
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fa-go">Save approvers</button>',
+    onOpen:(mv,cl)=>{
+      const paint=()=>{ $('#fa-cur',mv).innerHTML=sel.length?sel.map(id=>'<span class="tag t-prog" style="display:inline-flex;align-items:center;margin:0 6px 6px 0;padding:6px 10px">'+esc(user(id).name)+' <button class="btn ghost sm" data-rm="'+esc(id)+'" type="button" style="padding:0 6px;margin-left:4px;color:var(--stop)">×</button></span>').join(''):'<span class="hint">— nobody yet — add someone below</span>';
+        $$('[data-rm]',mv).forEach(b=>b.onclick=()=>{ const i=sel.indexOf(b.dataset.rm); if(i>-1) sel.splice(i,1); paint(); }); };
+      paint();
+      $('#fa-addp',mv).onclick=()=>{ const uid=$('#fa-u',mv).value; if(!uid) return; if(sel.indexOf(uid)<0) sel.push(uid); $('#fa-u',mv).value=''; paint(); };
+      $('#fa-go',mv).onclick=async()=>{ const err=$('#fa-err',mv); err.textContent='';
+        if(!sel.length) return err.textContent='Keep at least one person on the step.';
+        const all=canAll&&$('#fa-all',mv)&&$('#fa-all',mv).checked;
+        if(all&&sel.length!==1) return err.textContent='"Apply to every flow" needs exactly one person on the step.';
+        $('#fa-go',mv).disabled=true;
+        try{
+          if(all){ const n=await rpc('admin_map_actor',{p_src:srcName,p_user:sel[0]});
+            try{ await rpc('flow_set_actors',{p_step:stepId,p_users:sel}); }catch(e){}   // make sure THIS step updates too
+            await load(['flows','notif']); cl();
+            toast('Set for every flow. '+(n?('Updated '+n+' live file'+(n===1?'':'s')+'.'):'This file updated.'),'ok'); render(); }
+          else { await rpc('flow_set_actors',{p_step:stepId,p_users:sel}); await load(['flows','notif'],flowIdsOfStep(stepId)); cl(); toast('Approvers updated on this file.','ok'); render(); }
+        }
+        catch(e){ $('#fa-go',mv).disabled=false; err.textContent=(e&&e.message)||'Could not update.'; } }; }});
 }
 // cross-check detour (ALDS): insert ordered extra approvers after a step
 function flowDetourDialog(stepId){
@@ -4883,7 +5167,7 @@ function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
   busy(true);
   try{ await rpc('flow_act',{p_step:stepId,p_kind:kind,p_remark:remark||'',p_pin:flowCall._pin,p_files:files||null,p_datetime:datetime||null,p_data:data||null});
-    await load(['flows','notif'],flowIdsOfStep(stepId)); toast(okMsg||'Done.','ok'); render(); }
+    await load(['flows','notif'],flowIdsOfStep(stepId)); toast(okMsg||'Done.','ok'); render(); if(ROUTE.name==='garuda') loadDock(true); }
   catch(e){ fail(e); }
   finally{ busy(false); }
 }
