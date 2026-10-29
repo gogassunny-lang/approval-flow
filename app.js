@@ -165,7 +165,7 @@ async function loadPeople(){
   const unit=(r[5]&&!r[5].error&&r[5].data)?r[5].data:[];
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -1073,6 +1073,9 @@ function createUserDialog(){
         const body={name:$('#cu-name',v).value.trim(),email:$('#cu-email',v).value.trim().toLowerCase(),role:$('#cu-role',v).value.trim(),dept:$('#cu-dept',v).value,
           manager_id:$('#cu-mgr',v).value||null,is_manager:$('#cu-man',v).checked,see_all:($('#cu-see',v)||{}).checked||false,is_admin:sysRole()==='admin',
           can_create_users:($('#cu-cc',v)||{}).checked||false,can_manage_users:($('#cu-cm',v)||{}).checked||false,
+          // the create function applies these itself (v117): a "create users" sub-admin's
+          // Gate-Pass-only tick used to be silently dropped because it needed "manage users"
+          gate_only:($('#cu-gateonly',v)||{}).checked||false,hr_head:($('#cu-hrhead',v)||{}).checked||false,
           mode:($('input[name="cu-mode"]:checked',v)||{}).value||'password',password:($('#cu-pw',v)||{}).value||'',pages:readChecklist('cu-pages',v)};
         const err=$('#cu-err',v);
         if(body.name.length<3) return err.textContent='Enter the full name.';
@@ -1087,8 +1090,6 @@ function createUserDialog(){
           try{ if(error&&error.context){ const j=await error.context.json(); if(j&&j.error) msg=j.error } }catch(e){}
           if(/failed to send|fetch/i.test(msg)) msg='The browser could not reach the admin-create-user function. In Supabase → Edge Functions, check it is deployed under exactly that name and that Verify JWT is off; the Logs tab shows the reason.';
           return err.textContent=/not found|404/i.test(msg)?'The admin-create-user function is not deployed yet — see the README.':msg }
-        if(data.id&&$('#cu-gateonly',v)&&$('#cu-gateonly',v).checked){ try{ await rpc('set_gate_only',{p_user:data.id,p_on:true}) }catch(e){} }
-        if(data.id&&$('#cu-hrhead',v)&&$('#cu-hrhead',v).checked){ try{ await rpc('set_hr_head',{p_user:data.id,p_on:true}) }catch(e){} }
         close(); await load(); render();
         if(data.tempPassword) tempPasswordDialog(body.name,body.email,data.tempPassword);
         else toast('Invite sent to '+body.email+'.','ok');
@@ -2086,7 +2087,7 @@ function viewDetail(id){
        (f.vendorAddress?'<dt>Address</dt><dd>'+esc(f.vendorAddress)+'</dd>':'')+(f.vendorState?'<dt>State</dt><dd>'+esc(f.vendorState)+(f.vendorStateCode?' ('+esc(f.vendorStateCode)+')':'')+'</dd>':'')+
        (f.vendorGstin?'<dt>GSTIN</dt><dd class="num">'+esc(f.vendorGstin)+'</dd>':'')+(f.vendorPan?'<dt>PAN</dt><dd class="num">'+esc(f.vendorPan)+'</dd>':'')+(f.vendorContact?'<dt>Contact</dt><dd>'+esc(f.vendorContact)+'</dd>':'')+(f.billingAddress?'<dt>Billing to</dt><dd>'+esc(f.billingAddress)+'</dd>':''))+
     '<dt>Raised</dt><dd>'+esc(fmtD(r.createdAt))+'</dd><dt>Approvers</dt><dd>'+r.chain.length+' in sequence</dd></dl>'+(f.remarks?'<div class="sep"></div><div class="hint" style="margin-bottom:5px">Remarks</div><div style="white-space:pre-wrap">'+esc(f.remarks)+'</div>':'')+
-    ((r.requesterId===ME.id||ME.admin)&&r.status!=='Rejected'&&r.status!=='Info Requested'&&!isMyTurn(r)?'<div class="sep"></div><button class="btn sm" id="d-extend" style="width:100%">'+(r.status==='Approved'?'Reopen and add the next approver':'Add the next approver')+'</button>':'')+
+    ((r.requesterId===ME.id||ME.admin)&&r.status!=='Rejected'&&r.status!=='Info Requested'&&!isMyTurn(r)?'<div class="sep"></div><button class="btn sm" id="d-extend3" style="width:100%">'+(r.status==='Approved'?'Reopen and add the next approver':'Add the next approver')+'</button>':'')+
     (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
   return '<button class="btn ghost sm" id="d-back" style="margin-bottom:12px">Back</button>'+banner+'<div class="detail-grid"><div><div class="card pad"><h3 style="margin-bottom:16px">The chain</h3><div class="rail">'+nodes+'</div></div>'+notes+'</div><div>'+facts+panel+'</div></div>';
 }
@@ -2159,8 +2160,7 @@ function wireDetail(v){
   if($('#d-purge',v)) $('#d-purge',v).onclick=()=>purgeRequestDialog(r);
   if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
   if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
-  if($('#d-extend',v)) $('#d-extend',v).onclick=()=>extendChainDialog(r);
-  if($('#d-extend2',v)) $('#d-extend2',v).onclick=()=>extendChainDialog(r);
+  if($('#d-extend3',v)) $('#d-extend3',v).onclick=()=>extendChainDialog(r);
   let allFiles=r.files.slice(); r.chain.forEach(s=>{allFiles=allFiles.concat(s.files||[]);tasksOf(s).forEach(t=>{allFiles=allFiles.concat(t.files||[])})});
   bindFiles(v,allFiles);
   readForRequest(r.id);
@@ -2802,7 +2802,8 @@ function wirePeople(v){
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-garuda" style="width:auto" '+(u.garudaAccess?'checked':'')+'> <span><b>Garuda (CNG stock) access</b><div class="hint">Opens the Garuda page for this person. CNG people get it anyway; use this to give an ALDS person access.</div></span></label>'+
           '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gstore" style="width:auto" '+(u.garudaStore?'checked':'')+'> <span><b>Garuda — Store role</b><div class="hint">Issues QRs out to a station, and accepts returns at the store.</div></span></label>'+
-          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gsite" style="width:auto" '+(u.garudaSite?'checked':'')+'> <span><b>Garuda — Site role</b><div class="hint">At the station: allots (fits) a QR and marks it consumed.</div></span></label>':'')+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gsite" style="width:auto" '+(u.garudaSite?'checked':'')+'> <span><b>Garuda — Site role</b><div class="hint">At the station: allots (fits) a QR and marks it consumed.</div></span></label>'+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-cngpo" style="width:auto" '+(u.cngPo?'checked':'')+'> <span><b>Can raise CNG PO/WO</b><div class="hint">The "Create PO / WO" step of every CNG file lands on the people ticked here (like the ALDS purchase team). Ticking someone puts the live CNG files on their desk at once; if nobody is ticked, admins get them.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
@@ -2844,11 +2845,11 @@ function wirePeople(v){
           if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
           if($('#e-assist',mv)){ const av=$('#e-assist',mv).value||null; if((av||null)!==(u.assistsId||null)) await rpc('set_assists',{p_user:u.id,p_principal:av}); }
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
-          const unitEl=$('#e-unit',mv); if(unitEl){ const nu=unitEl.value||null; if((nu||'')!==(u.unit||'')) await rpc('set_user_unit',{p_user:u.id,p_unit:nu}); }
           if(GRANTS_ROLES()){ const dv=[]; $$('.e-dv',mv).forEach(c=>{ if(c.checked) dv.push(c.value); });
             const cur=(u.deptsVisible||[]).slice().sort(); if(JSON.stringify(dv.slice().sort())!==JSON.stringify(cur)) await rpc('set_depts_visible',{p_user:u.id,p_depts:dv}); }
           if($('#e-garuda',mv)&&$('#e-garuda',mv).checked!==!!u.garudaAccess) await rpc('set_garuda_access',{p_user:u.id,p_on:$('#e-garuda',mv).checked});
           if($('#e-gstore',mv)&&($('#e-gstore',mv).checked!==!!u.garudaStore||$('#e-gsite',mv).checked!==!!u.garudaSite)) await rpc('set_garuda_role',{p_user:u.id,p_store:$('#e-gstore',mv).checked,p_site:$('#e-gsite',mv).checked});
+          if($('#e-cngpo',mv)&&$('#e-cngpo',mv).checked!==!!u.cngPo){ const n=await rpc('set_cng_po',{p_user:u.id,p_on:$('#e-cngpo',mv).checked}); if(n) toast(n+' live CNG file'+(n===1?'':'s')+' updated.','ok'); }
           await load(); cl(); render(); toast(u.name+' updated.','ok') }catch(e){ $('#e-err',mv).textContent=(e.message||'').replace(/^.*?: /,'') }}}})});
   if($('#dp-add',v)) $('#dp-add',v).onclick=async()=>{const n=$('#dp-new',v).value.trim(); if(n.length<2) return toast('Type a department name.','bad');
     const {error}=await SB.from('departments').insert({name:n}); if(error) return fail(error); await load(); render(); toast('Added.','ok')};
@@ -2959,7 +2960,9 @@ const garCount=code=>garIndex()[code]||{opening:0,received:0,s:{}};
 const resolveCngCode=code=>{ const t=String(code||'').trim().toUpperCase(); return (DB.garudaItems||[]).some(x=>x.code===t); };
 // live stock for an item: Opening (imported) + Received (minted QR) − Issued (out of store)
 const garStock=code=>{ const e=garCount(code), s=e.s;
-  const issued=(s.issued||0)+(s.allotted||0)+(s.consumed||0);
+  // out of store = issued, allotted, consumed, AND returned (old part back, not new stock) and
+  // replaced (retired sticker; its replacement carries the unit) — otherwise each exchange adds +1
+  const issued=(s.issued||0)+(s.allotted||0)+(s.consumed||0)+(s.returned||0)+(s.replaced||0);
   return {opening:e.opening,received:e.received,issued,total:e.opening+e.received,remaining:e.opening+e.received-issued}; };
 const garTile=(label,val)=>'<div class="card pad" style="padding:13px"><div class="hint" style="font-size:11px;letter-spacing:.05em;text-transform:uppercase">'+esc(label)+'</div><div style="font-size:24px;font-weight:800;margin-top:4px">'+esc(val)+'</div></div>';
 const garField=(label,val)=>'<div style="padding:10px 12px;border:1px solid var(--line);border-radius:8px"><div class="hint" style="font-size:10.5px;letter-spacing:.04em;text-transform:uppercase">'+esc(label)+'</div><div style="margin-top:3px;font-weight:600">'+esc(val||'—')+'</div></div>';
@@ -3167,7 +3170,6 @@ function garItems(){
   if(garudaItemSel) return garItemDetail(garudaItemSel);
   const items=DB.garudaItems||[], tags=DB.garudaTags||[], q=garudaItemQ.trim().toLowerCase();
   const inStoreOf=code=>garCount(code).s.in_store||0;
-  const issuedOf=code=>garCount(code).s.issued||0;
   const totStore=tags.filter(t=>t.status==='in_store').length, totIssued=tags.filter(t=>t.status==='issued').length;
   const outTypes=items.filter(i=>inStoreOf(i.code)===0).length;
   const types=[...new Set(items.map(i=>i.type).filter(Boolean))].sort();
@@ -3582,9 +3584,6 @@ async function cngTagPanel(code){
       else if(a==='replace') cngReplaceDialog(t,cl); });
       $$('[data-goto]',mv).forEach(b=>b.onclick=()=>{ const c=b.dataset.goto; cl(); setTimeout(()=>cngTagPanel(c),0); }); }});
 }
-async function cngDo(fn,args,close){ busy(true);
-  try{ await rpc(fn,args); if(close)close(); await cngReload(); toast('Updated.','ok'); }
-  catch(e){ fail(e); } finally{ busy(false); } }
 function cngIssueDialog(t,parentClose){
   modal({title:'Issue '+t.id,
     body:'<p class="hint" style="margin-top:0">Issue this QR from the store.</p>'+
@@ -3647,34 +3646,10 @@ function cngReplaceDialog(t,parentClose){
       catch(e){ busy(false); $('#rp-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
 }
 /* load a QR renderer on demand (no change to index.html) */
-let _qrLibP=null;
 function ensureQR(){ if(window.QRCode) return Promise.resolve();
   return loadScriptChain('QRCode',['./qrcode.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js',
     'https://cdn.jsdelivr.net/npm/qrcodejs2@0.0.2/qrcode.min.js']); }
-function qrLotDialog(lotId){
-  const lot=(DB.garudaLots||[]).find(l=>l.id===lotId), tags=(DB.garudaTags||[]).filter(t=>t.lot_id===lotId);
-  if(!tags.length) return toast('No QR codes for this line.','bad');
-  modal({title:'QR codes — '+(lot?lot.item_code:''),
-    body:'<div class="hint" style="margin:0 0 10px">'+tags.length+' sticker'+(tags.length>1?'s':'')+(lot&&lot.item_name?' · '+esc(lot.item_name):'')+'. Scan from the screen, or print.</div>'+
-      '<div id="qr-grid" class="row" style="gap:12px;flex-wrap:wrap;justify-content:center"></div>',
-    footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="qr-print">Print</button>',
-    onOpen:(mv,cl)=>{ const grid=$('#qr-grid',mv); const printCells=[];
-      ensureQR().then(()=>{ tags.forEach(t=>{ const cell=document.createElement('div'); cell.className='qr-cell';
-          cell.style.cssText='text-align:center;padding:8px;border:1px solid var(--line);border-radius:8px';
-          const box=document.createElement('div'); cell.appendChild(box);
-          try{ new QRCode(box,{text:garTagUrl(t.id),width:118,height:118,correctLevel:QRCode.CorrectLevel.M}); }catch(e){}
-          const cap=document.createElement('div'); cap.className='num'; cap.style.cssText='margin-top:6px;font-size:12px;font-weight:600'; cap.textContent=t.id; cell.appendChild(cap);
-          grid.appendChild(cell);
-          let durl=''; try{ const cv=box.querySelector('canvas'); durl=cv?cv.toDataURL('image/png'):((box.querySelector('img')||{}).src||''); }catch(e){}
-          printCells.push('<div class="qr-cell"><img src="'+durl+'"><div>'+esc(t.id)+'</div></div>'); }); })
-        .catch(()=>{ grid.innerHTML='<p class="hint">Could not load the QR renderer — check the connection and reopen.</p>'; });
-      if($('#qr-print',mv)) $('#qr-print',mv).onclick=()=>{ if(!printCells.length) return toast('QR codes are still rendering — try again in a second.','bad');
-        const w=window.open('','_blank'); if(!w) return toast('Allow pop-ups to print.','bad');
-        w.document.write('<html><head><title>QR codes</title><style>body{font-family:sans-serif;display:flex;flex-wrap:wrap;gap:12px;padding:12px}.qr-cell{text-align:center;border:1px solid #ccc;border-radius:8px;padding:8px}.qr-cell img{width:118px;height:118px}.qr-cell div{font-size:12px;margin-top:6px;font-weight:600}</style></head><body>'+printCells.join('')+'</body></html>');
-        w.document.close(); setTimeout(()=>{ try{ w.print(); }catch(e){} },500); };
-    }});
-}
 
 /* a plain picker for files that are read in the browser and never stored */
 function localPicker(mount,label,onFile){
@@ -3946,26 +3921,6 @@ function gpCard(g,acts){
     gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+'</div></div>';
 }
 /* gateman console card — the two approval selfies shown side by side, live */
-function gpGateCard(g){
-  const req=user(g.requesterId), hod=g.hodId?user(g.hodId):null, hr=g.hrId?user(g.hrId):null;
-  const label=g.status==='out'?'Record return &amp; close':(g.kind==='official'?'Sign out (records time)':'Approve &amp; close');
-  const thumb=(path,cap,sub)=>'<div class="gp-th"><div class="gp-th-img'+(path?'':' gp-th-empty')+'" data-selfiethumb="'+esc(path||'')+'" data-slabel="'+esc(cap)+'">'+
-      (path?'<span class="spin"></span>':'<span class="gp-th-none">not signed yet</span>')+'</div>'+
-      '<div class="gp-th-cap"><b>'+esc(cap)+'</b>'+(sub?'<div class="hint">'+esc(sub)+'</div>':'')+'</div></div>';
-  return '<div class="card gp-card"><div class="row" style="padding:13px 16px;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)">'+
-    '<div style="min-width:0"><b>'+esc(g.name||req.name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
-    '<div class="hint">'+esc(gpKindLabel(g))+(g.dept?' · '+esc(g.dept):'')+' · '+esc(fmtDT(g.createdAt))+'</div></div>'+
-    '<span style="margin-left:auto">'+gpTag(g)+'</span></div>'+
-    '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:10px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
-    '<div class="gp-thumbs">'+
-      thumb(g.reqSelfie,'Requester',req.name)+
-      thumb(g.hodSelfie,'HOD approved',hod?hod.name+' · '+fmtDT(g.hodAt):'')+
-      thumb(g.hrSelfie,'HR approved',hr?hr.name+' · '+fmtDT(g.hrAt):'')+
-    '</div>'+
-    '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" data-gate="'+g.id+'">'+label+'</button></div>'+
-    (g.status==='out'?'<div class="hint" style="margin-top:7px">Out since '+esc(fmtDT(g.outAt))+'</div>':'')+
-    '</div></div>';
-}
 /* ---- photo data-transfer: each gate photo is downloaded at most ONCE per session
    (not on every screen refresh), and lists use a ~10 KB thumbnail instead of the
    full photo. Passes from before thumbnails existed fall back to the full photo. ---- */
@@ -4239,7 +4194,7 @@ function wireGate(v){
       onOpen:(mv,cl)=>{$('#gd-do',mv).onclick=async()=>{ busy(true);
         try{ await rpc('gp_delete',{p_id:g.id});
           const ps=[g.reqSelfie,g.hodSelfie,g.hrSelfie].filter(Boolean);
-          if(ps.length){ try{ await SB.storage.from('documents').remove(ps) }catch(_){} }   // best-effort; 7-day sweep catches the rest
+          if(ps.length){ try{ await removeObjects(ps) }catch(_){} }   // best-effort; removeObjects also drops the .t.jpg thumbnails (item 15)
           await load(); cl(); toast('Pass deleted.','ok'); render(); }
         catch(e){ busy(false); cl(); fail(e); }finally{ busy(false); } }}}); });
   $$('[data-gate]',v).forEach(b=>b.onclick=async()=>{ const g=DB.passes.find(x=>x.id===b.dataset.gate); if(!g) return;
@@ -4394,11 +4349,9 @@ function wireGpReport(v){
    ALDS PO / WO fixed flows (Stage 2 UI)
    ============================================================ */
 const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':h==='WO'?'ALDS WO (Work order)':h==='CNG'?'CNG (Indent)':h;
-const flowNorm=s=>String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
 const flowLive=f=>f.steps.find(s=>s.status==='pending');
 const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
 // a flow's first approval group = the division's Indent / Work Order approvers
-const flowFirstApprovers=f=>{const s=(f.steps||[]).filter(x=>x.action==='approve').sort((a,b)=>a.pos-b.pos)[0]; return s?s.actors:[]};
 // the raiser's HOD = the person the raiser reports to. Only they may escalate past CMD,
 // and only on OLD flows whose step is still marked escalatable (new flows have no escalation).
 const flowRaiserHod=f=>(user(f.requesterId)||{}).managerId||null;
@@ -4418,7 +4371,6 @@ const flowTaggedToMe=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return fa
   return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
 const flowAwaitingMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
   return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
-const flowNeedsMyReply=flowTaggedToMe;   // kept name for existing callers
 const flowMyTurn=()=>DB.flows.filter(f=>f.status==='running'&&(flowActionableByMe(f)||flowCanEscalate(f)));
 const flowTagged=()=>DB.flows.filter(f=>f.status==='running'&&flowTaggedToMe(f));
 const flowAwaitingReply=()=>DB.flows.filter(f=>f.status==='running'&&flowAwaitingMyReply(f));
@@ -4541,7 +4493,7 @@ function flowStepRow(f,s){
   meta+=flowCommentThread(s);
   // item 7: the people on this step, the raiser (and admins) can attach a file at ANY stage of a running flow
   const canAttach=f.status==='running'&&(s.actors.indexOf(ME.id)>-1||f.requesterId===ME.id||ME.admin||ME.owner);
-  const attachBtn=canAttach?'<button class="btn ghost sm" data-fattach="'+s.id+'" style="padding:2px 9px">'+(isSiteStep(s)?'📷 Add site photos':'📎 Attach a file')+'</button>':'';
+  const attachBtn=canAttach?'<button class="btn ghost sm" data-fattach="'+s.id+'" style="padding:2px 9px">'+((isSiteStep(s)&&f.department!=='CNG')?'📷 Add site photos':'📎 Attach a file')+'</button>':'';
   // item 14: photos tagged with a station are shown grouped by station, each labelled with its date
   const tagged=s.files.filter(fl=>fl.station), plain=s.files.filter(fl=>!fl.station);
   let sitePhotos='';
@@ -4759,7 +4711,7 @@ function siteTagItems(list,meta){
 }
 /* item 7: attach supporting documents to ANY step (step's people, raiser, admins) */
 function flowAttachDialog(stepId){
-  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; const site=isSiteStep(s), meta={};
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s; const local={files:[]}; const site=isSiteStep(s)&&x.f.department!=='CNG', meta={};   // CNG GRN uses item photos, not per-station site tags
   modal({title:site?'Add site photos':'Attach a file',
     body:'<p style="margin-top:0">'+(site?'Add photos to <b>'+esc(s.label)+'</b> — each one with its station and date.':'Attach supporting documents to <b>'+esc(s.label)+'</b>.')+' Everyone who can see this flow will see them on this step.</p>'+
       '<div style="margin-top:8px"><div id="fat-files"></div></div><div id="fat-tags" style="margin-top:8px"></div>'+
