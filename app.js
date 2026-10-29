@@ -1908,22 +1908,15 @@ async function flowRaiseSubmit(note){
   const files=filesPayload(draft.files).concat(filesPayload(draft.support));
   const run=async()=>{
     busy(true);
-    let id=null;
-    // 1) create the flow. If this fails, nothing was made — show the error and stop.
-    try{ id=await rpc('flow_create',{p_head:head,p_div:div,p_title:title.trim(),p_fields:f}); }
-    catch(e){ busy(false); return fail(e); }
-    // 2) the flow now exists with step 1 ("Raise…") pending on YOUR desk. Make sure it gets
-    //    signed, or send you to sign it — never claim success unless it signed, and never lose it.
     try{
-      await load();
-      let flow=DB.flows.find(x=>x.id===id);
-      if(!flow){ try{ await loadFlowsSome([id]); }catch(_){} flow=DB.flows.find(x=>x.id===id); }   // brand-new flow may not be in the sliced load yet
-      const step1=flow&&flow.steps.find(s=>s.status==='pending'&&s.actors.indexOf(ME.id)>-1);
-      if(!step1){ draft=null; busy(false); toast('Request created — open it and tap “Submit & sign” to send step 1.','bad'); return go({name:'flowdetail',id}); }
-      await rpc('flow_act',{p_step:step1.id,p_kind:'act',p_remark:'',p_pin:flowCall._pin,p_files:files,p_datetime:null,p_data:null});
-      await load();
-      draft=null; busy(false); toast((cng?'CNG':'ALDS '+head)+' created and signed at step 1.','ok'); go({name:'flowdetail',id});
-    }catch(e){ busy(false); fail(e); draft=null; toast('Created, but step 1 was not signed — open it and tap “Submit & sign”.','bad'); go({name:'flowdetail',id}); }
+      // ONE atomic server call (flow_raise, migration 88): it creates the flow AND signs
+      // step 1 ("Raise …") in a single transaction, with the raiser's PIN + the ERP file.
+      // If anything fails, nothing is created — so "Raise …" can never be left pending on
+      // the person who raised it, whatever the network does.
+      const id=await rpc('flow_raise',{p_head:head,p_div:div,p_title:title.trim(),p_fields:f,p_pin:flowCall._pin,p_files:files});
+      await load(); draft=null; busy(false);
+      toast((cng?'CNG':'ALDS '+head)+' created and signed at step 1.','ok'); go({name:'flowdetail',id});
+    }catch(e){ busy(false); fail(e); }
   };
   flowPinThen(run);
 }
@@ -4696,7 +4689,7 @@ function flowSidePanel(f){
     body+='</div>'+(s.cmdDual?'<p class="hint" style="margin-top:12px"><b>Approve</b> signs for you and the file still goes to the CMD desk. <b>Approve as CMD</b> signs for you and clears the CMD desk in one go, so the file moves straight on.</p>':'<p class="hint" style="margin-top:12px">The document cannot be changed from here. Ask the requester for more, or reject it and have it reissued.</p>')+'</div>';
     return body;
   }
-  if(canEsc) return '<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:6px">With '+esc(withWho)+'. As a division approver you can escalate it past CMD.</p><button class="btn hold" data-fesc="'+s.id+'" style="margin-top:12px;width:100%">Escalate past CMD</button></div>';
+  if(canEsc) return '<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:6px">With '+esc(withWho)+'. As the raiser\'s HOD you can escalate it past CMD.</p><button class="btn hold" data-fesc="'+s.id+'" style="margin-top:12px;width:100%">Escalate past CMD</button></div>';
   return '<div class="card pad"><h3>With '+esc(withWho)+'</h3><p class="hint" style="margin-top:6px">Current step: <b>'+esc(s.label)+'</b>. You can watch its progress on the left.</p></div>';
 }
 function wireFlowDetail(v){
