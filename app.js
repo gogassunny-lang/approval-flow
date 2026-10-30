@@ -613,13 +613,18 @@ async function parseCngPO(blob){
   const no=grab(L,/Order\s*No\.?\s*:?\s*([A-Z0-9][A-Z0-9\-\/]{3,})/i); if(no) out.po_no=no;
   const ordLine=findLine(L,/Order\s*No\.?/i); if(ordLine){ const d=(ordLine.text.match(/Date\s*:?\s*(\d{2}-\d{2}-\d{4})/i)||[])[1]; if(d) out.po_date=toISO(d); }
   const iSup=L.findIndex(l=>/Details\s+of\s+Supplier/i.test(l.text));
-  if(iSup>-1){ for(let k=iSup+1;k<Math.min(iSup+4,L.length);k++){ const t=(L[k].text||'').trim(); if(t&&!/^(State|GSTIN|PAN|Contact|Billing)/i.test(t)){ out.vendor=t; break; } } }
+  if(iSup>-1){ for(let k=iSup+1;k<Math.min(iSup+4,L.length);k++){ const t=cutRight((L[k].text||'').trim()); if(t&&!/^(State|GSTIN|PAN|Contact|Billing)/i.test(t)){ out.vendor=t; break; } } }
   const fp=grab(L,/File\/Project\s*:?\s*(.+)$/i)||'';
   out.site=((fp.match(/\b(\d{3,4})\b/)||[])[1])||(grab(L,/CNG\s*SITE\s*[:#]?\s*(\d{3,4})/i)||'');
-  // line rows: "<sr> <description> <qty>.000 <UNIT> <rate> <amount> ..."
-  for(const l of L){ const m=(l.text||'').match(/^\s*(\d{1,3})\s+(.+?)\s+([\d,]+\.\d{2,3})\s+([A-Za-z]{2,4})\s+([\d,]+\.\d{2})/);
-    if(m){ const qty=parseFloat(m[3].replace(/,/g,'')), unit=m[4].toUpperCase(), rate=m[5].replace(/,/g,''), desc=m[2].replace(/\s+/g,' ').trim();
-      if(qty>0 && /^(NOS|SET|PCS|KG|MTR|LTR|UNIT|NO|EA)$/i.test(unit) && desc.length>1) out.lines.push({desc:desc,qty:qty,unit:unit,rate:rate}); } }
+  // line rows: "<sr> <description> <qty>.000 <UNIT> <rate> <amount> ..." — a long description carries on
+  // in the line(s) right below (e.g. "ACTUATOR SINGLE ACTIVE TYPE" + "1/2\" INCH"), until Remark / HSN / Department
+  const rowRe=/^\s*(\d{1,3})\s+(.+?)\s+([\d,]+\.\d{2,3})\s+([A-Za-z]{2,4})\s+([\d,]+\.\d{2})/,
+        stopRe=/^\s*(Remark|HSN|SAC|Department|MAKE|Total|Sr\.?\b|No\.|Terms|Note|Amount|Grand|Sub|Details|Confidence|Building)/i;
+  for(let i=0;i<L.length;i++){ const m=(L[i].text||'').match(rowRe); if(!m) continue;
+    const qty=parseFloat(m[3].replace(/,/g,'')), unit=m[4].toUpperCase(), rate=m[5].replace(/,/g,''); let desc=m[2].replace(/\s+/g,' ').trim();
+    for(let k=i+1;k<Math.min(i+4,L.length);k++){ const t=(L[k].text||'').trim(); if(!t||stopRe.test(t)||rowRe.test(t)||/^[\d,.\s]+$/.test(t)) break;
+      const more=t.replace(/(\s+[\d,]+\.\d{2})+\s*$/,'').trim(); if(!more||more.length>60) break; desc+=' '+more; }
+    if(qty>0 && /^(NOS|SET|PCS|KG|MTR|LTR|UNIT|NO|EA)$/i.test(unit) && desc.length>1) out.lines.push({desc:desc,qty:qty,unit:unit,rate:rate}); }
   return out;
 }
 /* CNG GRN — the GRN PDF DOES carry the ERP code in-line, e.g. "BATTERY 12V 100AH(S01051644)",
@@ -3113,9 +3118,48 @@ async function loadDock(force){
   if(ROUTE.name==='garuda') render();
 }
 // best-effort match of a PDF line description to a master item (same rule as the flow step)
-function garMatchItem(desc){ const d=String(desc||'').toLowerCase(), list=DB.garudaItems||[]; if(!d) return null;
-  let hit=list.find(i=>i.name&&(d.includes(i.name.toLowerCase())||(i.name.toLowerCase().length>3&&i.name.toLowerCase().includes(d)))); if(hit) return hit;
-  const words=d.split(/[^a-z0-9]+/).filter(w=>w.length>3); return list.find(i=>{const n=(i.name||'').toLowerCase(); return words.some(w=>n.includes(w));})||null; }
+/* Matching a PO description to the CNG item master — shared by the SETU PO step, Garuda "Raise PO" and the
+   mass upload. Scored word-by-word: sizes (1/4, 1/2, 3/4, 0.065) must match exactly, spelling slips
+   (FERULE/FERRULE, GUAGE/GAUGE) and plurals still count. Only a sure match (≥0.7) is filled in; a weaker
+   one is offered as "closest" for the preparer to tap; nothing is guessed silently. */
+const PO_UNITS=['NOS','SET','PCS','KG','MTR','LTR','UNIT'];
+const garNorm=s=>String(s||'').toUpperCase().replace(/½/g,' 1/2 ').replace(/¼/g,' 1/4 ').replace(/¾/g,' 3/4 ').replace(/[“”″"]|''|´´|``/g,' ').replace(/\bINCH(ES)?\b/g,' ').replace(/[^A-Z0-9\/.]+/g,' ').replace(/\s+/g,' ').trim();
+const garToks=s=>garNorm(s).split(' ').filter(Boolean).map(t=>t.replace(/\.$/,'')).filter(t=>t&&!/^(AND|FOR|OF|THE|WITH)$/.test(t));
+const garLev=(a,b)=>{ if(a===b) return 0; const m=a.length,n=b.length; if(Math.abs(m-n)>2) return 9; let p=[...Array(n+1).keys()]; for(let i=1;i<=m;i++){ const c=[i]; for(let j=1;j<=n;j++) c[j]=Math.min(p[j]+1,c[j-1]+1,p[j-1]+(a[i-1]===b[j-1]?0:1)); p=c; } return p[n]; };
+const garSim=(a,b)=>{ if(a===b) return 1; if(/\d/.test(a)||/\d/.test(b)) return 0;
+  const sa=a.replace(/S$/,''), sb=b.replace(/S$/,''); if(sa===sb&&sa.length>2) return 0.95;
+  const L=Math.min(a.length,b.length); if(L>=5&&garLev(a,b)<=(L>=8?2:1)) return 0.85;
+  if(L>=4&&(a.startsWith(b)||b.startsWith(a))) return 0.7; return 0; };
+const garW=t=>/\d/.test(t)?1.6:t.length<=2?0.35:1;
+const garIsSize=t=>/^\d+(\/\d+)?(\.\d+)?$/.test(t);
+function garScore(A,B){
+  if(!A.length||!B.length) return 0; if(A.join('')===B.join('')) return 1;   // same words (spacing ignored: MOTHER BOARD = MOTHERBOARD)
+  const used=new Set(); let got=0,tot=0;
+  for(const a of A){ const w=garW(a); tot+=w; let best=0,bi=-1; B.forEach((b,i)=>{ if(used.has(i)) return; const x=garSim(a,b); if(x>best){best=x;bi=i;} }); if(best>0){ got+=w*best; used.add(bi); } }
+  let btot=0,bgot=0; B.forEach((b,i)=>{ const w=garW(b); btot+=w; if(used.has(i)) bgot+=w; });
+  let sc=0.6*(got/tot)+0.4*(btot?bgot/btot:0);
+  const sa=A.filter(garIsSize), sb=B.filter(garIsSize); if(sa.some(t=>!sb.includes(t))||sb.some(t=>!sa.includes(t))) sc=Math.min(sc,0.6);
+  return sc;
+}
+let _garTok={src:null,map:null};
+function garItemToks(list){ if(_garTok.src!==list){ _garTok={src:list,map:new Map(list.map(i=>[i.code,garToks(i.name)]))}; } return _garTok.map; }
+function garMatchItem(desc){ const list=DB.garudaItems||[], A=garToks(desc); if(!A.length||!list.length) return null;
+  const toks=garItemToks(list); let best=null,bs=0;
+  for(const it of list){ const B=toks.get(it.code); if(!B||!B.length) continue; const x=garScore(A,B); if(x>bs||(x===bs&&best&&(it.name||'').length<(best.name||'').length)){bs=x;best=it;} }
+  return best&&bs>=0.45?{item:best,score:bs,sure:bs>=0.7}:null; }
+const garPoLineFrom=l=>{ const m=garMatchItem(l.desc); return {code:m&&m.sure?m.item.code:'',name:m&&m.sure?m.item.name:'',desc:l.desc||'',qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||'',hint:m&&!m.sure?m.item:null}; };
+/* one PO line as a labelled box: Item (master) · Order qty · Unit (drop-down) · Rate. cls = gpl | gm | po */
+function garPoLineHtml(cls,ln,at,dl,dis,canDel){
+  const d=dis?' disabled':'', u=String(ln.unit||'NOS').toUpperCase(), units=PO_UNITS.includes(u)?PO_UNITS:PO_UNITS.concat([u]);
+  return '<div class="po-line" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
+    (ln.desc?'<div class="hint" style="margin-bottom:4px"><b>From PDF:</b> '+esc(ln.desc)+(ln.code?'':ln.hint?' <span class="tag t-hold" style="font-size:10px">not sure</span> closest: <button type="button" class="btn ghost sm '+cls+'-pick"'+at+' data-code="'+esc(ln.hint.code)+'" style="padding:0 6px">'+esc(ln.hint.name)+' ('+esc(ln.hint.code)+')</button>':' <span class="tag t-hold" style="font-size:10px">pick the item</span>')+'</div>':'')+
+    '<div><label style="font-size:12px;margin:0 0 2px">Item (CNG master)</label><input class="'+cls+'-code"'+at+' type="text" list="'+dl+'" placeholder="code or name" value="'+esc(ln.code)+'"'+d+'><div class="'+cls+'-name hint"'+at+' style="font-size:12px;min-height:16px">'+esc(ln.name||'—')+'</div></div>'+
+    '<div class="row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:4px">'+
+    '<div><label style="font-size:12px;margin:0 0 2px">Order qty</label><input class="'+cls+'-qty"'+at+' type="number" min="0" step="any" value="'+esc(ln.qty)+'" style="width:96px"'+d+'></div>'+
+    '<div><label style="font-size:12px;margin:0 0 2px">Unit</label><select class="'+cls+'-unit"'+at+' style="width:92px"'+d+'>'+units.map(x=>'<option'+(x===u?' selected':'')+'>'+x+'</option>').join('')+'</select></div>'+
+    '<div><label style="font-size:12px;margin:0 0 2px">Rate</label><input class="'+cls+'-rate"'+at+' type="text" inputmode="decimal" placeholder="per unit" value="'+esc(ln.rate)+'" style="width:110px"'+d+'></div>'+
+    (canDel?'<button class="btn ghost sm '+cls+'-del"'+at+' type="button" style="color:var(--stop);padding:0 8px;margin-bottom:8px">×</button>':'')+'</div></div>';
+}
 const garResolveItem=v=>{ const t=String(v||'').trim().toUpperCase(); return (DB.garudaItems||[]).find(x=>x.code===t)||null; };
 const garStageTag=r=>'<span class="tag '+(r.status==='completed'?'t-ok':r.status==='running'?'t-prog':'t-wait')+'">'+esc(r.stage||r.status||'')+'</span>'+(r.direct?' <span class="tag t-hold" style="font-size:10px">DIRECT</span>':'');
 const garDockHead=(title,sub)=>'<div style="margin-bottom:10px"><h3 style="margin:0">'+esc(title)+'</h3><p class="hint" style="margin:4px 0 0;max-width:720px">'+sub+'</p></div>';
@@ -3181,7 +3225,7 @@ function garApprovals(){
 const garPoLine=()=>({code:'',name:'',desc:'',qty:'',unit:'NOS',rate:''});
 function garPoDialog(pre){
   pre=pre||{};
-  const po={no:pre.po_no||'',vendor:pre.vendor||'',expected:pre.expected_date||'',lines:(pre.lines&&pre.lines.length?pre.lines:[garPoLine()]),pdf:pre.pdf||[]};
+  const po={no:pre.po_no||'',date:pre.po_date||'',vendor:pre.vendor||'',expected:pre.expected_date||'',lines:(pre.lines&&pre.lines.length?pre.lines:[garPoLine()]),pdf:pre.pdf||[]};
   modal({title:'Raise a purchase order',
     body:'<p class="hint" style="margin-top:0">Raising a PO makes no QR codes — those come at GRN, for the quantity received. Pick each item from the CNG master so the ERP code is set.</p>'+
       '<div class="grid g3" style="gap:10px"><div><label for="gp-no">PO number *</label><input id="gp-no" type="text" value="'+esc(po.no)+'" placeholder="PD26…"></div><div><label for="gp-ven">Vendor *</label><input id="gp-ven" type="text" value="'+esc(po.vendor)+'"></div><div><label for="gp-exp">Expected date</label><input id="gp-exp" type="date" value="'+esc(po.expected)+'"></div></div>'+
@@ -3194,27 +3238,20 @@ function garPoDialog(pre){
       fillDl(); if(!garudaLoaded) loadGaruda().then(fillDl);
       $('#gp-no',mv).oninput=e=>po.no=e.target.value; $('#gp-ven',mv).oninput=e=>po.vendor=e.target.value; $('#gp-exp',mv).oninput=e=>po.expected=e.target.value;
       const paint=()=>{ const box=$('#gp-lines',mv); if(!box) return;
-        box.innerHTML=po.lines.map((ln,i)=>'<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
-          (ln.desc?'<div class="hint" style="margin-bottom:4px">From PDF: '+esc(ln.desc)+'</div>':'')+
-          '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">'+
-          '<input class="gpl-code" data-i="'+i+'" list="gp-items-dl" placeholder="Item (code or name)" value="'+esc(ln.code)+'" style="flex:2;min-width:140px">'+
-          '<span class="gpl-name hint" data-i="'+i+'" style="flex:1;min-width:110px;font-size:12px">'+esc(ln.name||'—')+'</span>'+
-          '<input class="gpl-qty" data-i="'+i+'" type="number" min="0" placeholder="Order qty" value="'+esc(ln.qty)+'" style="width:100px">'+
-          '<input class="gpl-unit" data-i="'+i+'" placeholder="Unit" value="'+esc(ln.unit||'NOS')+'" style="width:64px">'+
-          '<input class="gpl-rate" data-i="'+i+'" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:88px">'+
-          (po.lines.length>1?'<button class="btn ghost sm gpl-del" data-i="'+i+'" type="button" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div></div>').join('');
+        box.innerHTML=po.lines.map((ln,i)=>garPoLineHtml('gpl',ln,' data-i="'+i+'"','gp-items-dl',false,po.lines.length>1)).join('');
         $$('.gpl-code',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, r=garResolveItem(e.target.value); po.lines[i].code=e.target.value.trim(); po.lines[i].name=r?r.name:''; const nm=box.querySelector('.gpl-name[data-i="'+i+'"]'); if(nm) nm.textContent=r?r.name:'—'; });
+        $$('.gpl-pick',box).forEach(b=>b.onclick=()=>{ const ln=po.lines[+b.dataset.i]; ln.code=b.dataset.code; const r=garResolveItem(ln.code); ln.name=r?r.name:''; ln.hint=null; paint(); });
         $$('.gpl-qty',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].qty=e.target.value);
-        $$('.gpl-unit',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].unit=e.target.value);
+        $$('.gpl-unit',box).forEach(el=>el.onchange=el.oninput=e=>po.lines[+e.target.dataset.i].unit=e.target.value);
         $$('.gpl-rate',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].rate=e.target.value);
         $$('.gpl-del',box).forEach(el=>el.onclick=()=>{ po.lines.splice(+el.dataset.i,1); paint(); }); };
       paint();
       $('#gp-add',mv).onclick=()=>{ po.lines.push(garPoLine()); paint(); };
       uploader($('#gp-pdf',mv),po.pdf,{mode:'support',single:true,label:'Attach the PO PDF',onFile:async(file)=>{ if(!/\.pdf$/i.test(file.name)) return; const note=$('#gp-note',mv); if(note) note.textContent='Reading the PO…';
         try{ const r=await parseCngPO(file);
-          if(r.po_no){ po.no=r.po_no; $('#gp-no',mv).value=r.po_no; }
+          if(r.po_no){ po.no=r.po_no; $('#gp-no',mv).value=r.po_no; } if(r.po_date) po.date=r.po_date;
           if(r.vendor){ po.vendor=r.vendor; $('#gp-ven',mv).value=r.vendor; }
-          if(r.lines&&r.lines.length){ po.lines=r.lines.map(l=>{ const m=garMatchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }); paint(); }
+          if(r.lines&&r.lines.length){ po.lines=r.lines.map(garPoLineFrom); paint(); }
           if(note) note.textContent=(r.lines&&r.lines.length?r.lines.length+' line(s) read — ':'Fields read — ')+'check each item is picked from the CNG master.'; }
         catch(e){ if(note) note.textContent='Could not read that PDF — enter the lines by hand.'; } }});
       $('#gp-go',mv).onclick=()=>{ const err=$('#gp-err',mv); err.textContent='';
@@ -3225,7 +3262,7 @@ function garPoDialog(pre){
         if(!po.vendor.trim()) return err.textContent='Enter the vendor.';
         if(!lines.length) return err.textContent='Add at least one item (from the CNG master) with an order quantity.';
         cl(); flowPinThen(async()=>{ busy(true);
-          try{ await rpc('cng_direct_po_raise',{p_po:{po_no:po.no.trim(),vendor:po.vendor.trim(),po_date:'',expected_date:po.expected||'',site:''},p_lines:lines,p_pin:flowCall._pin,p_files:filesPayload(po.pdf)});
+          try{ await rpc('cng_direct_po_raise',{p_po:{po_no:po.no.trim(),vendor:po.vendor.trim(),po_date:po.date||'',expected_date:po.expected||'',site:''},p_lines:lines,p_pin:flowCall._pin,p_files:filesPayload(po.pdf)});
             toast('PO '+po.no.trim()+' raised — it is now under Inward & GRN.','ok'); garudaTab='inward'; paintNav(); await loadDock(true); try{ await load(['flows','notif']); }catch(_){} render(); }
           catch(e){ fail(e); } finally{ busy(false); } }); };
     }});
@@ -3245,12 +3282,11 @@ function garPoMassDialog(){
           '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap"><b style="flex:1;min-width:160px">'+esc(p.file.name)+'</b><span class="tag gm-status '+(p.done?'t-ok':ready(p)?'t-prog':'t-hold')+'" data-i="'+i+'">'+(p.done?'raised':ready(p)?'ready':'needs attention')+'</span></div>'+
           (p.err?'<div class="hint" style="color:var(--stop);margin-top:4px">'+esc(p.err)+'</div>':'')+
           '<div class="grid g3" style="gap:8px;margin-top:6px"><input class="gm-no" data-i="'+i+'" placeholder="PO number *" value="'+esc(p.po_no)+'"'+(p.done?' disabled':'')+'><input class="gm-ven" data-i="'+i+'" placeholder="Vendor *" value="'+esc(p.vendor)+'"'+(p.done?' disabled':'')+'><input class="gm-exp" data-i="'+i+'" type="date" value="'+esc(p.expected)+'"'+(p.done?' disabled':'')+'></div>'+
-          p.lines.map((l,j)=>'<div class="row" style="gap:6px;align-items:center;flex-wrap:wrap;margin-top:6px">'+(l.desc?'<span class="hint" style="flex-basis:100%">From PDF: '+esc(l.desc)+'</span>':'')+
-            '<input class="gm-code" data-i="'+i+'" data-j="'+j+'" list="gm-items-dl" placeholder="Item code" value="'+esc(l.code)+'" style="flex:2;min-width:130px"'+(p.done?' disabled':'')+'><span class="gm-name hint" data-i="'+i+'" data-j="'+j+'" style="flex:1;min-width:100px;font-size:12px">'+esc(l.name||'—')+'</span>'+
-            '<input class="gm-qty" data-i="'+i+'" data-j="'+j+'" type="number" min="0" placeholder="Qty" value="'+esc(l.qty)+'" style="width:80px"'+(p.done?' disabled':'')+'><input class="gm-unit" data-i="'+i+'" data-j="'+j+'" value="'+esc(l.unit||'NOS')+'" style="width:60px"'+(p.done?' disabled':'')+'><input class="gm-rate" data-i="'+i+'" data-j="'+j+'" placeholder="Rate" value="'+esc(l.rate)+'" style="width:80px"'+(p.done?' disabled':'')+'></div>').join('')+
+          p.lines.map((l,j)=>garPoLineHtml('gm',l,' data-i="'+i+'" data-j="'+j+'"','gm-items-dl',p.done,false)).join('')+
           (p.done?'':'<button class="btn sm gm-addline" data-i="'+i+'" type="button" style="margin-top:6px">+ Add item</button>')+'</div>').join('');
-        const on=(cls,fn)=>$$('.'+cls,box).forEach(el=>el.oninput=e=>{ const p=state.items[+el.dataset.i], l=el.dataset.j!==undefined?p.lines[+el.dataset.j]:null; fn(p,l,e.target.value,el); const go=$('#gm-go',mv); if(go) go.disabled=!state.items.some(ready);
+        const on=(cls,fn)=>$$('.'+cls,box).forEach(el=>el.onchange=el.oninput=e=>{ const p=state.items[+el.dataset.i], l=el.dataset.j!==undefined?p.lines[+el.dataset.j]:null; fn(p,l,e.target.value,el); const go=$('#gm-go',mv); if(go) go.disabled=!state.items.some(ready);
           const st=box.querySelector('.gm-status[data-i="'+el.dataset.i+'"]'); if(st&&!p.done){ const r=ready(p); st.textContent=r?'ready':'needs attention'; st.className='tag gm-status '+(r?'t-prog':'t-hold'); } });
+        $$('.gm-pick',box).forEach(b=>b.onclick=()=>{ const ln=state.items[+b.dataset.i].lines[+b.dataset.j]; ln.code=b.dataset.code; const r=garResolveItem(ln.code); ln.name=r?r.name:''; ln.hint=null; paint(); });
         on('gm-no',(p,l,v)=>p.po_no=v); on('gm-ven',(p,l,v)=>p.vendor=v); on('gm-exp',(p,l,v)=>p.expected=v);
         on('gm-code',(p,l,v,el)=>{ l.code=v.trim(); const r=garResolveItem(v); l.name=r?r.name:''; const nm=box.querySelector('.gm-name[data-i="'+el.dataset.i+'"][data-j="'+el.dataset.j+'"]'); if(nm) nm.textContent=r?r.name:'—'; });
         on('gm-qty',(p,l,v)=>l.qty=v); on('gm-unit',(p,l,v)=>l.unit=v); on('gm-rate',(p,l,v)=>l.rate=v);
@@ -3260,7 +3296,7 @@ function garPoMassDialog(){
         if(state.items.length+files.length>10) return err.textContent='Up to 10 PDFs at a time — '+state.items.length+' already added.';
         busy(true);
         for(const f of files){ const p={file:f,po_no:'',vendor:'',expected:'',lines:[],err:'',done:false};
-          try{ const r=await parseCngPO(f); p.po_no=r.po_no||''; p.vendor=r.vendor||''; p.lines=(r.lines||[]).map(l=>{ const m=garMatchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }); }
+          try{ const r=await parseCngPO(f); p.po_no=r.po_no||''; p.po_date=r.po_date||''; p.vendor=r.vendor||''; p.lines=(r.lines||[]).map(garPoLineFrom); }
           catch(x){ p.err='Could not read this PDF — fill it in by hand.'; }
           if(!p.lines.length) p.lines=[garPoLine()];
           state.items.push(p); }
@@ -3269,7 +3305,7 @@ function garPoMassDialog(){
         flowPinThen(async()=>{ busy(true); let ok=0;
           for(const p of todo){
             try{ let files=[]; try{ const up=await uploadFile(p.file,'primary'); files=[{name:up.name,path:up.path,size:up.size,kind:'primary'}]; }catch(_){}
-              await rpc('cng_direct_po_raise',{p_po:{po_no:p.po_no.trim(),vendor:p.vendor.trim(),po_date:'',expected_date:p.expected||'',site:''},p_lines:p.lines.map(l=>({item_code:String(l.code).trim().toUpperCase(),unit:l.unit||'NOS',order_qty:Number(l.qty),rate:l.rate||''})),p_pin:flowCall._pin,p_files:files});
+              await rpc('cng_direct_po_raise',{p_po:{po_no:p.po_no.trim(),vendor:p.vendor.trim(),po_date:p.po_date||'',expected_date:p.expected||'',site:''},p_lines:p.lines.map(l=>({item_code:String(l.code).trim().toUpperCase(),unit:l.unit||'NOS',order_qty:Number(l.qty),rate:l.rate||''})),p_pin:flowCall._pin,p_files:files});
               p.done=true; p.err=''; ok++; }
             catch(e){ p.err=((e&&e.message)||'Could not raise.').replace(/^.*?: /,''); } }
           busy(false); paint(); toast(ok+' PO'+(ok===1?'':'s')+' raised.',ok?'ok':'bad'); await loadDock(true); try{ await load(['flows','notif']); }catch(_){} }); };
@@ -3341,7 +3377,7 @@ async function garPoUpload(file){
   busy(true);
   try{ const r=await parseCngPO(file); let up=[]; try{ up=[await uploadFile(file,'primary')]; }catch(_){}
     busy(false);
-    garPoDialog({po_no:r.po_no,vendor:r.vendor,lines:(r.lines||[]).map(l=>{ const m=garMatchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }),pdf:up}); }
+    garPoDialog({po_no:r.po_no,po_date:r.po_date,vendor:r.vendor,lines:(r.lines||[]).map(garPoLineFrom),pdf:up}); }
   catch(e){ busy(false); fail(e); }
 }
 
@@ -5356,22 +5392,12 @@ function flowAct(stepId,kind){
         const venI=$('#po-ven',mv); if(venI) venI.oninput=e=>po.vendor=e.target.value;
         const expI=$('#po-exp',mv); if(expI) expI.oninput=e=>po.expected=e.target.value;
         const resolve=v=>{ const t=String(v||'').trim().toUpperCase(); return its().find(x=>x.code===t)||null; };
-        const matchItem=desc=>{ const d=String(desc||'').toLowerCase(), list=its(); if(!d) return null;
-          let hit=list.find(i=>i.name&&(d.includes(i.name.toLowerCase())||(i.name.toLowerCase().length>3&&i.name.toLowerCase().includes(d)))); if(hit) return hit;
-          const words=d.split(/[^a-z0-9]+/).filter(w=>w.length>3); return list.find(i=>{const n=(i.name||'').toLowerCase(); return words.some(w=>n.includes(w));})||null; };
         const paintPO=()=>{ const box=$('#po-lines',mv); if(!box) return;
-          box.innerHTML=po.lines.map((ln,i)=>'<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
-            (ln.desc?'<div class="hint" style="margin-bottom:4px">From PDF: '+esc(ln.desc)+'</div>':'')+
-            '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap">'+
-            '<input class="po-code" data-i="'+i+'" list="cng-po-items-dl" placeholder="Item (code)" value="'+esc(ln.code)+'" style="flex:2;min-width:140px">'+
-            '<span class="po-name hint" data-i="'+i+'" style="flex:1;min-width:110px;font-size:12px">'+esc(ln.name||'—')+'</span>'+
-            '<input class="po-qty" data-i="'+i+'" type="number" min="0" placeholder="Order qty" value="'+esc(ln.qty)+'" style="width:100px">'+
-            '<input class="po-unit" data-i="'+i+'" placeholder="Unit" value="'+esc(ln.unit||'NOS')+'" style="width:64px">'+
-            '<input class="po-rate" data-i="'+i+'" placeholder="Rate" value="'+esc(ln.rate)+'" style="width:88px">'+
-            (po.lines.length>1?'<button class="btn ghost sm po-del" data-i="'+i+'" style="color:var(--stop);padding:0 8px">×</button>':'')+'</div></div>').join('');
+          box.innerHTML=po.lines.map((ln,i)=>garPoLineHtml('po',ln,' data-i="'+i+'"','cng-po-items-dl',false,po.lines.length>1)).join('');
           $$('.po-code',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, r=resolve(e.target.value); po.lines[i].code=e.target.value.trim(); po.lines[i].name=r?r.name:''; const nm=box.querySelector('.po-name[data-i="'+i+'"]'); if(nm) nm.textContent=r?r.name:'—'; });
+          $$('.po-pick',box).forEach(b=>b.onclick=()=>{ const ln=po.lines[+b.dataset.i]; ln.code=b.dataset.code; const r=resolve(ln.code); ln.name=r?r.name:''; ln.hint=null; paintPO(); });
           $$('.po-qty',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].qty=e.target.value);
-          $$('.po-unit',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].unit=e.target.value);
+          $$('.po-unit',box).forEach(el=>el.onchange=el.oninput=e=>po.lines[+e.target.dataset.i].unit=e.target.value);
           $$('.po-rate',box).forEach(el=>el.oninput=e=>po.lines[+e.target.dataset.i].rate=e.target.value);
           $$('.po-del',box).forEach(el=>el.onclick=()=>{ po.lines.splice(+el.dataset.i,1); paintPO(); }); };
         paintPO();
@@ -5381,7 +5407,7 @@ function flowAct(stepId,kind){
           try{ const r=await parseCngPO(file);
             if(r.po_no){ po.no=r.po_no; if(noI) noI.value=r.po_no; }
             if(r.vendor){ po.vendor=r.vendor; if(venI) venI.value=r.vendor; }
-            if(r.lines&&r.lines.length){ po.lines=r.lines.map(l=>{ const m=matchItem(l.desc); return {code:m?m.code:'',name:m?m.name:'',desc:l.desc,qty:l.qty||'',unit:l.unit||'NOS',rate:l.rate||''}; }); paintPO(); }
+            if(r.lines&&r.lines.length){ po.lines=r.lines.map(garPoLineFrom); paintPO(); }
             if(note) note.textContent=(r.lines&&r.lines.length?r.lines.length+' line(s) read — ':'Fields read — ')+'check each item is picked from the CNG master, then Continue.'+(r.site?' (PO site '+esc(r.site)+')':''); }
           catch(e){ if(note) note.textContent='Could not read that PDF automatically — enter the PO lines by hand.'; } };
       }
