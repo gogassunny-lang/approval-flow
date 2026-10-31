@@ -4238,13 +4238,24 @@ function gpTimeline(g){
   if(g.status==='rejected') h+='<div class="banner bad" style="margin-top:8px"><div><b>Declined by '+esc(user(g.rejectBy).name)+'</b>'+(g.rejectReason?'<div class="hint" style="color:var(--stop)">'+esc(g.rejectReason)+'</div>':'')+'</div></div>';
   h+='</div>'; return h;
 }
+/* owner-only row on every pass card: change the pass type in place, or remove the pass.
+   Wired once for the whole app (gpOwnerWire) so it works in every list and dialog. */
+const gpOwnerActs=g=>ME&&ME.owner?'<div class="row" style="gap:9px;margin-top:10px;flex-wrap:wrap;align-items:center"><span class="hint">Super admin:</span>'+
+  (g.status==='rejected'?'':'<button class="btn sm" data-gpkind="'+esc(g.id)+'" type="button">Change type</button>')+
+  '<button class="btn bad sm" data-gpadel="'+esc(g.id)+'" type="button">Delete</button></div>':'';
+let _gpOwnerWired=false;
+function gpOwnerWire(){ if(_gpOwnerWired) return; _gpOwnerWired=true;
+  document.addEventListener('click',e=>{ const b=e.target.closest&&e.target.closest('[data-gpkind],[data-gpadel]'); if(!b||!ME||!ME.owner) return;
+    e.preventDefault(); e.stopPropagation();
+    const g=DB.passes.find(x=>x.id===(b.dataset.gpkind||b.dataset.gpadel)); if(!g) return toast('That pass is not loaded — refresh and try again.','bad');
+    if(b.dataset.gpkind) gpAdminChangeKind(g); else gpAdminDelete(g); }, true); }
 function gpCard(g,acts){
   return '<div class="card gp-card"><div class="row" style="padding:13px 16px;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)">'+
     '<div style="min-width:0"><b>'+esc(g.name||user(g.requesterId).name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
     '<div class="hint">'+esc(gpKindLabel(g))+' · '+esc(fmtD(g.createdAt))+(g.dept?' · '+esc(g.dept):'')+'</div></div>'+
     '<span style="margin-left:auto">'+gpTag(g)+'</span></div>'+
     '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:8px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
-    gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+'</div></div>';
+    gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+gpOwnerActs(g)+'</div></div>';
 }
 /* gateman console card — the two approval selfies shown side by side, live */
 /* ---- photo data-transfer: each gate photo is downloaded at most ONCE per session
@@ -4403,7 +4414,7 @@ function gateCreateAndMine(){
     '<div style="padding:12px 16px" class="hint">Walk up to whichever HOD is free, pick them here and hand over your phone for their selfie. Then do the same with HR.</div>'+
     '<div class="gp-list">'+next.map(g=>gpCard(g,
       '<button class="btn primary" data-getsign="'+g.id+'">'+(g.status==='pending_hod'?'Get HOD sign':'Get HR sign')+'</button>'+
-      '<button class="btn bad" data-del="'+g.id+'">Delete</button>')).join('')+'</div></div>';
+      (ME.owner?'':'<button class="btn bad" data-del="'+g.id+'">Delete</button>'))).join('')+'</div></div>';
 
   // passes I approved (as HOD or HR)
   const signed=gpSignedByMe();
@@ -4448,7 +4459,7 @@ function gateCreateAndMine(){
   else h+=months.map(m=>{const label=new Date(m+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
     const list=groups[m], early=list.filter(g=>g.kind==='early'&&g.status!=='rejected').length;
     return '<div class="gp-month"><div class="gp-month-h">'+esc(label)+' <span class="hint">· '+list.length+' pass'+(list.length!==1?'es':'')+(early?' · '+early+' early-going':'')+'</span></div>'+
-      '<div class="gp-list" style="padding:0 12px 12px">'+list.map(g=>gpCard(g,gpCanDelete(g)?'<button class="btn bad" data-del="'+g.id+'">Delete</button>':null)).join('')+'</div></div>'}).join('');
+      '<div class="gp-list" style="padding:0 12px 12px">'+list.map(g=>gpCard(g,gpCanDelete(g)&&!ME.owner?'<button class="btn bad" data-del="'+g.id+'">Delete</button>':null)).join('')+'</div></div>'}).join('');
   h+='</div>';
   return h;
 }
@@ -4575,16 +4586,49 @@ function gpViewPass(g){
       row('HR signed',g.hrAt?fmtDT(g.hrAt):'')+row('Out',g.outAt?fmtDT(g.outAt):'')+row('Return',g.returnAt?fmtDT(g.returnAt):'')+
       ((g.reqSelfie||g.hodSelfie||g.hrSelfie)?'<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:12px">'+selBtn(g.reqSelfie,'Requester')+selBtn(g.hodSelfie,'HOD')+selBtn(g.hrSelfie,'HR')+'</div><div class="hint" style="margin-top:6px">Selfies auto-expire 7 days after the pass.</div>':'')+
       '</div>',
-    footer:(ME.owner?'<button class="btn bad" id="gp-admindel" style="margin-right:auto">Delete (duplicate)</button>':'')+'<button class="btn" data-x>Close</button>',
+    footer:(ME.owner?(g.status==='rejected'?'':'<button class="btn" id="gp-adminkind">Change type</button>')+'<button class="btn bad" id="gp-admindel" style="margin-right:auto">Delete</button>':'')+'<button class="btn" data-x>Close</button>',
     onOpen:(mv,cl)=>{ $$('[data-selfieview]',mv).forEach(b=>b.onclick=()=>showSelfie(b.dataset.selfieview,b.dataset.slabel));
-      if($('#gp-admindel',mv)) $('#gp-admindel',mv).onclick=()=>gpAdminDelete(g,cl); }});
+      if($('#gp-admindel',mv)) $('#gp-admindel',mv).onclick=()=>gpAdminDelete(g,cl);
+      if($('#gp-adminkind',mv)) $('#gp-adminkind',mv).onclick=()=>gpAdminChangeKind(g,cl); }});
+}
+/* owner-only: change a pass's type in place — selfies, signatures and times stay.
+   Nothing is shown anywhere about the change (migration 97 keeps an owner-only row). */
+function gpAdminChangeKind(g,closeParent){
+  if(!ME.owner) return;
+  const who=g.name||user(g.requesterId).name, month=String(g.passDate||'').slice(0,7)||DAY().slice(0,7);
+  const earlyUsed=DB.passes.filter(x=>x.id!==g.id&&x.requesterId===g.requesterId&&x.kind==='early'&&x.status!=='rejected'&&String(x.passDate||'').slice(0,7)===month).length;
+  const st={kind:g.kind,half:g.halfPart||''};
+  modal({title:'Change pass type · '+g.ref,
+    body:'<p class="hint" style="margin-top:0"><b>'+esc(who)+'</b> · now <b>'+esc(gpKindLabel(g))+'</b> · '+esc((GP_STATUS[g.status]||['',g.status])[1])+'<br>The selfies, signatures and times stay as they are — only the type changes.</p>'+
+      '<label>New type</label><div id="gk-kinds" class="row" style="gap:8px;flex-wrap:wrap;margin-top:4px">'+GP_KINDS.map(k=>'<button class="btn'+(st.kind===k[0]?' primary':'')+'" data-k="'+k[0]+'" type="button">'+esc(k[1])+'</button>').join('')+'</div>'+
+      '<div id="gk-half" style="margin-top:10px;'+(st.kind==='halfday'?'':'display:none')+'"><label>Which half</label><div class="row" style="gap:8px;margin-top:4px"><button class="btn'+(st.half==='1st'?' primary':'')+'" data-h="1st" type="button">1st half</button><button class="btn'+(st.half==='2nd'?' primary':'')+'" data-h="2nd" type="button">2nd half</button></div></div>'+
+      '<div id="gk-note" class="hint" style="margin-top:10px"></div><div class="hint" style="margin-top:6px">The pass number follows the type (GP-O… becomes GP-E…), so nothing shows it was ever different.</div>'+
+      '<div id="gk-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="gk-go">Change</button>',
+    onOpen:(mv,cl)=>{
+      const paint=()=>{ $$('#gk-kinds [data-k]',mv).forEach(b=>b.classList.toggle('primary',b.dataset.k===st.kind));
+        $('#gk-half',mv).style.display=st.kind==='halfday'?'':'none'; $$('#gk-half [data-h]',mv).forEach(b=>b.classList.toggle('primary',b.dataset.h===st.half));
+        const n=$('#gk-note',mv);
+        n.innerHTML=st.kind==='early'?('Early goings this month for '+esc(who)+': <b>'+earlyUsed+' of 2</b> already'+(earlyUsed>=2?' — <b style="color:var(--stop)">this would be number '+(earlyUsed+1)+'</b>':'')+'.')
+          :st.kind==='official'&&g.status==='closed'?'This pass is already closed; it will stay closed as an Outpass.'
+          :g.status==='out'&&st.kind!=='official'?'The person is marked out on this Outpass. As '+esc(gpKindLabel(st.kind))+' no return is expected, so the pass closes.':''; };
+      paint();
+      $$('#gk-kinds [data-k]',mv).forEach(b=>b.onclick=()=>{ st.kind=b.dataset.k; if(st.kind!=='halfday') st.half=''; paint(); });
+      $$('#gk-half [data-h]',mv).forEach(b=>b.onclick=()=>{ st.half=b.dataset.h; paint(); });
+      $('#gk-go',mv).onclick=async()=>{ const err=$('#gk-err',mv); err.textContent='';
+        if(st.kind==='halfday'&&!st.half) return err.textContent='Say which half: 1st or 2nd.';
+        if(st.kind===g.kind&&(st.half||'')===(g.halfPart||'')) return err.textContent='The pass is already of that type.';
+        $('#gk-go',mv).disabled=true;
+        try{ await rpc('gp_admin_change_kind',{p_id:g.id,p_kind:st.kind,p_half:st.kind==='halfday'?st.half:null}); cl(); if(closeParent) closeParent();
+          await load(['gate']); toast('Pass changed to '+gpKindLabel({kind:st.kind,halfPart:st.half})+'.','ok'); render(); }
+        catch(e){ $('#gk-go',mv).disabled=false; err.textContent=(e&&e.message||'').replace(/^.*?: /,'')||'Could not change the pass.'; } }; }});
 }
 /* owner-only: remove one gate pass (a duplicate or wrong entry); logged permanently */
 function gpAdminDelete(g,closeParent){
   if(!ME.owner) return;
   modal({title:'Delete this gate pass',
-    body:'<p style="margin-top:0">Permanently remove <b>'+esc(g.ref)+'</b> — '+esc(g.name||user(g.requesterId).name)+' · '+esc(gpKindLabel(g))+'. Use this only for a <b>duplicate or wrong entry</b>; it is recorded.</p>'+
-      '<div style="margin-top:10px"><label for="gad-why">Reason</label><input id="gad-why" type="text" placeholder="e.g. duplicate of GP-E1040"></div>'+
+    body:'<p style="margin-top:0">Permanently remove <b>'+esc(g.ref)+'</b> — '+esc(g.name||user(g.requesterId).name)+' · '+esc(gpKindLabel(g))+'. '+(g.kind==='early'?'It will no longer count as an early going for the month. ':'')+'The selfies are deleted with it.</p>'+
+      '<div style="margin-top:10px"><label for="gad-why">Reason (for your own record only)</label><input id="gad-why" type="text" placeholder="e.g. did not go / duplicate of GP-E1040"></div>'+
       '<div id="gad-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="gad-go">Delete</button>',
     onOpen:(mv,cl)=>{ $('#gad-go',mv).onclick=async()=>{ const why=$('#gad-why',mv).value.trim();
@@ -5592,6 +5636,7 @@ document.title=CONFIG.APP_NAME||'SETU';
     if(session&&!ME&&!recovering) enter(session);
   });
   const _pubTag=(location.hash.match(/^#g\/(.+)$/)||[])[1];   // a scanned public QR link
+  gpOwnerWire();   // owner's Change type / Delete buttons on gate-pass cards (one listener for the whole app)
   const {data:{session}}=await SB.auth.getSession();
   if(session) enter(session);
   else if(_pubTag){ hideSplash(); garPublicView(decodeURIComponent(_pubTag)); }
