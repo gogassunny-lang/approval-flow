@@ -431,6 +431,19 @@ const gpHalfLabel=h=>h==='1st'?'1st half':h==='2nd'?'2nd half':'';
 const gpKindLabel=g=>{const isObj=(typeof g!=='string');const k=isObj?g.kind:g;const m=GP_KINDS.find(x=>x[0]===k);let lbl=m?m[1]:k;
   if(isObj&&k==='halfday'&&g.halfPart) lbl+=' ('+gpHalfLabel(g.halfPart)+')'; return lbl;};
 const gpEarlyUsed=()=>{const m=DAY().slice(0,7);return gpMine().filter(g=>g.kind==='early'&&g.status!=='rejected'&&String(g.passDate).slice(0,7)===m).length};
+/* month counters shown on every pass: "3rd outpass this month" + the person's month totals.
+   Declined passes never count. Computed from the passes loaded on this phone — complete for the
+   requester (so exact at signing time, which happens on the requester's phone) and for everyone
+   who sees all passes (owner, admin, HR head, gateman). */
+const gpMonthKey=g=>String(g.passDate||'').slice(0,7)||new Date(g.createdAt).toISOString().slice(0,7);
+const gpMonthPasses=(reqId,mk)=>DB.passes.filter(x=>x.requesterId===reqId&&x.status!=='rejected'&&gpMonthKey(x)===mk);
+const ordinal=n=>{ const r=n%100; return n+((r>=11&&r<=13)?'th':(['th','st','nd','rd'][n%10]||'th')); };
+const gpSeqOf=g=>{ if(g.status==='rejected') return 0; const same=gpMonthPasses(g.requesterId,gpMonthKey(g)).filter(x=>x.kind===g.kind).sort((a,b)=>(a.createdAt-b.createdAt)||String(a.id).localeCompare(String(b.id)));
+  const i=same.findIndex(x=>x.id===g.id); return i<0?same.length+1:i+1; };
+const gpMonthLine=(reqId,mk)=>{ const l=gpMonthPasses(reqId,mk), n=k=>l.filter(x=>x.kind===k).length;
+  return 'Early going <b>'+n('early')+'</b>/2 · Half day <b>'+n('halfday')+'</b> · Outpass <b>'+n('official')+'</b>'; };
+const gpMonthName=mk=>new Date(mk+'-01').toLocaleDateString('en-IN',{month:'long'});
+const gpSeqChip=g=>g.status==='rejected'?'<span class="hint">declined — not counted</span>':'<b>'+ordinal(gpSeqOf(g))+'</b> '+esc(gpKindLabel(g.kind).toLowerCase())+' this month';
 const GP_STATUS={pending_hod:['t-wait','With HOD'],pending_hr:['t-wait','With HR'],pending_gate:['t-prog','Cleared — show the gate'],out:['t-hold','Out'],closed:['t-ok','Closed'],rejected:['t-bad','Declined']};
 const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span class="tag '+x[0]+'">'+x[1]+'</span>'};
 
@@ -4252,7 +4265,8 @@ function gpOwnerWire(){ if(_gpOwnerWired) return; _gpOwnerWired=true;
 function gpCard(g,acts){
   return '<div class="card gp-card"><div class="row" style="padding:13px 16px;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--line)">'+
     '<div style="min-width:0"><b>'+esc(g.name||user(g.requesterId).name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
-    '<div class="hint">'+esc(gpKindLabel(g))+' · '+esc(fmtD(g.createdAt))+(g.dept?' · '+esc(g.dept):'')+'</div></div>'+
+    '<div class="hint">'+esc(gpKindLabel(g))+' · '+esc(fmtD(g.createdAt))+(g.dept?' · '+esc(g.dept):'')+'</div>'+
+    '<div class="hint">'+gpSeqChip(g)+' · '+esc(gpMonthName(gpMonthKey(g)))+': '+gpMonthLine(g.requesterId,gpMonthKey(g))+'</div></div>'+
     '<span style="margin-left:auto">'+gpTag(g)+'</span></div>'+
     '<div style="padding:12px 16px"><div class="hint" style="margin-bottom:8px"><b>Purpose:</b> '+esc(g.purpose||'—')+'</div>'+
     gpTimeline(g)+(acts?'<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap">'+acts+'</div>':'')+gpOwnerActs(g)+'</div></div>';
@@ -4321,6 +4335,7 @@ function getSignFlow(g){
   function renderHandoff(mv,cl){
     const b=$('#gs-body',mv);
     b.innerHTML='<div class="gp-picked"><div class="av sm">'+inits(picked.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(picked.name)+'</b><div class="hint">'+esc(picked.role||'')+(picked.dept?' · '+esc(picked.dept):'')+'</div></div><button class="btn sm" data-change>Change</button></div>'+
+      '<div class="card pad" style="margin-top:12px;padding:10px 12px"><div><b>'+esc(g.name||user(g.requesterId).name)+'</b> — '+gpSeqChip(g)+'</div><div class="hint" style="margin-top:3px">'+esc(gpMonthName(gpMonthKey(g)))+' so far: '+gpMonthLine(g.requesterId,gpMonthKey(g))+'</div></div>'+
       '<div class="banner live" style="margin-top:12px"><div>Hand the phone to <b>'+esc(picked.name)+'</b>. They approve by taking a live selfie, or decline. The time is recorded automatically.</div></div>'+
       '<div class="row" style="gap:9px;margin-top:12px"><button class="btn primary" id="gs-selfie">Take '+role+' selfie</button><button class="btn bad" id="gs-decline">Decline</button></div>'+
       '<div id="gs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>';
@@ -4352,7 +4367,7 @@ function gpRow(g,opts){
   const timeline=g.outAt?(g.returnAt?('out '+fmtT(g.outAt)+' → '+fmtT(g.returnAt)+' ('+gpDuration(g.outAt,g.returnAt)+')'):('out '+fmtT(g.outAt))):'';
   return '<tr data-gp="'+g.id+'"><td class="gp-rth">'+th+'</td>'+
     '<td style="min-width:0"><b>'+esc(g.name||user(g.requesterId).name)+'</b> <span class="hint">'+esc(g.ref)+'</span>'+
-      '<div class="hint">'+esc(gpKindLabel(g))+(g.dept?' · '+esc(g.dept):'')+' · '+esc(fmtDT(g.createdAt))+'</div>'+
+      '<div class="hint">'+esc(gpKindLabel(g))+(g.dept?' · '+esc(g.dept):'')+' · '+esc(fmtDT(g.createdAt))+' · '+gpSeqChip(g)+'</div>'+
       (appr?'<div class="hint">'+appr+'</div>':'')+(timeline?'<div class="hint">'+esc(timeline)+'</div>':'')+'</td>'+
     '<td class="meta">'+gpTag(g)+'</td>'+
     (opts.action?'<td class="meta">'+opts.action+'</td>':'')+'</tr>';
@@ -4457,8 +4472,8 @@ function gateCreateAndMine(){
   h+='<div class="card" style="margin-top:16px"><div class="row" style="padding:13px 16px;border-bottom:1px solid var(--line)"><h3>My passes</h3><span class="hint" style="margin-left:auto">'+mine.length+' in all · '+openMine.length+' open</span></div>';
   if(!mine.length) h+='<div class="empty" style="padding:26px 16px"><h3>No passes yet</h3><p class="hint">Create one above.</p></div>';
   else h+=months.map(m=>{const label=new Date(m+'-01').toLocaleDateString('en-IN',{month:'long',year:'numeric'});
-    const list=groups[m], early=list.filter(g=>g.kind==='early'&&g.status!=='rejected').length;
-    return '<div class="gp-month"><div class="gp-month-h">'+esc(label)+' <span class="hint">· '+list.length+' pass'+(list.length!==1?'es':'')+(early?' · '+early+' early-going':'')+'</span></div>'+
+    const list=groups[m];
+    return '<div class="gp-month"><div class="gp-month-h">'+esc(label)+' <span class="hint">· '+list.length+' pass'+(list.length!==1?'es':'')+' · '+gpMonthLine(ME.id,m)+'</span></div>'+
       '<div class="gp-list" style="padding:0 12px 12px">'+list.map(g=>gpCard(g,gpCanDelete(g)&&!ME.owner?'<button class="btn bad" data-del="'+g.id+'">Delete</button>':null)).join('')+'</div></div>'}).join('');
   h+='</div>';
   return h;
@@ -4546,12 +4561,14 @@ function wireGate(v){
    ============================================================ */
 let gpRepFilter=null, gpRepDrill=null;   // gpRepDrill={by,val} drills the entries list from a clicked bar/tile
 function gpRepDefaults(){ const to=DAY(); const d=new Date(); d.setDate(d.getDate()-29);
-  return {from:d.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),to:to,type:'all',dept:'all'}; }
-function gpRepData(){ const f=gpRepFilter;
+  return {from:d.toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'}),to:to,type:'all',dept:'all',q:''}; }
+function gpRepData(){ const f=gpRepFilter, q=(f.q||'').trim().toLowerCase();
   return DB.passes.filter(g=>{ const d=String(g.passDate||'').slice(0,10);
     if(f.from&&d<f.from) return false; if(f.to&&d>f.to) return false;
     if(f.type!=='all'&&g.kind!==f.type) return false;
-    if(f.dept!=='all'&&(g.dept||'')!==f.dept) return false; return true; }); }
+    if(f.dept!=='all'&&(g.dept||'')!==f.dept) return false;
+    if(q&&!((g.name||user(g.requesterId).name)+' '+(g.employeeId||'')+' '+(g.ref||'')+' '+(g.dept||'')).toLowerCase().includes(q)) return false;
+    return true; }); }
 const gpAgg=(rows,keyFn)=>{ const m={}; rows.forEach(g=>{const k=keyFn(g)||'—'; m[k]=(m[k]||0)+1}); return Object.entries(m).map(([label,value])=>({label,value})); };
 /* a bar chart whose rows can be clicked to drill the entries list. dim names the
    dimension (dept/type/status/day/person); each row's key is what a pass is matched on. */
@@ -4580,7 +4597,7 @@ function gpViewPass(g){
   modal({title:g.ref+' · '+gpKindLabel(g),
     body:'<div>'+
       row('Name',g.name||user(g.requesterId).name)+row('Employee ID',g.employeeId)+row('Department',g.dept)+
-      row('Type',gpKindLabel(g))+row('Purpose',g.purpose)+row('Status',(GP_STATUS[g.status]||['',g.status])[1])+
+      row('Type',gpKindLabel(g))+'<div class="row" style="justify-content:space-between;gap:14px;padding:5px 0;border-bottom:1px solid var(--line)"><span class="hint">This month</span><b style="text-align:right">'+gpSeqChip(g)+'<div class="hint" style="font-weight:400">'+gpMonthLine(g.requesterId,gpMonthKey(g))+'</div></b></div>'+row('Purpose',g.purpose)+row('Status',(GP_STATUS[g.status]||['',g.status])[1])+
       row('HOD',g.hodId?user(g.hodId).name:'')+row('HR',g.hrId?user(g.hrId).name:'')+row('Cleared by',g.gateBy?user(g.gateBy).name:'')+
       row('Pass date',g.passDate)+row('Created',g.createdAt?fmtDT(g.createdAt):'')+row('HOD signed',g.hodAt?fmtDT(g.hodAt):'')+
       row('HR signed',g.hrAt?fmtDT(g.hrAt):'')+row('Out',g.outAt?fmtDT(g.outAt):'')+row('Return',g.returnAt?fmtDT(g.returnAt):'')+
@@ -4679,11 +4696,12 @@ function viewGpReport(){
     '<div><label for="gr-to">To</label><input type="date" id="gr-to" value="'+esc(f.to)+'"></div>'+
     '<div><label for="gr-type">Type</label><select id="gr-type"><option value="all">All types</option>'+GP_KINDS.map(k=>'<option value="'+k[0]+'" '+(f.type===k[0]?'selected':'')+'>'+esc(k[1])+'</option>').join('')+'</select></div>'+
     '<div><label for="gr-dept">Department</label><select id="gr-dept"><option value="all">All departments</option>'+depts.map(d=>'<option '+(f.dept===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
-    '</div><div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="gr-reset">Reset to last 30 days</button><button class="btn primary" id="gr-xlsx">Download Excel</button><button class="btn" id="gr-csv">Download CSV</button></div></div>';
+    '</div><div style="margin-top:10px"><label for="gr-q">Search</label><input type="search" id="gr-q" placeholder="Name, employee ID, pass number or department" value="'+esc(f.q||'')+'"></div>'+
+    '<div class="row" style="gap:9px;margin-top:12px;flex-wrap:wrap"><button class="btn" id="gr-reset">Reset to last 30 days</button><button class="btn primary" id="gr-xlsx">Download Excel</button><button class="btn" id="gr-csv">Download CSV</button></div></div>';
   return filters+'<div id="gpr-body">'+gpRepBody()+'</div>';
 }
 function gpToObj(g){ return {
-  Ref:g.ref, Type:gpKindLabel(g), Half:(g.kind==='halfday'?gpHalfLabel(g.halfPart):''), Name:g.name||user(g.requesterId).name, 'Employee ID':g.employeeId||'',
+  Ref:g.ref, Type:gpKindLabel(g), Half:(g.kind==='halfday'?gpHalfLabel(g.halfPart):''), 'No. this month':(g.status==='rejected'?'':gpSeqOf(g)), Name:g.name||user(g.requesterId).name, 'Employee ID':g.employeeId||'',
   Department:g.dept||'', Purpose:g.purpose||'', Status:(GP_STATUS[g.status]||['',g.status])[1],
   HOD:g.hodId?user(g.hodId).name:'', HR:g.hrId?user(g.hrId).name:'', 'Cleared by':g.gateBy?user(g.gateBy).name:'',
   Created:fmtDT(g.createdAt),'HOD signed':fmtDT(g.hodAt),'HR signed':fmtDT(g.hrAt),'Out':fmtDT(g.outAt),'Return':fmtDT(g.returnAt),'Pass date':g.passDate }; }
@@ -4708,6 +4726,7 @@ function wireGpReport(v){
   };
   const set=(id,key)=>{const el=$(id,v); if(el) el.onchange=()=>{ f[key]=el.value; gpRepDrill=null; paintBody(); };};
   set('#gr-from','from'); set('#gr-to','to'); set('#gr-type','type'); set('#gr-dept','dept');
+  const qi=$('#gr-q',v); if(qi) qi.oninput=()=>{ f.q=qi.value; gpRepDrill=null; paintBody(); };
   if($('#gr-reset',v)) $('#gr-reset',v).onclick=()=>{ gpRepFilter=gpRepDefaults(); gpRepDrill=null; render(); };
   if($('#gr-xlsx',v)) $('#gr-xlsx',v).onclick=()=>gpRepDownload('xlsx');
   if($('#gr-csv',v)) $('#gr-csv',v).onclick=()=>gpRepDownload('csv');
