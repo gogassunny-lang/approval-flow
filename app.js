@@ -3042,7 +3042,7 @@ function garTagFields(t){  // the full item-in-station detail card (image 1)
   const lot=(DB.garudaLots||[]).find(l=>l.id===t.lot_id)||{};
   const qty=(lot.accepted_qty!=null&&lot.accepted_qty!=='')?lot.accepted_qty+' NOS':'';
   return '<div class="grid g3" style="gap:8px">'+
-    garField('Item name',t.item_name)+garField('ERP code',t.item_code)+garField('Purchase order',t.po_no)+
+    garField('Item name',t.item_name)+garField('ERP code',t.item_code)+(garMachineType(t.item_code)?garField('Machine type',garMachineType(t.item_code)):'')+garField('Purchase order',t.po_no)+
     garField('GRN no',t.grn_no)+garField('GRN date',lot.grn_date)+garField('Vendor name',t.vendor)+
     garField('Qty',qty)+garField('Rate',t.rate?'₹'+t.rate:'')+garField('Invoice no',lot.invoice_no)+
     garField('Issue date',t.issued_at?String(t.issued_at).slice(0,10):'')+garField('Issue station no',t.station_no)+garField('Issued to',t.issued_to)+
@@ -3086,6 +3086,7 @@ function garTopBar(){
   const title=(GAR_NAV().find(c=>c[0]===garudaTab)||['','CNG Garuda'])[1];
   return '<div class="gar-head"><h2>'+esc(title)+'</h2>'+
       '<div class="gar-actions gar-mob"><button class="btn sm" id="g-scan">📷 Scan</button><button class="btn sm" id="gar-exit">← SETU</button></div></div>'+
+    '<button class="btn primary gar-fab" id="g-fab">📷 Scan</button>'+
     '<div class="gar-chips">'+GAR_NAV().map(c=>'<button data-garchip="'+c[0]+'" class="'+(garudaTab===c[0]?'on':'')+'">'+esc(c[1])+'</button>').join('')+'</div>';
 }
 function garDownloadReport(){
@@ -3247,7 +3248,7 @@ function garProcurement(){
   if(q) rows=rows.filter(r=>((r.po_no||'')+' '+(r.item_name||'')+' '+(r.item_code||'')+' '+(r.vendor||'')+' '+(r.ref||'')).toLowerCase().includes(q));
   html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap;align-items:center"><div><b>'+(garudaPoAll?'All purchase orders':'Raised today')+'</b><div class="hint">'+(garudaPoAll?'Every PO line on a CNG file, newest first.':'Only purchase orders raised today. Older ones are under View all.')+'</div></div><input id="gp-q" type="text" placeholder="Search PO, item, ERP or vendor" value="'+esc(garudaPoQ)+'" style="flex:1;min-width:200px"><button class="btn sm" id="gp-all">'+(garudaPoAll?'Today only':'View all')+'</button></div>'+
     '<table class="cards"><thead><tr><th>PO</th><th>Item</th><th>ERP</th><th>Vendor</th><th>In / ordered</th><th>Unit</th><th>Rate</th><th>Stage</th></tr></thead><tbody>'+
-    (rows.length?rows.map(r=>'<tr><td><b class="num">'+esc(r.po_no||'—')+'</b><div class="hint">'+esc(r.ref||'')+'</div></td><td>'+esc(r.item_name||'')+'</td><td class="num hint">'+esc(r.item_code||'')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.received)+' / '+garNum(r.ordered)+'</td><td class="hint">'+esc(r.unit||'')+'</td><td class="num hint">'+esc(r.rate||'—')+'</td><td>'+garStageTag(r)+'</td></tr>').join('')
+    (rows.length?rows.map(r=>'<tr><td><b class="num">'+esc(r.po_no||'—')+'</b><div class="hint">'+esc(r.ref||'')+'</div></td><td>'+esc(r.item_name||'')+'</td><td class="num hint">'+esc(r.item_code||'')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.received)+' / '+garNum(r.ordered)+(Number(r.received)>0&&Number(r.received)<Number(r.ordered)?'<div><span class="tag t-hold" style="font-size:10px">Partly received</span></div>':'')+'</td><td class="hint">'+esc(r.unit||'')+'</td><td class="num hint">'+esc(r.rate||'—')+'</td><td>'+garStageTag(r)+'</td></tr>').join('')
     :'<tr><td colspan="8"><div class="empty" style="padding:18px"><p class="hint">'+(garudaPoAll?'No purchase orders yet.':'No purchase order raised today.')+'</p></div></td></tr>')+'</tbody></table></div>';
   return html;
 }
@@ -3267,7 +3268,7 @@ function garInward(){
     '<table class="cards"><thead><tr><th>PO</th><th>Item</th><th>ERP</th><th>Vendor</th><th>In / ordered</th><th>Unit</th><th>GRN by</th></tr></thead><tbody>'+
     (order.length?order.map(id=>{ const g=byReq[id]; return g.map((r,i)=>'<tr data-grnreq="'+esc(r.request_id)+'" style="cursor:pointer">'+
         (i===0?'<td rowspan="'+g.length+'"><b class="num">'+esc(r.po_no||'—')+'</b><div class="hint">'+esc(r.ref||'')+(r.direct?' · Direct':'')+'</div><div class="hint">'+esc(fmtD(ts(r.raised_at)))+'</div></td>':'')+
-        '<td>'+esc(r.item_name||'')+'</td><td class="num hint">'+esc(r.item_code||'')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.received)+' / '+garNum(r.ordered)+'</td><td class="hint">'+esc(r.unit||'')+'</td>'+
+        '<td>'+esc(r.item_name||'')+'</td><td class="num hint">'+esc(r.item_code||'')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.received)+' / '+garNum(r.ordered)+(Number(r.received)>0&&Number(r.received)<Number(r.ordered)?'<div><span class="tag t-hold" style="font-size:10px">Partly received</span></div>':'')+'</td><td class="hint">'+esc(r.unit||'')+'</td>'+
         (i===0?'<td rowspan="'+g.length+'" class="hint">'+esc(r.taker||'—')+(r.can_take?'<div><span class="tag t-ok">tap to take the GRN</span></div>':'')+'</td>':'')+'</tr>').join(''); }).join('')
     :'<tr><td colspan="7"><div class="empty" style="padding:18px"><p class="hint">Nothing is waiting for a GRN.</p></div></td></tr>')+'</tbody></table></div>';
   const today=DAY(); let gr=garDock.grns||[]; if(!garudaGrnAll) gr=gr.filter(x=>istDay(x.taken_at)===today);
@@ -3278,12 +3279,12 @@ function garInward(){
 }
 /* ---- Approvals ---- */
 function garApprovals(){
-  let html=garDockHead('Approvals','GRNs waiting for approval — Bangalore first, then Rohit (HO). After the final approval the QR codes are generated and the items appear under Processed.');
+  let html=garDockHead('Approvals','GRNs waiting for approval — Bangalore first, then Rohit (HO). Tap a GRN to see every item, quantity and photo before you act. After the final approval the QR codes are generated and the items appear under Processed.');
   html+='<div class="row" style="gap:8px;margin-bottom:12px"><button class="btn sm" id="gd-refresh">↻ Refresh</button></div>';
   const st=garDockState(); if(st) return html+st;
   const rows=garDock.approvals||[];
   html+='<div class="card"><table class="cards"><thead><tr><th>File</th><th>PO · GRN</th><th>Vendor</th><th>Items</th><th>Step</th><th>With</th><th></th></tr></thead><tbody>'+
-    (rows.length?rows.map(r=>'<tr><td><b class="num">'+esc(r.ref||'')+'</b>'+(r.direct?' <span class="tag t-hold" style="font-size:10px">DIRECT</span>':'')+'<div class="hint">'+esc(r.raised_by||'')+' · '+esc(fmtD(ts(r.raised_at)))+'</div></td><td class="num hint">'+esc(r.po_no||'—')+'<br>'+esc(r.grn_no||'—')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.lines)+' line'+(Number(r.lines)===1?'':'s')+' · '+garNum(r.qty)+' pcs</td><td>'+esc(r.step_label||'')+(r.on_hold?'<div><span class="tag t-hold">On hold</span> <span class="hint">'+esc(r.hold_reason||'')+'</span></div>':'')+'</td><td class="hint">'+esc(r.approvers||'—')+'</td><td style="text-align:right">'+(r.mine?'<button class="btn sm primary" data-gact="'+esc(r.step_id)+'">Act</button>':'<span class="hint">not yours</span>')+'</td></tr>').join('')
+    (rows.length?rows.map(r=>'<tr data-grev="'+esc(r.step_id)+'" style="cursor:pointer"><td><b class="num">'+esc(r.ref||'')+'</b>'+(r.direct?' <span class="tag t-hold" style="font-size:10px">DIRECT</span>':'')+'<div class="hint">'+esc(r.raised_by||'')+' · '+esc(fmtD(ts(r.raised_at)))+'</div></td><td class="num hint">'+esc(r.po_no||'—')+'<br>'+esc(r.grn_no||'—')+'</td><td class="hint">'+esc(r.vendor||'—')+'</td><td class="num">'+garNum(r.lines)+' line'+(Number(r.lines)===1?'':'s')+' · '+garNum(r.qty)+' pcs</td><td>'+esc(r.step_label||'')+(r.on_hold?'<div><span class="tag t-hold">On hold</span> <span class="hint">'+esc(r.hold_reason||'')+'</span></div>':'')+'</td><td class="hint">'+esc(r.approvers||'—')+'</td><td style="text-align:right">'+(r.mine?'<button class="btn sm primary" data-gact="'+esc(r.step_id)+'">Review &amp; act</button>':'<button class="btn sm" data-gact="'+esc(r.step_id)+'">View</button>')+'</td></tr>').join('')
     :'<tr><td colspan="7"><div class="empty" style="padding:18px"><p class="hint">Nothing is waiting for approval.</p></div></td></tr>')+'</tbody></table></div>';
   return html;
 }
@@ -3386,12 +3387,13 @@ function garGrnDialog(reqId,pre){
     lines:src.map(r=>({po_line_id:r.po_line_id,item_code:r.item_code,item_name:r.item_name,unit:r.unit,rate:r.rate,ordered:Number(r.ordered)||0,remaining:Number(r.remaining)||0,take:'',photo:[]}))};
   (pre.lines||[]).forEach(rl=>{ const pl=g.lines.find(p=>p.item_code===rl.code&&!p.take); if(pl) pl.take=String(Math.min(rl.qty,pl.remaining)); });
   modal({title:'GRN — PO '+(po.po_no||po.ref),
-    body:'<p class="hint" style="margin-top:0">For each item, enter how many came in <b>now</b> (max = still open) and take a <b>photo of the material</b> — the photo box is under the item. One QR sticker is made per unit received, when the GRN is approved. A delivery can be partial — the rest stays open.</p>'+
+    body:'<div class="card pad" style="margin:0 0 12px;border-color:var(--indigo);padding:12px"><b>⬆ Upload GRN PDF</b> <span class="hint">— reads the GRN and fills the GRN / invoice numbers, dates and the quantity of each item</span><div id="gg-pdf" style="margin-top:8px"></div><div id="gg-note" class="hint" style="margin-top:6px"></div></div>'+
+      (src.some(r=>r.later)?'<div class="banner hold" style="margin-bottom:10px"><div><b>Later delivery on this PO.</b><div class="hint">'+src.map(r=>esc(r.item_name||r.item_code)+': '+garNum(r.received)+' of '+garNum(r.ordered)+' already received').join(' · ')+'. This GRN goes for its own approval (Bangalore → Rohit HO) and its QR codes are made when it is approved.</div></div></div>':'')+
+      '<p class="hint" style="margin-top:0">For each item, enter how many came in <b>now</b> (max = still open) and take a <b>photo of the material</b>. One QR sticker is made per unit received, when the GRN is approved. A delivery can be partial — the rest stays open.</p>'+
       '<div id="gg-lines"></div>'+
       '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label for="gg-no">GRN number *</label><input id="gg-no" value="'+esc(g.no)+'"></div><div><label for="gg-date">GRN date *</label><input id="gg-date" type="date" value="'+esc(g.date)+'"></div><div><label for="gg-inv">Invoice number *</label><input id="gg-inv" value="'+esc(g.invoice)+'"></div><div><label for="gg-invdate">Invoice date *</label><input id="gg-invdate" type="date" value="'+esc(g.invDate)+'"></div></div>'+
       '<div class="grid g2" style="gap:10px;margin-top:10px"><div><label>Invoice photo *</label><div id="gg-invphoto"></div></div><div><label>E-way bill photo <span class="hint">optional</span></label><div id="gg-ewayphoto"></div></div></div>'+
-      '<div style="margin-top:10px"><label>GRN PDF <span class="hint">optional — attaching it fills the fields</span></label><div id="gg-pdf"></div></div>'+
-      '<div id="gg-note" class="hint" style="margin-top:6px"></div><div id="gg-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+      '<div id="gg-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Back to list</button><button class="btn primary" id="gg-go">Update</button>',
     onOpen:(mv,cl)=>{
       const gi=(id,set)=>{ const el=$(id,mv); if(el) el.oninput=e=>set(e.target.value); };
@@ -3402,11 +3404,11 @@ function garGrnDialog(reqId,pre){
         box.innerHTML=g.lines.map((ln,i)=>'<div id="ggl-'+i+'" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-top:6px">'+
             '<div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1;min-width:120px">'+esc(ln.item_name||ln.item_code)+'</b><span class="hint num">'+esc(ln.item_code)+'</span><span class="tag '+(ln.remaining>0?'t-ok':'t-hold')+'">open '+ln.remaining+' / '+ln.ordered+' '+esc(ln.unit||'')+'</span></div>'+
             '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><label style="margin:0;font-size:12px" for="ggt-'+i+'">Take now</label><input id="ggt-'+i+'" class="gg-take" data-i="'+i+'" type="number" min="0" max="'+ln.remaining+'" value="'+esc(ln.take)+'" placeholder="'+ln.remaining+'" style="width:100px"><span class="hint">QR stickers: <b class="gg-qr" data-i="'+i+'">'+(Number(ln.take)||0)+'</b></span></div>'+
-            '<div style="margin-top:6px"><label style="font-size:12px">Material photo <span class="hint">needed for every item you take now</span></label><div id="ggp-'+i+'"></div></div></div>').join('');
+            '<div style="margin-top:6px"><label style="font-size:12px">Material photo * <span class="hint">needed for every item you take now</span></label><div id="ggp-'+i+'"></div></div></div>').join('');
         g.lines.forEach((ln,i)=>{ const m=$('#ggp-'+i,box); if(m) uploader(m,ln.photo,{mode:'support',single:true,label:'Take / attach the material photo'}); });
         $$('.gg-take',box).forEach(el=>el.oninput=e=>{ const i=+e.target.dataset.i, max=g.lines[i].remaining; let n=Number(e.target.value)||0; if(n>max){ n=max; e.target.value=max; } g.lines[i].take=e.target.value; const q=box.querySelector('.gg-qr[data-i="'+i+'"]'); if(q) q.textContent=n; }); };
       paint();
-      uploader($('#gg-pdf',mv),g.pdf,{mode:'support',single:true,label:'Attach the GRN PDF',onFile:async(file)=>{ if(!/\.pdf$/i.test(file.name)) return; const note=$('#gg-note',mv); if(note) note.textContent='Reading the GRN…';
+      uploader($('#gg-pdf',mv),g.pdf,{mode:'support',single:true,label:'Upload the GRN PDF',onFile:async(file)=>{ if(!/\.pdf$/i.test(file.name)) return; const note=$('#gg-note',mv); if(note) note.textContent='Reading the GRN…';
         try{ const r=await parseCngGRN(file);
           if(r.grn_no){ g.no=r.grn_no; $('#gg-no',mv).value=r.grn_no; } if(r.grn_date){ g.date=r.grn_date; $('#gg-date',mv).value=r.grn_date; }
           if(r.invoice_no){ g.invoice=r.invoice_no; $('#gg-inv',mv).value=r.invoice_no; } if(r.invoice_date){ g.invDate=r.invoice_date; $('#gg-invdate',mv).value=r.invoice_date; }
@@ -3454,14 +3456,15 @@ function garProcessed(){
   const q=garudaProcQ.trim().toLowerCase();
   const byItem={};
   lots.forEach(l=>{ const g=byItem[l.item_code]=byItem[l.item_code]||{code:l.item_code,name:l.item_name||'',grns:new Set(),pos:new Set()}; if(l.grn_no)g.grns.add(l.grn_no); if(l.po_no)g.pos.add(l.po_no); });
-  let items=Object.values(byItem).map(g=>({code:g.code,name:g.name,grns:[...g.grns],pos:[...g.pos],qrs:garCount(g.code).received}));
+  let items=Object.values(byItem).map(g=>({code:g.code,name:g.name,grns:[...g.grns],pos:[...g.pos],qrs:garCount(g.code).received,mt:garMachineType(g.code)}));
   if(q) items=items.filter(g=>(g.code+' '+g.name+' '+g.grns.join(' ')+' '+g.pos.join(' ')).toLowerCase().includes(q)||tags.some(t=>t.item_code===g.code&&t.id.toLowerCase().includes(q)));
   items.sort((a,b)=>a.code.localeCompare(b.code));
   const head='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="g-procsearch" type="text" placeholder="Search item, ERP, PO, GRN or QR" value="'+esc(garudaProcQ)+'" style="flex:1;min-width:220px"><span class="tag t-prog" style="align-self:center">'+items.length+' item'+(items.length===1?'':'s')+'</span></div>';
   const cell=(arr,n)=>esc(arr.slice(0,n).join(', ')||'—')+(arr.length>n?' +'+(arr.length-n):'');
-  const rows=items.length?items.map(g=>'<tr data-procitem="'+esc(g.code)+'" style="cursor:pointer"><td><b class="num">'+esc(g.code)+'</b></td><td>'+esc(g.name)+'</td><td class="hint meta">'+cell(g.pos,3)+'</td><td class="hint meta">'+cell(g.grns,3)+'</td><td class="num">'+g.qrs+'</td></tr>').join('')
-    :'<tr><td colspan="5"><div class="empty" style="padding:18px"><p class="hint">No item matches.</p></div></td></tr>';
-  return head+'<table class="cards"><thead><tr><th>Code</th><th>Item</th><th>PO</th><th>GRN</th><th>QR</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+  const anyMt=items.some(g=>g.mt);
+  const rows=items.length?items.map(g=>'<tr data-procitem="'+esc(g.code)+'" style="cursor:pointer"><td><b class="num">'+esc(g.code)+'</b></td><td>'+esc(g.name)+'</td>'+(anyMt?'<td>'+(g.mt?'<span class="tag t-wait">'+esc(g.mt)+'</span>':'<span class="hint">—</span>')+'</td>':'')+'<td class="hint meta">'+cell(g.pos,3)+'</td><td class="hint meta">'+cell(g.grns,3)+'</td><td class="num">'+g.qrs+'</td></tr>').join('')
+    :'<tr><td colspan="6"><div class="empty" style="padding:18px"><p class="hint">No item matches.</p></div></td></tr>';
+  return head+'<table class="cards"><thead><tr><th>Code</th><th>Item</th>'+(anyMt?'<th>Machine type</th>':'')+'<th>PO</th><th>GRN</th><th>QR</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
 }
 /* Issue — send a QR out of the store (single or a range), and allot it at the station */
 function garIssue(){
@@ -3501,31 +3504,6 @@ function garIssue(){
 }
 /* Exchange / Consumed — on site the old part is marked consumed, then the
    warehouse accepts the same QR back. Toggle picks which stage you are at. */
-function garConsumed(){
-  const store=canGarudaStore()||ME.owner||ME.admin, site=canGarudaSite()||ME.owner||ME.admin;
-  const tags=DB.garudaTags||[], allotted=tags.filter(t=>t.status==='allotted'), consumed=tags.filter(t=>t.status==='consumed');
-  if(!store&&!site) return '<div class="card pad"><p class="hint" style="margin:0">You don’t have a Garuda work role.</p></div>';
-  // default the toggle to the stage this person can actually do
-  let stage=garudaConsumeStage||(site?'onsite':'warehouse');
-  if(stage==='onsite'&&!site) stage='warehouse'; if(stage==='warehouse'&&!store) stage='onsite';
-  let html='<p class="hint" style="margin:0 0 12px;max-width:680px">The new part is allotted at the facility. <b>On site</b>, scan the old QR to mark it consumed. The <b>warehouse</b> scans the same QR when the old part comes back.</p>';
-  if(store&&site) html+=garSeg(stage,[['onsite','On site'],['warehouse','Warehouse']],'data-constage');
-  if(stage==='onsite'){
-    html+='<div class="card pad" style="margin-bottom:12px"><button class="btn primary" id="g-scan2">📷 Scan the old QR on site</button><div class="hint" style="margin-top:6px">The details page opens after the scan, where you mark it consumed.</div></div>';
-    html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">On site — ready to consume</h3><span class="tag t-wait" style="margin-left:auto">'+allotted.length+'</span></div>'+
-      '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th>Station</th><th></th></tr></thead><tbody>'+
-      (allotted.length?allotted.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(garTagCode(t.id))+'</b></td><td>'+esc(t.item_code)+'</td><td class="hint">'+esc(t.station_no||'—')+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Consume</button></td></tr>').join('')
-        :'<tr><td colspan="4"><div class="empty" style="padding:16px"><p class="hint">Nothing to consume.</p></div></td></tr>')+'</tbody></table></div>';
-    return html;
-  }
-  // stage === 'warehouse'
-  html+='<div class="card pad" style="margin-bottom:12px"><button class="btn primary" id="g-scan2">📷 Scan the returned QR at the warehouse</button><div class="hint" style="margin-top:6px">Scan the same QR when the old part physically comes back to the store.</div></div>';
-  html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3 style="margin:0">Consumed — ready to accept back</h3><span class="tag t-hold" style="margin-left:auto">'+consumed.length+'</span></div>'+
-    '<table class="cards"><thead><tr><th>QR</th><th>Item</th><th>Station</th><th></th></tr></thead><tbody>'+
-    (consumed.length?consumed.slice(0,200).map(t=>'<tr><td class="num"><b>'+esc(garTagCode(t.id))+'</b></td><td>'+esc(t.item_code)+'</td><td class="hint">'+esc(t.station_no||'—')+'</td><td style="text-align:right"><button class="btn sm" data-tag="'+esc(t.id)+'">Accept return</button></td></tr>').join('')
-      :'<tr><td colspan="4"><div class="empty" style="padding:16px"><p class="hint">Nothing waiting to be accepted back.</p></div></td></tr>')+'</tbody></table></div>';
-  return html;
-}
 /* Item — every item with its warehouse counts */
 function garItems(){
   if(garudaItemSel) return garItemDetail(garudaItemSel);
@@ -3541,7 +3519,7 @@ function garItems(){
   const bar='<div class="row" style="gap:10px;flex-wrap:wrap;margin-bottom:12px"><input id="g-isearch" type="text" placeholder="Search item name or code" value="'+esc(garudaItemQ)+'" style="flex:1;min-width:200px"><select id="g-itype" style="width:auto"><option value="">All types</option>'+types.map(t=>'<option '+(garudaItemType===t?'selected':'')+'>'+esc(t)+'</option>').join('')+'</select></div>';
   const mini=(lbl,val)=>'<div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:800;line-height:1">'+val+'</div><div class="hint" style="font-size:9.5px;letter-spacing:.03em">'+lbl+'</div></div>';
   const cards=shown.length?('<div class="grid g4" style="gap:10px">'+shown.map(i=>{const s=garStock(i.code);
-    return '<div class="gar-card" data-itemsel="'+esc(i.code)+'" style="cursor:pointer;border:1px solid var(--line);border-radius:12px;padding:13px;background:var(--surface)"><div class="hint num" style="font-size:11px">'+esc(i.code)+'</div><div style="font-weight:600;margin:3px 0 10px;min-height:38px">'+esc(i.name)+'</div><div class="row" style="gap:6px;text-align:center;border-top:1px solid var(--line);padding-top:9px">'+mini('OPENING',s.opening)+mini('RECV',s.received)+mini('ISSUED',s.issued)+'<div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:800;line-height:1;color:'+(s.remaining>0?'var(--seal)':'var(--stop)')+'">'+s.remaining+'</div><div class="hint" style="font-size:9.5px;letter-spacing:.03em">REMAIN</div></div></div></div>';}).join('')+'</div>')
+    return '<div class="gar-card" data-itemsel="'+esc(i.code)+'" style="cursor:pointer;border:1px solid var(--line);border-radius:12px;padding:13px;background:var(--surface)"><div class="hint num" style="font-size:11px">'+esc(i.code)+(garMachineType(i.code)?' · <span class="tag t-wait" style="font-size:10px">'+esc(garMachineType(i.code))+'</span>':'')+'</div><div style="font-weight:600;margin:3px 0 10px;min-height:38px">'+esc(i.name)+'</div><div class="row" style="gap:6px;text-align:center;border-top:1px solid var(--line);padding-top:9px">'+mini('OPENING',s.opening)+mini('RECV',s.received)+mini('ISSUED',s.issued)+'<div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:800;line-height:1;color:'+(s.remaining>0?'var(--seal)':'var(--stop)')+'">'+s.remaining+'</div><div class="hint" style="font-size:9.5px;letter-spacing:.03em">REMAIN</div></div></div></div>';}).join('')+'</div>')
     :'<div class="card pad"><p class="hint" style="margin:0">No item matches.</p></div>';
   return tiles+bar+cards+(list.length>400?'<div class="hint" style="margin-top:10px">Showing the first 400 — search to narrow.</div>':'');
 }
@@ -3550,7 +3528,7 @@ function garItemDetail(code){
   const item=(DB.garudaItems||[]).find(i=>i.code===code)||{code:code,name:''};
   const s=garStock(code), c=st=>tags.filter(t=>t.status===st).length, consumed=c('consumed')+c('returned');
   const back='<button class="btn ghost sm" id="gi-back" style="margin-bottom:10px">← All items</button>';
-  const hdr='<div class="hint" style="font-size:11px;letter-spacing:.06em">ALL ITEMS</div><h2 style="margin:2px 0 2px">'+esc(item.name||code)+'</h2><div class="hint num" style="margin-bottom:12px">'+esc(code)+(item.type?' · '+esc(item.type):'')+'</div>';
+  const hdr='<div class="hint" style="font-size:11px;letter-spacing:.06em">ALL ITEMS</div><h2 style="margin:2px 0 2px">'+esc(item.name||code)+'</h2><div class="hint num" style="margin-bottom:12px">'+esc(code)+(garMachineType(code)?' · Machine type: '+esc(garMachineType(code)):'')+'</div>';
   const tiles='<div class="grid g4" style="gap:10px;margin-bottom:8px">'+garTile('Opening',s.opening)+garTile('QR received',s.received)+garTile('QR issued',s.issued)+garTile('Remaining',s.remaining)+'</div>'+
     '<div class="grid g4" style="gap:10px;margin-bottom:14px">'+garTile('Consumed / back',consumed)+garTile('Still in store',c('in_store'))+garTile('Allotted',c('allotted'))+garTile('Total stock',s.total)+'</div>';
   const qd=garudaItemDetQ.trim().toLowerCase();
@@ -3651,30 +3629,6 @@ function garResolvePO(q){ if(!q) return ''; const Q=q.trim().toLowerCase(); cons
   const tg=tags.find(t=>t.id.toLowerCase()===Q||(t.grn_no||'').toLowerCase()===Q||(t.item_code||'').toLowerCase()===Q); if(tg) return tg.po_no;
   hit=lots.find(l=>(l.item_name||'').toLowerCase().includes(Q)); return hit?hit.po_no:'';
 }
-function garTrace(){
-  const lots=DB.garudaLots||[], tags=DB.garudaTags||[];
-  const head='<div class="card pad" style="margin-bottom:12px"><div class="row" style="gap:8px"><input id="g-tracesearch" type="text" placeholder="Search a PO (or item / GRN / QR)" value="'+esc(garudaTraceQ)+'" style="flex:1"><button class="btn primary" id="g-tracego">Trace</button></div><div class="hint" style="margin-top:6px">The full life of a purchase order, item by item.</div></div>';
-  if(!garudaTraceSel) return head+'<div class="card pad"><p class="hint" style="margin:0">Enter a PO number above to see its life cycle.</p></div>';
-  const po=garudaTraceSel, poLots=lots.filter(l=>l.po_no===po);
-  if(!poLots.length) return head+'<div class="card pad"><p class="hint" style="margin:0">No processed records found for PO '+esc(po)+'.</p></div>';
-  const byItem={}; poLots.forEach(l=>(byItem[l.item_code]=byItem[l.item_code]||[]).push(l));
-  const flow=(DB.flows||[]).find(f=>poLots.some(l=>l.request_id===f.id));
-  const approvals=flow?flow.steps.filter(s=>/approve|grn/i.test(s.label)).map(s=>'<div class="hint">• '+esc(s.label)+' — '+(s.status==='done'?(s.actedBy?esc(user(s.actedBy).name):'done')+(s.actedAt?' · '+esc(fmtDT(s.actedAt)):''):esc(s.status))+'</div>').join(''):'<span class="hint">—</span>';
-  const sec=(title,inner)=>'<div style="margin-top:8px"><b style="font-size:13px">'+title+'</b><div style="margin-top:3px">'+(inner||'<span class="hint">—</span>')+'</div></div>';
-  const body=Object.keys(byItem).map(code=>{ const ls=byItem[code], itemTags=tags.filter(t=>ls.some(l=>l.id===t.lot_id)), l0=ls[0];
-    const inv=itemTags.filter(t=>t.status==='in_store'), out=itemTags.filter(t=>t.status==='issued'||t.status==='allotted'), cons=itemTags.filter(t=>t.status==='consumed'||t.status==='returned'), repl=itemTags.filter(t=>t.replaced_from);
-    return '<div class="card pad" style="margin-bottom:12px"><h3 style="margin:0 0 4px">'+esc(code)+' <span class="hint">'+esc(l0.item_name||'')+'</span></h3>'+
-      sec('Purchase order','<span class="hint">PO '+esc(po)+' · vendor '+esc(l0.vendor||'—')+' · ordered '+ls.reduce((a,l)=>a+(l.order_qty||0),0)+' · received '+ls.reduce((a,l)=>a+(l.accepted_qty||0),0)+' · rate '+esc(l0.rate||'—')+'</span>')+
-      sec('GRN',ls.map(l=>'<div class="hint">GRN '+esc(l.grn_no||'—')+(l.grn_date?' · '+esc(l.grn_date):'')+' · qty '+(l.accepted_qty||0)+' · inv '+esc(l.invoice_no||'—')+' · QR '+esc(l.series_from||'')+((l.accepted_qty||0)>1?'…'+esc(l.series_to||''):'')+'</div>').join(''))+
-      sec('Approvals (Bangalore & HO)',approvals)+
-      sec('Inventory (in store)',inv.map(t=>'<span class="tag t-ok" style="margin:2px;display:inline-block">'+esc(t.id)+'</span>').join(''))+
-      sec('Issue & allot',out.map(t=>'<div class="hint">'+esc(t.id)+' → station '+esc(t.station_no||'—')+' · to '+esc(t.issued_to||'—')+(t.issued_by_name?' · by '+esc(t.issued_by_name):'')+(t.allotted_at?' · allotted'+(t.allotted_by_name?' by '+esc(t.allotted_by_name):'')+' '+esc(fmtD(ts(t.allotted_at))):'')+'</div>').join(''))+
-      sec('Consumed & warehouse',cons.map(t=>'<div class="hint">'+esc(t.id)+' · consumed'+(t.consumed_by_name?' by '+esc(t.consumed_by_name):'')+(t.consume_remark?' ('+esc(t.consume_remark)+')':'')+(t.returned_at?' · accepted back'+(t.returned_by_name?' by '+esc(t.returned_by_name):'')+' '+esc(fmtD(ts(t.returned_at))):'')+'</div>').join(''))+
-      sec('Replaced',repl.map(t=>'<div class="hint">'+esc(t.replaced_from)+' → '+esc(t.id)+'</div>').join(''))+
-      '</div>';
-  }).join('');
-  return head+'<div class="card pad" style="margin-bottom:12px"><b>PO '+esc(po)+'</b> · '+Object.keys(byItem).length+' item(s)</div>'+body;
-}
 /* Admin — masters (add/edit arrives in a later update) */
 function garAdmin(){
   const tab=garudaAdminTab||'items';
@@ -3756,6 +3710,13 @@ function wireGaruda(v){
   $$('[data-garchip]',v).forEach(b=>b.onclick=()=>garGo(b.dataset.garchip));
   if($('#gar-exit',v)) $('#gar-exit',v).onclick=garExit;
   if($('#g-scan',v)) $('#g-scan',v).onclick=()=>cngScanDialog();
+  if($('#g-fab',v)) $('#g-fab',v).onclick=()=>cngScanDialog();
+  { const on=$('.gar-chips button.on',v); if(on){ try{ on.scrollIntoView({block:'nearest',inline:'center'}); }catch(_){} } }
+  garWireMedia(v);
+  $$('[data-trq]',v).forEach(b=>b.onclick=()=>{ garudaTraceQ=b.dataset.trq; garTraceRun(garudaTraceQ); render(); });
+  $$('[data-trline]',v).forEach(b=>b.onclick=()=>{ garTraceLine=garTraceLine===b.dataset.trline&&(garTraceData.lines||[]).length>1?'':b.dataset.trline; garTraceTag=''; render(); });
+  if($('#gtr-tag',v)) $('#gtr-tag',v).onchange=e=>{ garTraceTag=e.target.value; render(); };
+  $$('[data-grev]',v).forEach(tr=>tr.onclick=e=>{ if(e.target.closest('button')) return; const row=(garDock.approvals||[]).find(x=>x.step_id===tr.dataset.grev); if(row) garGrnReview(row); });
   if($('#g-scan2',v)) $('#g-scan2',v).onclick=()=>cngScanDialog();
   if($('#ir-go',v)) $('#ir-go',v).onclick=async()=>{
     const from=($('#ir-from',v).value||'').trim(), to=($('#ir-to',v).value||'').trim(), stn=($('#ir-stn',v).value||'').trim(), who=($('#ir-to2',v).value||'').trim(), by=($('#ir-by',v).value||'').trim(), dt=($('#ir-date',v).value||'')||null, err=$('#ir-err',v);
@@ -3824,7 +3785,7 @@ function wireGaruda(v){
   const rfrom=$('#rep-from',v); if(rfrom) rfrom.onchange=()=>{ garudaRepFrom=rfrom.value; render(); };
   const rto=$('#rep-to',v); if(rto) rto.onchange=()=>{ garudaRepTo=rto.value; render(); };
   if($('#rep-export',v)) $('#rep-export',v).onclick=garRepExport;
-  const tgo=()=>{ const el=$('#g-tracesearch',v); const qq=(el?el.value:'').trim(); garudaTraceQ=qq; garudaTraceSel=garResolvePO(qq); render(); };
+  const tgo=()=>{ const el=$('#g-tracesearch',v); const qq=(el?el.value:'').trim(); garudaTraceQ=qq; garTraceRun(qq); render(); };
   if($('#g-tracego',v)) $('#g-tracego',v).onclick=tgo;
   const tsel=$('#g-tracesearch',v); if(tsel) tsel.onkeydown=e=>{ if(e.key==='Enter') tgo(); };
   // ---- direct procurement pages (Procurement · Inward & GRN · Approvals) ----
@@ -3844,10 +3805,7 @@ function wireGaruda(v){
   const gif=$('#gi-from',v); if(gif) gif.onchange=()=>{ garudaInwardFrom=gif.value; render(); };
   const git=$('#gi-to',v); if(git) git.onchange=()=>{ garudaInwardTo=git.value; render(); };
   $$('[data-grnreq]',v).forEach(tr=>tr.onclick=()=>garGrnDialog(tr.dataset.grnreq));
-  $$('[data-gact]',v).forEach(b=>b.onclick=async()=>{ const id=b.dataset.gact, row=(garDock.approvals||[]).find(x=>x.step_id===id);
-    if(!flowFindStep(id)&&row){ try{ await loadFlowsSome([row.request_id]); }catch(_){} }
-    if(!flowFindStep(id)) return toast('Could not open this step — tap Refresh and try again.','bad');
-    flowAct(id); });
+  $$('[data-gact]',v).forEach(b=>b.onclick=()=>{ const row=(garDock.approvals||[]).find(x=>x.step_id===b.dataset.gact); if(row) garGrnReview(row); });
 }
 
 /* ---------- CNG QR lifecycle: scan / find a sticker, then act on it ---------- */
@@ -3858,7 +3816,7 @@ function cngScanDialog(){
   let stream=null, raf=0, stopped=false;
   const stop=()=>{ stopped=true; if(raf)cancelAnimationFrame(raf); if(stream){try{stream.getTracks().forEach(t=>t.stop())}catch(e){}} };
   modal({title:'Scan or enter a QR',
-    body:'<div style="text-align:center"><video id="sc-vid" playsinline muted style="width:100%;max-width:320px;border-radius:10px;background:#000;display:none"></video>'+
+    body:'<div style="text-align:center"><div class="scan-box"><video id="sc-vid" playsinline muted style="display:none"></video><div class="scan-idle" id="sc-idle">Tap “Use camera”, then place the QR inside the square</div><div class="scan-frame"></div><div class="scan-line" id="sc-line" style="display:none"></div></div>'+
       '<div id="sc-hint" class="hint" style="margin-top:8px">Point the camera at the sticker, or type the code below.</div></div>'+
       '<div style="margin-top:12px;display:flex;gap:8px"><input id="sc-code" type="text" placeholder="GAR-DSP-00001" autocomplete="off" style="flex:1;text-transform:uppercase"><button class="btn" id="sc-find">Find</button></div>'+
       '<div id="sc-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
@@ -3889,11 +3847,12 @@ function cngScanDialog(){
           return; }
         // 2) show the live preview
         const vid=$('#sc-vid',mv); vid.style.display='block'; vid.setAttribute('playsinline',''); vid.srcObject=stream;
+        if($('#sc-idle',mv)) $('#sc-idle',mv).style.display='none'; if($('#sc-line',mv)) $('#sc-line',mv).style.display='block';
         try{ await vid.play(); }catch(e){}
         // 3) load the QR reader; if it can't load (offline/CDN blocked) the preview still shows and they can type
         try{ await ensureJsQR(); }
         catch(e){ $('#sc-hint',mv).textContent='Live view is on, but the QR reader could not load — type the code below.'; return; }
-        $('#sc-hint',mv).textContent='Scanning… hold the sticker steady.';
+        $('#sc-hint',mv).textContent='Scanning… place the QR inside the square and hold steady.';
         const cv=document.createElement('canvas'), ctx=cv.getContext('2d');
         const tick=()=>{ if(stopped) return; if(vid.readyState===vid.HAVE_ENOUGH_DATA){ cv.width=vid.videoWidth; cv.height=vid.videoHeight; ctx.drawImage(vid,0,0,cv.width,cv.height);
             try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height); if(r&&r.data){ open(r.data); return; } }catch(e){} }
@@ -3921,51 +3880,6 @@ function ensureJsQR(){ if(window.jsQR) return Promise.resolve();
     'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js',
     'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js']).catch(e=>{ _jsqrP=null; throw e; });
   return _jsqrP; }
-async function cngTagPanel(code){
-  const t=await cngFetchTag(code); if(!t) return toast('QR not found.','bad');
-  const st=CNG_ST[t.status]||['t-wait',t.status];
-  const {data:evs}=await SB.from('cng_tag_events').select('action,by_name,detail,at').eq('tag_id',t.id).order('at');
-  const hist=(evs||[]).map(e=>'<div class="hint" style="margin-top:3px">• <b>'+esc(e.action)+'</b>'+(e.by_name?' — '+esc(e.by_name):'')+(e.detail?' · '+esc(e.detail):'')+' <span style="opacity:.7">'+esc(fmtDT(ts(e.at)))+'</span></div>').join('');
-  // find any QR that replaced this one (trace the chain forward)
-  const replacedBy=(DB.garudaTags||[]).find(x=>x.replaced_from===t.id);
-  let actions='';
-  if(t.status==='in_store'&&canGarudaStore()) actions='<button class="btn primary" data-act="issue">Issue to a station</button>';
-  else if(t.status==='issued'&&canGarudaSite()) actions='<button class="btn primary" data-act="allot">Mark allotted (fitted)</button>';
-  else if(t.status==='allotted'&&canGarudaSite()) actions='<button class="btn primary" data-act="consume">Mark consumed</button>';
-  else if(t.status==='consumed'&&canGarudaStore()) actions='<button class="btn primary" data-act="return">Accept return at store</button>';
-  const canReplace=['in_store','issued','allotted'].indexOf(t.status)>-1&&(canGarudaStore()||canGarudaSite());
-  const nextRole=t.status==='in_store'||t.status==='consumed'?'store':(t.status==='issued'||t.status==='allotted'?'site':'');
-  const roleNote=(!actions&&nextRole)?'<div class="hint" style="margin-top:12px">The next step ('+(t.status==='in_store'?'issue':t.status==='issued'?'allot':t.status==='allotted'?'consume':'return')+') needs the <b>'+nextRole+'</b> role. Ask an admin to grant it.</div>':'';
-  modal({title:t.id,
-    body:'<div class="kv" style="margin-top:0"><dt>Item</dt><dd>'+esc(t.item_name||'')+'</dd>'+
-      '<dt>ERP code</dt><dd>'+esc(t.item_code||'—')+'</dd>'+
-      '<dt>Status</dt><dd><span class="tag '+st[0]+'">'+st[1]+'</span></dd>'+
-      (t.po_no?'<dt>PO</dt><dd>'+esc(t.po_no)+'</dd>':'')+
-      (t.grn_no?'<dt>GRN</dt><dd>'+esc(t.grn_no)+'</dd>':'')+
-      (t.vendor?'<dt>Vendor</dt><dd>'+esc(t.vendor)+'</dd>':'')+
-      (t.rate?'<dt>Rate</dt><dd>'+esc(t.rate)+'</dd>':'')+
-      (t.station_no?'<dt>Station</dt><dd>'+esc(t.station_no)+'</dd>':'')+
-      (t.issued_to?'<dt>Issued to</dt><dd>'+esc(t.issued_to)+'</dd>':'')+
-      (t.issued_at?'<dt>Issue date</dt><dd>'+esc(fmtD(ts(t.issued_at)))+'</dd>':'')+
-      (t.issued_by_name?'<dt>Issued by</dt><dd>'+esc(t.issued_by_name)+'</dd>':'')+
-      (t.allotted_by_name?'<dt>Allotted by</dt><dd>'+esc(t.allotted_by_name)+'</dd>':'')+
-      (t.consumed_by_name?'<dt>Consumed by</dt><dd>'+esc(t.consumed_by_name)+'</dd>':'')+
-      (t.consume_remark?'<dt>Remark</dt><dd>'+esc(t.consume_remark)+'</dd>':'')+
-      (t.returned_by_name?'<dt>Accepted by</dt><dd>'+esc(t.returned_by_name)+'</dd>':'')+
-      (t.replaced_from?'<dt>Replaces</dt><dd><button class="btn ghost sm" data-goto="'+esc(t.replaced_from)+'" style="padding:0;color:var(--indigo)">'+esc(t.replaced_from)+'</button></dd>':'')+
-      (replacedBy?'<dt>Replaced by</dt><dd><button class="btn ghost sm" data-goto="'+esc(replacedBy.id)+'" style="padding:0;color:var(--indigo)">'+esc(replacedBy.id)+'</button></dd>':'')+'</div>'+
-      '<div class="grid" style="gap:9px;margin-top:14px">'+actions+(canReplace?'<button class="btn" data-act="replace">Replace a damaged sticker</button>':'')+'</div>'+roleNote+
-      (hist?'<div class="sep" style="margin:14px 0 8px"></div><div class="hint" style="font-weight:600">History</div>'+hist:'')+
-      '<div id="tp-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
-    footer:'<button class="btn" data-x>Close</button>',
-    onOpen:(mv,cl)=>{ $$('[data-act]',mv).forEach(b=>b.onclick=()=>{const a=b.dataset.act;
-      if(a==='issue') cngIssueDialog(t,cl);
-      else if(a==='allot') cngAllotDialog(t,cl);
-      else if(a==='consume') cngConsumeDialog(t,cl);
-      else if(a==='return') cngReturnDialog(t,cl);
-      else if(a==='replace') cngReplaceDialog(t,cl); });
-      $$('[data-goto]',mv).forEach(b=>b.onclick=()=>{ const c=b.dataset.goto; cl(); setTimeout(()=>cngTagPanel(c),0); }); }});
-}
 function cngIssueDialog(t,parentClose){
   modal({title:'Issue '+t.id,
     body:'<p class="hint" style="margin-top:0">Issue this QR from the store.</p>'+
@@ -6020,6 +5934,180 @@ function reqHierDialog(x){
         try{ await rpc('req_hier_save',{p_id:x?x.id:null,p_user:who,p_work:work,p_chain:chain}); cl(); await load(['people']); toast('Fixed hierarchy saved.','ok'); render(); }
         catch(e){ $('#rh-go',mv).disabled=false; err.textContent=(e&&e.message||'Could not save.').replace(/^.*?: /,''); } };
     }});
+}
+
+/* ============================================================
+   v128 — Garuda changes 5 (partial GRN, approval review, scan box,
+   QR card, Trace path, machine type, mobile polish)
+   ============================================================ */
+// machine type = the item master's type (Dispenser, Cascade Spares, ICL…) — shown only when there is one
+const garMachineType=code=>{ const it=(DB.garudaItems||[]).find(i=>i.code===code); const t=String((it&&it.type)||'').trim(); return /^general$/i.test(t)?'':t; };
+(function garCss(){ if(document.getElementById('gar-v128-css')) return; const st=document.createElement('style'); st.id='gar-v128-css';
+  st.textContent=
+   '.scan-box{position:relative;width:100%;max-width:340px;margin:0 auto;aspect-ratio:1/1;border-radius:14px;overflow:hidden;background:#111}'+
+   '.scan-box video{width:100%;height:100%;object-fit:cover;display:block}'+
+   '.scan-box .scan-frame{position:absolute;left:18%;top:18%;width:64%;height:64%;border:3px solid #fff;border-radius:18px;box-shadow:0 0 0 999px rgba(0,0,0,.45)}'+
+   '.scan-box .scan-line{position:absolute;left:20%;width:60%;height:2px;background:#4ade80;box-shadow:0 0 8px #4ade80;top:20%;animation:scanmove 2.2s ease-in-out infinite}'+
+   '@keyframes scanmove{0%{top:20%}50%{top:78%}100%{top:20%}}'+
+   '.scan-box .scan-idle{position:absolute;left:22%;right:22%;top:22%;bottom:22%;z-index:2;display:flex;align-items:center;justify-content:center;color:#eee;font-size:12.5px;line-height:1.35;text-align:center}'+
+   '.gtr-step{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:14px 16px}'+
+   '.gtr-step .gtr-n{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--steel);font-weight:700}'+
+   '.gtr-arrow{height:26px;display:flex;align-items:center;padding-left:22px;color:var(--steel);font-size:18px}'+
+   '.gtr-facts{display:grid;grid-template-columns:8.5rem 1fr;gap:3px 10px;font-size:13.5px;margin-top:8px}.gtr-facts dt{color:var(--steel)}.gtr-facts dd{margin:0}'+
+   '.gtr-photos{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}.gtr-photos button{width:104px;border:0;background:none;padding:0;text-align:left;cursor:pointer}'+
+   '.gtr-photos .ph{width:104px;height:78px;border-radius:8px;background:var(--line);display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:11px;color:var(--steel)}'+
+   '.gtr-photos .ph img{width:100%;height:100%;object-fit:cover}.gtr-photos span.l{display:block;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--steel);margin-top:3px}'+
+   '.gtr-qr.focus{background:#E8F6EE}.gtr-line.on{background:#F4F6FB}'+
+   '@media(max-width:900px){.garuda-mode .btn{min-height:40px}.garuda-mode .btn.sm{min-height:34px}.gar-chips{position:sticky;top:52px;z-index:19;background:var(--bg,#F3F2EE);padding:6px 2px}'+
+     '.gar-fab{position:fixed;right:16px;bottom:18px;z-index:30;border-radius:999px;padding:14px 18px;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,.25)}'+
+     '.garuda-mode input,.garuda-mode select{font-size:16px}.gtr-facts{grid-template-columns:7rem 1fr}}'+
+   '@media(min-width:901px){.gar-fab{display:none}}';
+  document.head.appendChild(st); })();
+// photo thumbnails (lazy): <span class="ph" data-ph="path">
+function garLoadPhotos(scope){ $$('[data-ph]',scope).forEach(async el=>{ const p=el.dataset.ph; if(!p||el.dataset.done) return; el.dataset.done='1';
+  try{ const u=await thumbURL(p); el.innerHTML='<img src="'+u+'" alt="">'; }catch(e){ el.textContent='photo'; } }); }
+const garPhotoBtns=list=>{ const L=(list||[]).filter(x=>x&&x.path); if(!L.length) return '';
+  return '<div class="gtr-photos">'+L.map(x=>'<button type="button" data-phopen="'+esc(x.path)+'" data-phname="'+esc(x.label)+'"><span class="ph" data-ph="'+esc(x.path)+'">…</span><span class="l">'+esc(x.label)+'</span></button>').join('')+'</div>'; };
+const garFileBtns=list=>{ const L=(list||[]).filter(x=>x&&x.path); if(!L.length) return '';
+  return '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">'+L.map(x=>'<button type="button" class="btn sm" data-fopen="'+esc(x.path)+'" data-fname="'+esc(x.name||'file')+'">📄 '+esc(x.name||'file')+'</button>').join('')+'</div>'; };
+function garWireMedia(scope){
+  garLoadPhotos(scope);
+  $$('[data-phopen]',scope).forEach(b=>b.onclick=()=>openViewer({id:'ph-'+b.dataset.phopen,name:b.dataset.phname||'Photo',path:b.dataset.phopen,size:0,_tbl:'cng'}));
+  $$('[data-fopen]',scope).forEach(b=>b.onclick=()=>openViewer({id:'f-'+b.dataset.fopen,name:b.dataset.fname||'File',path:b.dataset.fopen,size:0,_tbl:'cng'}));
+}
+const garDay=v=>{ if(!v) return ''; if(/^\d{4}-\d{2}-\d{2}$/.test(String(v))) return fmtD(new Date(v+'T00:00:00')); return fmtD(ts(v)); };
+const garFacts=rows=>{ const r=rows.filter(x=>x[1]!==''&&x[1]!=null&&x[1]!=='—'); return r.length?'<dl class="gtr-facts">'+r.map(x=>'<dt>'+esc(x[0])+'</dt><dd>'+esc(String(x[1]))+'</dd>').join('')+'</dl>':''; };
+
+/* ---- Approvals: open a GRN and check everything before acting ---- */
+async function garGrnReview(row){
+  let d=null; try{ d=await rpc('cng_grn_detail',{p_request:row.request_id}); }catch(e){ return fail(e); }
+  const lots=d.lots||[], first=lots[0]||{};
+  const lineHtml=lots.map(l=>'<div style="border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-top:8px">'+
+      '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:baseline"><b style="flex:1;min-width:140px">'+esc(l.item_name||l.item_code)+'</b><span class="hint num">'+esc(l.item_code)+'</span>'+(garMachineType(l.item_code)?'<span class="tag t-wait">'+esc(garMachineType(l.item_code))+'</span>':'')+'</div>'+
+      garFacts([['Ordered',(l.ordered||0)+' '+(l.unit||'')],['Received before',(l.before||0)+' '+(l.unit||'')],['This GRN',(l.take||0)+' '+(l.unit||'')+' → '+(l.take||0)+' QR'],['Rate',l.rate?'₹'+l.rate:''],['Taken by',(l.taken_by||'')+(l.taken_at?' · '+fmtDT(ts(l.taken_at)):'')]])+
+      garPhotoBtns([{path:l.material_photo,label:'Material'}])+'</div>').join('');
+  const steps=(d.steps||[]).map(s=>'<div class="hint" style="margin-top:3px">'+(s.status==='done'?'✓':s.status==='pending'?'●':'○')+' <b>'+esc(s.label)+'</b> — '+(s.status==='done'?esc(s.by||'')+(s.at?' · '+esc(fmtDT(ts(s.at))):''):s.status==='pending'?'with '+esc(s.with||'—'):'waiting')+'</div>').join('');
+  modal({title:'GRN '+(first.grn_no||'')+' · PO '+(d.po_no||''),
+    body:garFacts([['File',d.ref+(d.parent_ref&&d.parent_ref!==d.ref?' (later delivery on '+d.parent_ref+')':'')],['Vendor',d.vendor],['GRN no.',first.grn_no],['GRN date',garDay(first.grn_date)],['Invoice no.',first.invoice_no],['Invoice date',garDay(first.invoice_date)]])+
+      garPhotoBtns([{path:first.invoice_photo,label:'Invoice'},{path:first.eway_photo,label:'E-way bill'}])+
+      '<div style="margin-top:12px"><b>Items in this GRN</b></div>'+(lineHtml||'<p class="hint">No lines.</p>')+
+      ((d.files||[]).length?'<div style="margin-top:12px"><b>Documents</b></div>'+garFileBtns(d.files):'')+
+      '<div style="margin-top:12px"><b>Approvals</b></div>'+steps,
+    footer:'<button class="btn" data-x>Close</button>'+(row.mine?'<button class="btn primary" id="gr-act">Approve / act</button>':''),
+    onOpen:(mv,cl)=>{ garWireMedia(mv);
+      if($('#gr-act',mv)) $('#gr-act',mv).onclick=async()=>{ cl(); if(!flowFindStep(row.step_id)){ try{ await loadFlowsSome([row.request_id]); }catch(_){} }
+        if(!flowFindStep(row.step_id)) return toast('Could not open this step — tap Refresh and try again.','bad'); setTimeout(()=>flowAct(row.step_id),0); }; }});
+}
+
+/* ---- Consumed: only the scan; the QR's details and the next action come after it ---- */
+function garConsumed(){
+  const store=canGarudaStore()||ME.owner||ME.admin, site=canGarudaSite()||ME.owner||ME.admin;
+  if(!store&&!site) return '<div class="card pad"><p class="hint" style="margin:0">You don’t have a Garuda work role.</p></div>';
+  return '<div class="card pad" style="text-align:center;padding:26px 16px"><div style="font-size:40px;line-height:1">📷</div><h3 style="margin:10px 0 6px">Scan the QR</h3>'+
+    '<p class="hint" style="margin:0 auto 14px;max-width:420px">'+(site?'<b>On site</b>: scan the old part’s QR to mark it consumed. ':'')+(store?'<b>Warehouse</b>: scan the same QR when the old part comes back.':'')+' Its details and the next step open after the scan.</p>'+
+    '<button class="btn primary" id="g-scan2" style="min-width:220px">Scan a QR</button></div>';
+}
+
+/* ---- the scanned QR: one card with everything about it ---- */
+async function cngTagPanel(code){
+  const t=await cngFetchTag(code); if(!t) return toast('QR not found.','bad');
+  const st=CNG_ST[t.status]||['t-wait',t.status];
+  const [evr,tr]=await Promise.all([SB.from('cng_tag_events').select('action,by_name,detail,at').eq('tag_id',t.id).order('at'),rpc('cng_trace',{p_q:t.id}).catch(()=>null)]);
+  const evs=(evr&&evr.data)||[];
+  let line=null, rec=null, tg=null;
+  if(tr&&tr.lines) tr.lines.forEach(l=>{ const x=(l.tags||[]).find(z=>z.id===t.id); if(x){ line=l; tg=x; rec=(l.receipts||[]).find(r=>r.grn_no===t.grn_no)||(l.receipts||[])[0]||null; } });
+  const po=(tr&&tr.po)||{}, mt=garMachineType(t.item_code);
+  const hist=evs.map(e=>'<div class="hint" style="margin-top:3px">• <b>'+esc(e.action)+'</b>'+(e.by_name?' — '+esc(e.by_name):'')+(e.detail?' · '+esc(e.detail):'')+' <span style="opacity:.7">'+esc(fmtDT(ts(e.at)))+'</span></div>').join('');
+  const replacedBy=(DB.garudaTags||[]).find(x=>x.replaced_from===t.id);
+  let actions='';
+  if(t.status==='in_store'&&canGarudaStore()) actions='<button class="btn primary" data-act="issue">Issue to a station</button>';
+  else if(t.status==='issued'&&canGarudaSite()) actions='<button class="btn primary" data-act="allot">Mark allotted (fitted)</button>';
+  else if(t.status==='allotted'&&canGarudaSite()) actions='<button class="btn primary" data-act="consume">Mark consumed</button>';
+  else if(t.status==='consumed'&&canGarudaStore()) actions='<button class="btn primary" data-act="return">Accept return at store</button>';
+  const canReplace=['in_store','issued','allotted'].indexOf(t.status)>-1&&(canGarudaStore()||canGarudaSite());
+  const sec=(title,inner)=>inner?'<div class="gtr-step" style="margin-top:10px"><div class="gtr-n">'+esc(title)+'</div>'+inner+'</div>':'';
+  const appr=rec?(rec.approvals||[]).map(a=>[a.label.replace(/^Approve GRN — /,''),a.status==='done'?(a.by||'')+(a.at?' · '+fmtDT(ts(a.at)):''):a.status==='pending'?'With them now':'Waiting']):[];
+  modal({title:t.id,
+    body:'<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap"><div id="tp-qr" style="background:#fff;padding:8px;border-radius:10px;border:1px solid var(--line);width:132px;height:132px"></div>'+
+        '<div style="flex:1;min-width:160px"><div style="font-size:18px;font-weight:700">'+esc(t.item_name||'')+'</div><div class="hint num">'+esc(t.item_code||'')+'</div>'+
+        '<div style="margin-top:6px"><span class="tag '+st[0]+'">'+st[1]+'</span>'+(mt?' <span class="tag t-wait">Machine type: '+esc(mt)+'</span>':'')+'</div></div></div>'+
+      sec('PO info',garFacts([['PO',t.po_no||po.po_no],['Vendor',t.vendor||po.vendor],['PO raised',po.raised_at?fmtD(ts(po.raised_at)):''],['Rate',t.rate?'₹'+t.rate:(line&&line.rate?'₹'+line.rate:'')],['Ordered',line?(line.ordered+' '+(line.unit||'')):'']])+garFileBtns(tr&&tr.po_files))+
+      sec('GRN info',garFacts([['GRN',t.grn_no||(rec&&rec.grn_no)],['GRN date',rec?garDay(rec.grn_date):''],['Invoice',rec?((rec.invoice_no||'')+(rec.invoice_date?' · '+garDay(rec.invoice_date):'')):''],['Taken by',rec?((rec.taken_by||'')+(rec.taken_at?' · '+fmtDT(ts(rec.taken_at)):'')):''],['QR range',rec&&rec.series_from?(rec.series_from+(rec.series_to&&rec.series_to!==rec.series_from?' → '+rec.series_to:'')):'']].concat(appr))+
+        (rec?garPhotoBtns([{path:rec.material_photo,label:'Material'},{path:rec.invoice_photo,label:'Invoice'},{path:rec.eway_photo,label:'E-way bill'}]):''))+
+      sec('Where it is now',garFacts([['Station',t.station_no],['Issued to',t.issued_to],['Issue date',t.issued_at?fmtD(ts(t.issued_at)):''],['Issued by',t.issued_by_name],['Allotted by',t.allotted_by_name],['Consumed by',t.consumed_by_name],['Remark',t.consume_remark],['Accepted back by',t.returned_by_name],['Replaces',t.replaced_from],['Replaced by',replacedBy?replacedBy.id:'']])+
+        (t.allot_photo?garPhotoBtns([{path:t.allot_photo,label:'Allot photo'}]):''))+
+      '<div class="grid" style="gap:9px;margin-top:14px">'+actions+(canReplace?'<button class="btn" data-act="replace">Replace a damaged sticker</button>':'')+'<button class="btn" data-act="trace">Open the full trace</button></div>'+
+      (hist?'<div class="sep" style="margin:14px 0 8px"></div><div class="hint" style="font-weight:600">History</div>'+hist:''),
+    footer:'<button class="btn" data-x>Close</button>',
+    onOpen:(mv,cl)=>{ garWireMedia(mv);
+      ensureQR().then(()=>{ const box=$('#tp-qr',mv); if(box&&window.QRCode){ box.innerHTML=''; new QRCode(box,{text:garTagUrl(t.id),width:116,height:116,correctLevel:QRCode.CorrectLevel.M}); } }).catch(()=>{ const box=$('#tp-qr',mv); if(box) box.innerHTML='<div class="hint" style="padding:30px 4px;text-align:center">'+esc(t.id)+'</div>'; });
+      $$('[data-act]',mv).forEach(b=>b.onclick=()=>{const a=b.dataset.act;
+        if(a==='issue') cngIssueDialog(t,cl); else if(a==='allot') cngAllotDialog(t,cl); else if(a==='consume') cngConsumeDialog(t,cl);
+        else if(a==='return') cngReturnDialog(t,cl); else if(a==='replace') cngReplaceDialog(t,cl);
+        else if(a==='trace'){ cl(); garudaTraceQ=t.id; garTraceRun(t.id); setTimeout(()=>{ garudaTab='trace'; if(ROUTE.name!=='garuda') go({name:'garuda'}); else render(); },0); } }); }});
+}
+
+/* ---- Trace: search a PO → its items → one item's path, step by step (as in the Garuda app) ---- */
+let garTraceData=null, garTraceLine='', garTraceTag='', garTraceBusy=false;
+async function garTraceRun(q){
+  garTraceBusy=true; garTraceData=null; garTraceLine=''; garTraceTag='';
+  try{ garTraceData=await rpc('cng_trace',{p_q:q||''}); }catch(e){ garTraceData={error:(e&&e.message)||'Could not trace.'}; }
+  garTraceBusy=false;
+  if(garTraceData&&garTraceData.focus_tag){ garTraceTag=garTraceData.focus_tag; const l=(garTraceData.lines||[]).find(x=>(x.tags||[]).some(t=>t.id===garTraceTag)); if(l) garTraceLine=l.id; }
+  else if(garTraceData&&(garTraceData.lines||[]).length===1) garTraceLine=garTraceData.lines[0].id;
+  if(ROUTE.name==='garuda'&&garudaTab==='trace'&&!document.querySelector('.veil')) render();
+}
+const garNowOf=t=>({in_store:'In store',issued:'Issued',allotted:'At station',consumed:'Consumed, not back',returned:'Back in warehouse',replaced:'Replaced'})[t.status]||t.status;
+function garWhereNow(l){
+  const tags=l.tags||[]; if(!(l.receipts||[]).length) return 'Ordered, not received';
+  const waiting=(l.receipts||[]).filter(r=>!r.minted).reduce((a,r)=>a+(Number(r.qty)||0),0);
+  const b=[['in store',tags.filter(t=>t.status==='in_store').length],['waiting approval',waiting],['issued',tags.filter(t=>t.status==='issued').length],['at station',tags.filter(t=>t.status==='allotted').length],
+    ['consumed',tags.filter(t=>t.status==='consumed').length],['back',tags.filter(t=>t.status==='returned').length],['replaced',tags.filter(t=>t.replaced_from).length]].filter(x=>x[1]>0);
+  return b.length?b.map(x=>x[1]+' '+x[0]).join(' · '):'Received';
+}
+function garTrace(){
+  const head='<div class="card pad" style="margin-bottom:12px"><div class="hint" style="font-size:11px;letter-spacing:.12em;text-transform:uppercase">Purchase order</div>'+
+    '<div class="row" style="gap:8px;margin-top:6px"><input id="g-tracesearch" type="text" placeholder="PO number — or item, GRN, QR, vendor, station" value="'+esc(garudaTraceQ)+'" style="flex:1;min-width:0"><button class="btn primary" id="g-tracego">Search</button></div>'+
+    '<div class="hint" style="margin-top:6px">Search a PO number first. Open a PO to see every item and where it is now.</div></div>';
+  if(garTraceData===null&&!garTraceBusy){ garTraceRun(garudaTraceQ); }
+  if(garTraceBusy||garTraceData===null) return head+'<div class="card pad"><p class="hint" style="margin:0">Looking…</p></div>';
+  const d=garTraceData;
+  if(d.error) return head+'<div class="card pad"><p style="color:var(--stop);margin:0">'+esc(d.error)+'</p></div>';
+  if(d.recent) return head+'<div class="hint" style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin:0 0 6px">Recent purchase orders</div><div class="card">'+
+    (d.recent.length?d.recent.map(x=>'<button class="row gtr-pick" data-trq="'+esc(x.po_no||x.ref)+'" style="width:100%;border:0;border-top:1px solid var(--line);background:none;padding:12px 16px;text-align:left;cursor:pointer;gap:10px;font:inherit"><span style="flex:1;min-width:0"><b>'+esc(x.po_no||x.ref)+'</b><span class="hint" style="display:block">'+esc(x.vendor||'No vendor')+' · '+x.items+' item'+(x.items==1?'':'s')+'</span></span><span class="hint">'+esc(fmtD(ts(x.at)))+'</span></button>').join(''):'<div class="hint" style="padding:14px 16px">No purchase orders yet.</div>')+'</div>';
+  if(d.hits) return head+(d.hits.length?'<div class="card"><table class="cards"><thead><tr><th>Match</th><th>PO</th><th>Vendor</th></tr></thead><tbody>'+d.hits.map(x=>'<tr data-trq="'+esc(x.po_no)+'" style="cursor:pointer"><td class="hint">'+esc(x.match)+'</td><td><b>'+esc(x.po_no)+'</b><div class="hint">'+esc(x.ref)+'</div></td><td class="hint">'+esc(x.vendor||'—')+'</td></tr>').join('')+'</tbody></table></div>'
+    :'<div class="card pad"><p class="hint" style="margin:0">Nothing matches that search.</p></div>');
+  const po=d.po||{}, lines=d.lines||[];
+  let h=head+'<div class="card pad" style="margin-bottom:12px"><div class="hint" style="font-size:11px;letter-spacing:.12em;text-transform:uppercase">Purchase order</div><h2 style="margin:4px 0 2px">'+esc(po.po_no||'')+'</h2>'+
+    '<div class="hint">'+esc(po.vendor||'No vendor')+(po.raised_at?' · raised '+esc(fmtD(ts(po.raised_at))):'')+(po.expected_date?' · expected '+esc(garDay(po.expected_date)):'')+' · '+lines.length+' item'+(lines.length===1?'':'s')+(po.ref?' · '+esc(po.ref):'')+'</div>'+garFileBtns(d.po_files)+'</div>';
+  h+='<div class="card" style="margin-bottom:12px">'+lines.map(l=>{ const on=l.id===garTraceLine, mt=garMachineType(l.item_code)||l.item_type||'';
+    return '<button class="gtr-line'+(on?' on':'')+'" data-trline="'+esc(l.id)+'" style="display:flex;width:100%;gap:10px;align-items:flex-start;border:0;border-top:1px solid var(--line);background:'+(on?'#F4F6FB':'none')+';padding:12px 16px;text-align:left;cursor:pointer;font:inherit">'+
+      '<span style="flex:1;min-width:0"><span class="hint num" style="font-size:11px">'+esc(l.item_code)+'</span><b style="display:block">'+esc(l.item_name)+'</b><span class="hint">Ordered '+esc(l.ordered)+' '+esc(l.unit||'')+' · received '+esc(l.received)+(mt?' · Machine type: '+esc(mt):'')+'</span></span>'+
+      '<span class="hint" style="max-width:46%;text-align:right;font-size:12px">'+esc(garWhereNow(l))+'</span></button>'; }).join('')+'</div>';
+  const line=lines.find(l=>l.id===garTraceLine);
+  if(!line) return h+'<p class="hint">Open an item to see its GRN, approvals, stock, issue and consumed path.</p>';
+  let tags=line.tags||[];
+  const qrPick='<div class="row" style="gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><label style="margin:0;font-weight:600">Show</label><select id="gtr-tag" style="width:auto;min-width:200px"><option value="">All '+tags.length+' QR</option>'+tags.map(t=>'<option value="'+esc(t.id)+'" '+(t.id===garTraceTag?'selected':'')+'>'+esc(t.id)+' · '+esc(garNowOf(t))+'</option>').join('')+'</select></div>';
+  if(garTraceTag) tags=tags.filter(t=>t.id===garTraceTag);
+  const recs=(line.receipts||[]).filter(r=>!garTraceTag||tags.some(t=>t.grn_no===r.grn_no));
+  const qrTable=(L,cols,empty)=>L.length?'<div style="overflow-x:auto;margin-top:6px"><table style="width:100%;min-width:520px;font-size:13px"><thead><tr><th style="text-align:left">QR</th>'+cols.map(c=>'<th style="text-align:left">'+esc(c[0])+'</th>').join('')+'</tr></thead><tbody>'+
+      L.map(t=>'<tr class="gtr-qr'+(t.id===d.focus_tag?' focus':'')+'"><td><button class="btn ghost sm" data-tag="'+esc(t.id)+'" style="padding:0;color:var(--indigo)">'+esc(t.id)+'</button></td>'+cols.map(c=>'<td>'+esc(c[1](t)||'—')+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>':'<p class="hint" style="margin:6px 0 0">'+esc(empty)+'</p>';
+  const step=(n,title,inner)=>'<div class="gtr-step"><div class="gtr-n">'+n+' · '+esc(title)+'</div><div style="margin-top:6px">'+inner+'</div></div>';
+  const arrow='<div class="gtr-arrow">↓</div>';
+  const store=tags.filter(t=>t.status==='in_store'), issued=tags.filter(t=>t.issued_at), used=tags.filter(t=>t.consumed_at||t.returned_at), repl=tags.filter(t=>t.replaced_from||t.replaced_by);
+  h+=qrPick+[
+    step(1,'Purchase order',garFacts([['PO',po.po_no],['Vendor',po.vendor],['Raised',po.raised_at?fmtD(ts(po.raised_at)):''],['Expected',garDay(po.expected_date)],['Item',line.item_name+(line.item_code?' · '+line.item_code:'')],['Machine type',garMachineType(line.item_code)||line.item_type||''],['Ordered',line.ordered+' '+(line.unit||'')],['Rate',line.rate?'₹'+line.rate:''],['Received so far',line.received+' '+(line.unit||'')]])),
+    step(2,'GRN',recs.length?recs.map(r=>'<div style="background:#F7F7F4;border-radius:10px;padding:10px 12px;margin-top:8px"><b>'+esc(r.grn_no||'—')+'</b> <span class="hint">'+esc(r.ref||'')+'</span>'+
+        garFacts([['Date',garDay(r.grn_date)],['Qty',(r.qty||0)+' '+(line.unit||'')],['Invoice',(r.invoice_no||'—')+(r.invoice_date?' · '+garDay(r.invoice_date):'')],['QR',r.series_from?(r.series_from+(r.series_to&&r.series_to!==r.series_from?' to '+r.series_to:'')):(r.minted?'':'made when approved')],['Taken by',(r.taken_by||'')+(r.taken_at?' · '+fmtDT(ts(r.taken_at)):'')]])+
+        garPhotoBtns([{path:r.material_photo,label:'Material'},{path:r.invoice_photo,label:'Invoice'},{path:r.eway_photo,label:'E-way bill'}])+garFileBtns(r.files)+'</div>').join(''):'<p class="hint" style="margin:0">No GRN for this item yet.</p>'),
+    step(3,'Approvals',recs.length?recs.map(r=>'<div style="margin-top:6px"><b style="font-size:13px">'+esc(r.grn_no||'—')+'</b>'+garFacts((r.approvals||[]).map(a=>[a.label.replace(/^Approve GRN — /,''),a.status==='done'?(a.by||'')+(a.at?' · '+fmtDT(ts(a.at)):''):a.status==='pending'?'With them now':'Waiting']).concat([['In store',r.minted?'Yes — QR made':'']]))+'</div>').join(''):'<p class="hint" style="margin:0">Approvals start after a GRN.</p>'),
+    step(4,'Inventory',qrTable(store,[['Now',garNowOf],['GRN',t=>t.grn_no]],'Nothing is in the warehouse for this item.')),
+    step(5,'Issue and allot',qrTable(issued,[['Issued',t=>fmtD(ts(t.issued_at))+(t.issued_to?' · to '+t.issued_to:'')+(t.station_no?' · '+t.station_no:'')+(t.issued_by?' · by '+t.issued_by:'')],['Allotted',t=>t.allotted_at?fmtD(ts(t.allotted_at))+(t.allotted_by?' · '+t.allotted_by:''):'Not allotted']],'Not issued yet.')+
+      garPhotoBtns(issued.filter(t=>t.allot_photo).map(t=>({path:t.allot_photo,label:t.id})))),
+    step(6,'Consumed and warehouse',qrTable(used,[['Consumed',t=>t.consumed_at?fmtD(ts(t.consumed_at))+(t.consumed_by?' · '+t.consumed_by:'')+(t.consume_remark?' · '+t.consume_remark:''):''],['Warehouse',t=>t.returned_at?fmtD(ts(t.returned_at))+(t.returned_by?' · '+t.returned_by:''):'Not back']],'Not consumed, and not returned to the warehouse.')),
+    step(7,'Replaced',repl.length?repl.map(t=>'<div class="hint" style="margin-top:4px"><b>'+esc(t.id)+'</b> '+(t.replaced_from?'replaces '+esc(t.replaced_from):'')+(t.replaced_by?' renewed as '+esc(t.replaced_by):'')+'</div>').join(''):'<p class="hint" style="margin:0">No replacement on this item.</p>')
+  ].join(arrow);
+  return h;
 }
 
 (async function boot(){
