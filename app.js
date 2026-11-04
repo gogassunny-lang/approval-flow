@@ -138,12 +138,14 @@ async function load(parts,flowIds){
   if(P.has('people')){ P.delete('people'); await loadPeople(); const me=DB.users.find(u=>u.id===(ME&&ME.id)); if(me) ME=me; }
   // Gate-Pass-only and HR-Head accounts only ever see the gate pages — don't download
   // every flow and request for them (500+ such accounts)
-  if(gateScopeOnly()){ P.delete('legacy'); P.delete('flows'); DB.requests=[]; DB.flows=[]; DB.audit=[]; }
+  // (legacy rows are still loaded for them: the server returns only requisitions they are part of)
+  if(gateScopeOnly()){ P.delete('flows'); DB.flows=[]; }
   const jobs=[];
   if(P.has('legacy')) jobs.push(loadLegacy());
   if(P.has('flows'))  jobs.push((flowIds&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):loadFlows());
   if(P.has('gate'))   jobs.push(loadGate());
   if(P.has('notif'))  jobs.push(loadNotifs());
+  if(P.has('legacy')||P.has('flows')) jobs.push(loadAmends());
   await Promise.all(jobs);
   lastLoadAt=Date.now();
   const me=DB.users.find(u=>u.id===(ME&&ME.id));
@@ -158,14 +160,17 @@ async function loadPeople(){
     SB.from('departments').select('name').order('name'),
     SB.from('projects').select('name').order('name'),
     SB.from('stations').select('*').order('name'),
-    SB.from('units').select('name').order('name')
+    SB.from('units').select('name').order('name'),
+    SB.from('req_hierarchies').select('*').order('created_at')
   ]);
   const bad=r.slice(0,5).find(x=>x.error); if(bad) throw bad.error;   // units is optional (table may not exist before migration 71)
   const [prof,tpl,dept,proj,st]=r.slice(0,5).map(x=>x.data||[]);
   const unit=(r[5]&&!r[5].error&&r[5].data)?r[5].data:[];
+  // fixed requisition hierarchies (99): the owner sees all, a person only their own; optional before 99 runs
+  DB.reqHier=((r[6]&&!r[6].error&&r[6].data)?r[6].data:[]).map(h=>({id:h.id,userId:h.user_id,work:h.work||'',chain:h.chain||[],updatedAt:ts(h.updated_at)}));
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,reqAccounts:!!p.req_accounts,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -202,7 +207,7 @@ async function loadLegacy(){
   const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
   DB.requests=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
@@ -242,7 +247,7 @@ async function loadNotifs(){
 function buildFlows(freq,fsteps,factors,ffiles,faudit){
   const FR={};
   const list=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,department:x.department||(x.fields&&x.fields.department)||'ALDS',requesterId:x.requester_id,
-    title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,amendId:x.amend_id||null,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     steps:[],audit:[]});
   const FS={};
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
@@ -289,7 +294,18 @@ async function loadFlowsSome(ids){
   if(stepIds.length){ const {data,error}=await SB.from('flow_step_actors').select('*').in('step_id',stepIds); if(error) throw error; factors=data||[]; }
   const fresh=buildFlows(freq,fsteps,factors,ffiles,faudit);
   DB.flows=DB.flows.filter(f=>ids.indexOf(f.id)<0).concat(fresh).sort((a,b)=>b.createdAt-a.createdAt);
+  await loadAmends();
 }
+/* amendments (98): small table, RLS returns only what this person may see; tolerated before 98 runs */
+const mapAmend=m=>({id:m.id,engine:m.engine,requestId:m.request_id,ref:m.ref||'',stepLabel:m.step_label||'',askedBy:m.asked_by,askedAt:ts(m.asked_at),
+  targetId:m.target_id,reason:m.reason||'',status:m.status,oldFiles:m.old_files||[],newFiles:m.new_files||[],note:m.note||'',doneBy:m.done_by,doneAt:ts(m.done_at)});
+async function loadAmends(){
+  try{ const {data,error}=await SB.from('amendments').select('*').order('asked_at',{ascending:false}).limit(1000);
+    if(!error) DB.amends=(data||[]).map(mapAmend); }catch(e){}
+}
+const amendsOf=(engine,id)=>(DB.amends||[]).filter(m=>m.engine===engine&&m.requestId===id);
+const amendOpen=(engine,id)=>(DB.amends||[]).find(m=>m.engine===engine&&m.requestId===id&&m.status==='open')||null;
+const myAmends=()=>(DB.amends||[]).filter(m=>m.status==='open'&&m.targetId===ME.id);
 async function gpExpireSweep(){
   try{
     const cut=Date.now()-7*864e5, paths=[];
@@ -353,8 +369,9 @@ function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
   if(r.status==='Info Requested'){   // parked on an ask: it's with the tagged person (first not yet replied), else the requester
     const tg=infoTargets(r), pend=tg.filter(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id));
     return tg.length?user((pend.length?pend:tg)[0]):user(r.requesterId); }
+  if(r.type==='requisition'&&r.acctPending) return {id:'',name:'Accounts',role:'Requisition accounts',dept:'',email:''};   // 100: the Accounts step
   const s=r.chain[r.current]; return s?user(s.userId):null }
-const isMyTurn=r=>r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;
+const isMyTurn=r=>r.status==='In Progress'&&!r.amendId&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;   // frozen for an amendment = nobody's turn
 // one reply per tagged person — did I already answer this ask?
 const iReplied=repl=>Array.isArray(repl)&&repl.some(e=>(e.user_id||e.userId)===ME.id);
 // the list of people a tag is directed at (supports old single-tag data)
@@ -400,12 +417,21 @@ function legacyAwaitingSection(){
     '</tbody></table></div>';
 }
 const deptAt=(r,i)=>i<0?(user(r.requesterId).dept||''):(user(r.chain[i].userId).dept||'');
-const docNo=r=>(r.type==='indent'?r.f.indentNo:r.f.orderNo)||'—';
-const typeLabel=r=>r.type==='indent'?'Indent':'Work order';
-const docTitle=r=>r.type==='indent'
+const docNo=r=>r.type==='requisition'?r.ref:((r.type==='indent'?r.f.indentNo:r.f.orderNo)||'—');
+const typeLabel=r=>r.type==='requisition'?'Requisition':r.type==='indent'?'Indent':'Work order';
+const docTitle=r=>r.type==='requisition'?(reqShort(r)+(r.f.amount?' · '+money(r.f.amount):'')):r.type==='indent'
   ? docNo(r)+(r.f.category==='Project'?(r.f.projectName?' · '+r.f.projectName:''):(r.f.siteName?' · '+r.f.siteName:''))
   : docNo(r)+(r.f.vendorName?' · '+r.f.vendorName:'');
 const pinOK=u=>!!(u&&u.pinDate===DAY());
+/* Requisition (99): on for everyone unless the super admin switched it off */
+const CAN_REQ=()=>!!(ME&&ME.canReq!==false);
+const reqAll=()=>DB.requests.filter(r=>r.type==='requisition');
+// 100: the Accounts step — the ticked team, else administrators (the server decides; this only shows it)
+const CAN_ACCT=()=>!!(ME&&(ME.owner||ME.reqAccounts||(ME.admin&&!DB.users.some(u=>u.reqAccounts&&u.active))));
+const reqShort=r=>{ const t=String(r.f.purpose||r.f.title||'Requisition').replace(/\s+/g,' ').trim(); return t.length>60?t.slice(0,58)+'…':t; };
+const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&CAN_ACCT()));
+const reqInvolved=()=>reqAll().filter(r=>inChain(r));
+const reqPageOn=()=>CAN_REQ()||reqInvolved().length>0||myAmends().some(m=>m.engine==='legacy');
 const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
 
 /* ---------- gate pass ---------- */
@@ -1180,7 +1206,7 @@ function purgeUserDialog(u){
 
 /* ---------- notifications ---------- */
 const unread=()=>(DB.notifs||[]).filter(x=>!x.read);
-const KIND_ICON={landed:'➜',reply:'↩',task:'✎',task_closed:'✓',info:'?',approved:'✓',rejected:'✕',reassigned:'⇄',nudge:'👉'};
+const KIND_ICON={amend:'✎',reply:'↩',task:'✎',task_closed:'✓',info:'?',approved:'✓',rejected:'✕',reassigned:'⇄',nudge:'👉'};
 function viewInbox(){
   head('Notifications','Everything that landed on your desk');
   const l=DB.notifs||[];
@@ -1426,19 +1452,20 @@ const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
-  if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail';   // worklist + own gate passes + read-only detail
-  if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda';   // manage users (+ gate pass as an employee)
-  return k==='gate'||k==='gpreport'; };
+  if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
+  if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda'||k==='req'||k==='detail';   // manage users (+ gate pass as an employee)
+  return k==='gate'||k==='gpreport'||k==='req'||k==='detail'; };
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'assist',label:'Assisting',grp:'Overview',when:()=>ASSISTANT(),badge:()=>assistErpTodo().length},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
+  {k:'req',label:'Requisition',grp:'Overview',when:()=>reqPageOn(),badge:()=>reqWaiting().length},
   {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length+flowMyTurn().length},
   {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
-  {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length+flowTagged().length},
+  {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length+flowTagged().length+myAmends().length},
   {k:'mine',label:'My requests',grp:'My work'},
   {k:'tpl',label:'Saved hierarchies',grp:'My work',badge:()=>myTemplates().length},
   {k:'team',label:'My team',grp:'My work',when:()=>isManager(ME),badge:()=>pendingTeam(ME.id).length},
@@ -1483,13 +1510,15 @@ function paintTabbar(){
   const bar=$('#tabbar'); if(!bar||!ME) return;
   const on=k=>ROUTE.name===k?'on':'';
   if(restrictedAcct()){
+    const rq=restrictedPage('req')&&reqPageOn(), rqn=reqWaiting().length+myAmends().length;
     bar.innerHTML='<button data-k="gate" class="raise '+on('gate')+'">'+ICON.plus+'Gate Pass'+(gpBadge()?'<span class="pill">'+gpBadge()+'</span>':'')+'</button>'+
+      (rq?'<button data-k="req" class="'+on('req')+'">'+ICON.desk+'Requisition'+(rqn?'<span class="pill">'+rqn+'</span>':'')+'</button>':'')+
       (canSeeReports()?'<button data-k="gpreport" class="'+on('gpreport')+'">'+ICON.desk+'Reports</button>':'')+
-      '<button data-k="more" class="'+(!['gate','gpreport'].includes(ROUTE.name)?'on':'')+'">'+ICON.more+'More</button>';
+      '<button data-k="more" class="'+(!['gate','gpreport','req'].includes(ROUTE.name)?'on':'')+'">'+ICON.more+'More</button>';
     $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
     return;
   }
-  const desk=myQueue().length+myTasks().length+myStuck().length+flowMyTurn().length+flowTagged().length, un=unread().length;
+  const desk=myQueue().length+myTasks().length+myStuck().length+flowMyTurn().length+flowTagged().length+myAmends().length, un=unread().length;
   const inDesk=['queue','tasks','stuck'].includes(ROUTE.name);
   const inMore=!['dash','queue','tasks','stuck','new','inbox'].includes(ROUTE.name);
   bar.innerHTML=
@@ -1505,7 +1534,7 @@ function moreSheet(){
   modal({title:'More',
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
-      (restrictedAcct()?'':'<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>')+
+      ((restrictedAcct()&&!reqPageOn())?'':'<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>')+
       '<button data-act="me">My directory entry</button><button data-act="pw">Change password</button>'+
       '<button data-act="out" style="color:var(--stop)">Sign out</button></div>'+
       '<div class="hint" style="margin-top:12px;text-align:center">'+esc(ME.name)+' · '+esc(ME.role||'')+'<br>Built by Sunny Gupta</div>',
@@ -1555,7 +1584,8 @@ function render(){
     case 'new': v.innerHTML=viewNew(); wireNew(v); break;
     case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.',(flowMyTurn().length+legacyAwaiting().length+flowAwaitingReply().length)>0)+flowSection('turn')+legacyAwaitingSection()+flowSection('awaiting'); wireList(v); wireFlowRows(v); break;
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
-    case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.',flowTagged().length>0)+flowSection('tagged'); wireList(v); wireFlowRows(v); break;
+    case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.',flowTagged().length>0||myAmends().length>0)+amendMineSection()+flowSection('tagged'); wireList(v); wireFlowRows(v); wireAmendRows(v); break;
+    case 'req': v.innerHTML=viewReq(); wireReq(v); break;
     case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.',flowMine().length>0)+flowSection('mine'); wireList(v); wireFlowRows(v); break;
     case 'running': v.innerHTML=flowSection('running')||'<div class="card"><div class="empty"><h3>Nothing in progress</h3><p class="hint">Every running ALDS / CNG file you can see would be listed here.</p></div></div>'; wireFlowRows(v);
       head('In progress','Every running file you can see — who it is with and at which stage'); break;
@@ -1589,6 +1619,7 @@ function render(){
    ============================================================ */
 const stat=(k,v,s,acc,nav)=>'<div class="card stat'+(nav?' tap':'')+'"'+(nav?' data-navk="'+esc(nav)+'" role="button" tabindex="0"':'')+' style="--acc:'+(acc||'var(--indigo)')+'"><div class="k">'+esc(k)+'</div><div class="v num">'+esc(String(v))+'</div><div class="hint">'+esc(s||'')+'</div></div>';
 function tagFor(r){
+  if(r.type==='requisition'&&r.acctPending&&r.status==='In Progress') return '<span class="tag t-prog">With Accounts</span>';
   const m={'In Progress':['t-prog','In progress'],'Approved':['t-ok','Approved'],'Rejected':['t-bad','Rejected'],'Info Requested':['t-hold','More details needed']};
   const x=m[r.status]||['t-wait',r.status]; return '<span class="tag '+x[0]+'">'+x[1]+'</span>';
 }
@@ -1705,14 +1736,14 @@ const txt=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="
   '<input id="'+id+'" type="text" value="'+esc(val||'')+'"'+(ph?' placeholder="'+esc(ph)+'"':'')+'></div>';
 const area=(id,label,val,conf,ph)=>'<div class="auto '+(conf||'')+'"><label for="'+id+'">'+esc(label)+(conf?'<span class="flag '+conf+'">from PDF</span>':'')+'</label>'+
   '<textarea id="'+id+'"'+(ph?' placeholder="'+esc(ph)+'"':'')+'>'+esc(val||'')+'</textarea></div>';
-/* Department and Division — mandatory, Division cascades from Department */
+/* Department and Division — Department optional (blank = a normal custom chain); Division cascades from Department */
 function orgFields(){
   const f=draft.f, divs=f.department?(DEPT_DIV[f.department]||[]):[];
   const req='<span style="color:var(--stop)">*</span>';
   // Division is mandatory only for ALDS (it selects the fixed flow); optional elsewhere.
   const divReq=f.department==='ALDS'?req:'<span class="hint" style="font-weight:400">optional</span>';
   return '<div class="grid g2">'+
-    '<div><label for="o-dept">Department '+req+'</label><select id="o-dept"><option value="">Choose…</option>'+
+    '<div><label for="o-dept">Department <span class="hint" style="font-weight:400">optional</span></label><select id="o-dept"><option value="">Choose… (optional)</option>'+
       DEPTS.map(d=>'<option '+(f.department===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
     '<div><label for="o-div">Division '+divReq+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?(f.department==='ALDS'?'Choose…':'Choose… (optional)'):'Pick a department first')+'</option>'+
       divs.map(x=>'<option '+(f.division===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select></div></div>';
@@ -1892,7 +1923,6 @@ function wireNew(v){
 }
 async function submit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
-  if(!f.department) return note.textContent='Choose a department.';
   // Division is only required for ALDS (it decides the fixed PO/WO flow vs Transport).
   // For every other department the request is a custom chain, so Division is optional.
   if(f.department==='ALDS'&&!f.division) return note.textContent='Choose a division for the ALDS request.';
@@ -1955,6 +1985,7 @@ function stepLabel(r){
   if(r.status==='Approved') return 'Cleared all '+r.chain.length+' approvers';
   if(r.status==='Rejected'){const i=r.chain.findIndex(s=>s.status==='rejected');return i>-1?'Closed by '+user(r.chain[i].userId).name:'Closed'}
   if(r.status==='Info Requested') return user(r.chain[r.infoStep].userId).name+' asked for more';
+  if(!r.chain[r.current]) return r.type==='requisition'&&r.acctPending?'All approvers signed — with Accounts':'No one left on the chain';
   return 'Step '+(r.current+2)+' of '+(r.chain.length+1)+' — with '+user(r.chain[r.current].userId).name;
 }
 function rowsHTML(list){
@@ -2026,8 +2057,8 @@ function viewDetail(id){
   const r=DB.requests.find(x=>x.id===id);
   if(!r) return '<div class="card"><div class="empty"><h3>That request is not visible to you</h3><p class="hint">It may have been raised in a chain you are not part of.</p></div></div>';
   head(docTitle(r),'Custom chain · '+typeLabel(r)+' · '+r.ref+' · raised by '+user(r.requesterId).name+' on '+fmtD(r.createdAt));
-  const mine=isMyTurn(r), info=needsMyInfo(r), f=r.f, mt=myOpenTask(r);
-  const mayExtend=(r.requesterId===ME.id||ME.admin||ME.owner)&&r.status!=='Rejected';
+  const mine=isMyTurn(r), info=needsMyInfo(r), f=r.f, mt=myOpenTask(r), am=amendOpen('legacy',r.id);
+  const mayExtend=(r.requesterId===ME.id||ME.admin||ME.owner)&&r.status!=='Rejected'&&!(r.chainLocked&&!ME.owner);
   let banner='';
   if(mayExtend&&r.status==='Approved') banner='<div class="banner hold"><div><b>This closed after only '+r.chain.length+' approver'+(r.chain.length>1?'s':'')+'.</b><div class="hint" style="color:var(--hold)">If more people still need to sign, add them — the request reopens and moves to the next one. Reopening is recorded.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-extend">Add approvers</button></div>';
   else if(mayExtend&&r.status==='In Progress'&&!holder(r)) banner='<div class="banner hold"><div><b>This request has no one left to act on it.</b><div class="hint" style="color:var(--hold)">Add the next approver(s) to keep it moving.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-extend">Add approvers</button></div>';
@@ -2036,7 +2067,9 @@ function viewDetail(id){
   else if(info) banner='<div class="banner hold"><div><b>'+esc(user(r.chain[r.infoStep].userId).name)+' has asked you for more.</b><div class="hint">Reply at step '+(r.infoStep+2)+' below. The chain picks up where it stopped.</div></div></div>';
   else if(r.status==='Info Requested'&&r.chain[r.infoStep]&&r.chain[r.infoStep].userId===ME.id){ const tg=infoTargets(r), who=tg.length?tg.map(id=>user(id).name).join(', '):user(r.requesterId).name, done=(r.infoReplies||[]).length;
     banner='<div class="banner hold"><div><b>You asked '+esc(who)+' for more.</b><div class="hint">'+(tg.length>1?done+' of '+tg.length+' have replied. ':'')+'It comes back to you once '+(tg.length>1?'everyone has':'they have')+' responded.</div></div></div>'; }
-  else if(r.status==='In Progress') banner='<div class="banner live"><div><b>With '+esc(user(r.chain[r.current].userId).name)+' at step '+(r.current+2)+'.</b><div class="hint">You can follow the whole chain, but only the holder can act.</div></div></div>';
+  else if(r.status==='In Progress'&&r.chain[r.current]) banner='<div class="banner live"><div><b>With '+esc(user(r.chain[r.current].userId).name)+' at step '+(r.current+2)+'.</b><div class="hint">You can follow the whole chain, but only the holder can act.</div></div></div>';
+  if(am) banner=amendBannerHTML(am);
+  if(r.type==='requisition'&&r.acctPending&&r.status==='In Progress') banner='<div class="banner live"><div><b>All approvers have signed — with Accounts.</b><div class="hint">The requisition accounts team fills the approved amount, cash / cheque and the voucher / cheque no.</div></div></div>';
 
   let nodes='<div class="node done"><div class="dot">1</div><div class="body"><div class="row"><div><h4>'+esc(user(r.requesterId).name)+'</h4><div class="meta">'+esc(user(r.requesterId).role)+(user(r.requesterId).dept?' · '+esc(user(r.requesterId).dept):'')+' — raised this request</div></div>'+
     '<span class="tag t-ok" style="margin-left:auto">Raised</span></div><div class="meta" style="margin-top:6px">'+esc(fmtDT(r.createdAt))+'</div>'+fileListHTML(r.files)+'</div></div>';
@@ -2060,7 +2093,7 @@ function viewDetail(id){
     else if(ME.owner&&(s.status==='approved'||s.status==='conditional'||s.status==='rejected'))
       ownerLegacyBtn='<button class="btn ghost sm" data-rwd="'+i+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
     let detourLegBtn='';
-    if((r.status==='In Progress'||r.status==='Info Requested')&&(s.status==='pending'||s.status==='waiting')&&(r.requesterId===ME.id||ME.admin||ME.owner))
+    if((r.status==='In Progress'||r.status==='Info Requested')&&!r.amendId&&!(r.chainLocked&&!ME.owner)&&(s.status==='pending'||s.status==='waiting')&&(r.requesterId===ME.id||ME.admin||ME.owner))
       detourLegBtn='<button class="btn ghost sm" data-ldetour="'+i+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
     const sysBtn=(ownerLegacyBtn||detourLegBtn)?'<div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">'+ownerLegacyBtn+detourLegBtn+'</div>':'';
     nodes+='<div class="node '+cls+'" id="step-'+i+'"'+(s.isDetour?' style="margin-left:22px;border-left:3px solid var(--indigo);padding-left:12px"':'')+'><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+(s.isDetour?'<span class="tag" style="font-size:10px;background:var(--indigo);color:#fff;border-color:var(--indigo)">↪ CROSS-CHECK</span> ':'')+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
@@ -2079,13 +2112,13 @@ function viewDetail(id){
       '<div class="hint" style="margin-top:11px">No PIN needed — only the approval itself is signed.</div></div>';
   } else if(mine){
     const step=r.chain[r.current], blocked=stepBlocked(step), team=teamOf(ME.id), closed=tasksOf(step).filter(t=>t.status!=='open'&&t.status!=='withdrawn').length, given=tasksOf(step).filter(t=>t.status!=='withdrawn').length;
-    panel='<div class="card pad"><h3>Your decision</h3><p class="hint" style="margin-top:5px">'+(r.current+1===r.chain.length?'You are the last approver. Approving closes this out.':'Approving passes it to '+esc(user(r.chain[r.current+1].userId).name)+'.')+'</p>'+
+    panel='<div class="card pad"><h3>Your decision</h3><p class="hint" style="margin-top:5px">'+(r.current+1===r.chain.length?(r.type==='requisition'?'You are the last approver. Approving sends it to Accounts for the amount and voucher / cheque.':'You are the last approver. Approving closes this out.'):'Approving passes it to '+esc(user(r.chain[r.current+1].userId).name)+'.')+'</p>'+
       (isManager(ME)?'<div class="sep"></div><div class="row" style="justify-content:space-between"><div><b style="font-size:13.5px">Your team</b><div class="hint">'+(given?closed+' of '+given+' tasks closed':'Hand out the internal work before you sign.')+'</div></div>'+
         '<button class="btn sm" id="a-assign" '+(team.length?'':'disabled title="Confirm your team first"')+'>Give work to someone</button></div>'+(team.length?'':'<div class="hint" style="color:var(--hold);margin-top:8px">Nobody is on your team yet. Add them under My team.</div>'):'')+
       (blocked?'<div class="banner hold" style="margin-top:14px"><div><b>'+openTasks(step).length+' task still open.</b><div class="hint" style="color:var(--hold)">You can approve once your team has closed everything you gave out.</div></div></div>':'')+
       '<div style="margin-top:14px"><label for="d-rem">Remarks</label><textarea id="d-rem" placeholder="What you checked and what you are relying on."></textarea></div><div style="margin-top:12px"><label>Attach anything</label><div id="d-files"></div></div><div class="sep"></div>'+
       '<div class="grid" style="gap:9px"><button class="btn ok" id="a-ok" '+(blocked?'disabled':'')+'>Approve and pass on</button><button class="btn" id="a-cond" '+(blocked?'disabled':'')+'>Approve with a condition</button>'+
-      '<button class="btn hold" id="a-info">Ask the requester for more</button><button class="btn bad" id="a-no">Reject and close</button></div>'+
+      '<button class="btn hold" id="a-info">Ask the requester for more</button>'+(r.type!=='requisition'?'<button class="btn" id="a-amend">✎ Ask for an amendment</button>':'')+'<button class="btn bad" id="a-no">Reject and close</button></div>'+
       '<div class="hint" style="margin-top:11px">The ERP document cannot be changed from here. If it is wrong, reject it and have it reissued.</div></div>';
   } else if(info){
     const tg=infoTargets(r), idx=tg.indexOf(ME.id), more=tg.length>1&&idx>-1&&idx<tg.length-1, asker=user(r.chain[r.infoStep].userId);
@@ -2106,18 +2139,18 @@ function viewDetail(id){
       ((r.requesterId===ME.id||ME.admin||ME.owner)&&r.status==='Approved'?'<div class="sep"></div><button class="btn sm" id="d-extend2">Add more approvers</button>':'')+
       (inChain(r)||ME.admin?'<div class="sep"></div><label for="nt">Leave a note</label><textarea id="nt" placeholder="A comment for the chain. It does not move the request."></textarea><button class="btn sm" id="ntb" style="margin-top:9px">Post note</button>':'')+'</div>';
   }
-  const facts='<div class="card pad" style="margin-bottom:16px">'+(r.type==='workorder'?'<div class="amount num">'+money(f.amountPost)+'</div><div class="hint">'+money(f.amountPre)+' before GST'+(f.amountPre&&f.amountPost?' · GST '+money(f.amountPost-f.amountPre):'')+'</div>':'<div class="amount num">'+esc(docNo(r))+'</div>')+
+  const facts=r.type==='requisition'?reqFactsHTML(r):'<div class="card pad" style="margin-bottom:16px">'+(r.type==='workorder'?'<div class="amount num">'+money(f.amountPost)+'</div><div class="hint">'+money(f.amountPre)+' before GST'+(f.amountPre&&f.amountPost?' · GST '+money(f.amountPost-f.amountPre):'')+'</div>':'<div class="amount num">'+esc(docNo(r))+'</div>')+
     '<div style="margin:8px 0 14px">'+tagFor(r)+'</div><dl class="kv"><dt>Reference</dt><dd class="num">'+esc(r.ref)+'</dd><dt>Type</dt><dd>'+esc(typeLabel(r))+'</dd>'+(f.department?'<dt>Department</dt><dd>'+esc(f.department)+'</dd>':'')+(f.division?'<dt>Division</dt><dd>'+esc(f.division)+'</dd>':'')+(f.erpCreated?'<dt>ERP prepared</dt><dd>'+esc(f.erpCreated)+'</dd>':'')+
     (r.type==='indent'?'<dt>Category</dt><dd>'+esc(f.category||'—')+(f.subCategory?' · '+esc(f.subCategory):'')+'</dd><dt>'+(f.category==='Project'?'Project':'Site')+'</dt><dd>'+esc(f.category==='Project'?(f.projectName||'—'):(f.siteName||'—'))+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Indent date</dt><dd>'+esc(fmtD(f.indentDate))+'</dd>'
       :'<dt>Order date</dt><dd>'+esc(fmtD(f.woDate))+'</dd><dt>Site</dt><dd>'+esc(f.siteName||'—')+(f.siteCode?' ('+esc(f.siteCode)+')':'')+'</dd><dt>Vendor</dt><dd>'+esc(f.vendorName||'—')+'</dd>'+
        (f.vendorAddress?'<dt>Address</dt><dd>'+esc(f.vendorAddress)+'</dd>':'')+(f.vendorState?'<dt>State</dt><dd>'+esc(f.vendorState)+(f.vendorStateCode?' ('+esc(f.vendorStateCode)+')':'')+'</dd>':'')+
        (f.vendorGstin?'<dt>GSTIN</dt><dd class="num">'+esc(f.vendorGstin)+'</dd>':'')+(f.vendorPan?'<dt>PAN</dt><dd class="num">'+esc(f.vendorPan)+'</dd>':'')+(f.vendorContact?'<dt>Contact</dt><dd>'+esc(f.vendorContact)+'</dd>':'')+(f.billingAddress?'<dt>Billing to</dt><dd>'+esc(f.billingAddress)+'</dd>':''))+
     '<dt>Raised</dt><dd>'+esc(fmtD(r.createdAt))+'</dd><dt>Approvers</dt><dd>'+r.chain.length+' in sequence</dd></dl>'+(f.remarks?'<div class="sep"></div><div class="hint" style="margin-bottom:5px">Remarks</div><div style="white-space:pre-wrap">'+esc(f.remarks)+'</div>':'')+
-    ((r.requesterId===ME.id||ME.admin)&&r.status!=='Rejected'&&r.status!=='Info Requested'&&!isMyTurn(r)?'<div class="sep"></div><button class="btn sm" id="d-extend3" style="width:100%">'+(r.status==='Approved'?'Reopen and add the next approver':'Add the next approver')+'</button>':'')+
+    ((r.requesterId===ME.id||ME.admin)&&!(r.chainLocked&&!ME.owner)&&r.status!=='Rejected'&&r.status!=='Info Requested'&&!isMyTurn(r)?'<div class="sep"></div><button class="btn sm" id="d-extend3" style="width:100%">'+(r.status==='Approved'?'Reopen and add the next approver':'Add the next approver')+'</button>':'')+
     (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
   const nudges=DB.audit.filter(a=>a.reqId===r.id&&a.action==='Nudge').sort((a,b)=>b.ts-a.ts);
   const nudgeCard=nudges.length?'<div class="card pad" style="margin-top:16px"><h3>Nudges</h3>'+nudges.map(a=>'<div class="hint" style="padding:6px 0;border-bottom:1px solid var(--line)"><b>'+esc(a.actorName)+'</b> '+esc(a.detail)+' · '+esc(fmtDT(a.ts))+'</div>').join('')+'</div>':'';
-  return '<div class="row" style="margin-bottom:12px;gap:6px"><button class="btn ghost sm" id="d-back">Back</button>'+(ME.gateOnly?'':'<button class="btn sm" id="d-nudge" style="margin-left:auto" title="Ask someone to move this request — they get a notification with your message">👉 Nudge</button>')+'</div>'+banner+'<div class="detail-grid"><div><div class="card pad"><h3 style="margin-bottom:16px">The chain</h3><div class="rail">'+nodes+'</div></div>'+notes+nudgeCard+'</div><div>'+facts+panel+'</div></div>';
+  return '<div class="row" style="margin-bottom:12px;gap:6px"><button class="btn ghost sm" id="d-back">Back</button>'+(ME.gateOnly?'':'<button class="btn sm" id="d-nudge" style="margin-left:auto" title="Ask someone to move this request — they get a notification with your message">👉 Nudge</button>')+'</div>'+banner+'<div class="detail-grid"><div><div class="card pad"><h3 style="margin-bottom:16px">The chain'+(r.chainLocked?' <span class="tag t-wait" style="font-size:11px">🔒 Fixed by the super admin</span>':'')+'</h3><div class="rail">'+nodes+'</div></div>'+amendHistoryHTML(amendsOf('legacy',r.id))+notes+nudgeCard+'</div><div>'+facts+(am?'':(r.type==='requisition'&&r.acctPending&&r.status==='In Progress'?reqAcctPanelHTML(r):panel))+'</div></div>';
 }
 /* Super-admin override (legacy chain): system-approve up to and including a position */
 function sysApproveTo(position){
@@ -2167,7 +2200,9 @@ function legacyDetourDialog(reqId,afterPos){
       :'<p class="hint" style="margin:6px 0 0">No one added yet.</p>';
     $$('.ld-rm',mv).forEach(b=>b.onclick=()=>{chosen.splice(+b.dataset.i,1);paint(mv);}); };
   modal({title:'Add a cross-check',
-    body:'<p class="hint" style="margin-top:0">The request will go to these people — one after another, in this order — right after <b>'+esc(afterName)+'</b>, then carry on down the chain. Each can approve or reject (a reject sends it back to you).</p>'+
+    body:'<p class="hint" style="margin-top:0">'+((afterPos===r.current&&r.status==='In Progress')
+        ?'The request goes to these people <b>now</b> — one after another, in this order. <b>'+esc(afterName)+'</b> waits and gets it back once they approve.'
+        :'The request will go to these people — one after another, in this order — right after <b>'+esc(afterName)+'</b>, then carry on down the chain.')+' Each can approve or reject (a reject sends it back to you). Someone who already has an open cross-check cannot be added again.</p>'+
       '<div class="row" style="gap:8px;margin-top:12px"><select id="ld-u" style="flex:1"><option value="">— choose a person —</option>'+opts+'</select><button class="btn sm" id="ld-add">Add</button></div>'+
       '<div id="ld-list" style="margin-top:8px"></div>'+
       '<div id="ld-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
@@ -2176,13 +2211,17 @@ function legacyDetourDialog(reqId,afterPos){
       $('#ld-add',mv).onclick=()=>{ const id=$('#ld-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#ld-err',mv).textContent='Already added.';return;} chosen.push(id); $('#ld-u',mv).value=''; $('#ld-err',mv).textContent=''; paint(mv); };
       $('#ld-go',mv).onclick=async()=>{ if(!chosen.length) return $('#ld-err',mv).textContent='Add at least one person.';
         $('#ld-go',mv).disabled=true;
-        try{ const n=await rpc('legacy_add_detour',{p_request:reqId,p_after_pos:afterPos,p_users:chosen}); await load(['legacy','notif']); cl(); toast('Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
+        try{ const now=(afterPos===r.current&&r.status==='In Progress'); const n=await rpc('legacy_add_detour',{p_request:reqId,p_after_pos:afterPos,p_users:chosen}); await load(['legacy','notif']); cl(); toast(now?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
         catch(e){ $('#ld-go',mv).disabled=false; $('#ld-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
 }
 function wireDetail(v){
   const r=DB.requests.find(x=>x.id===ROUTE.id); if(!r) return;
   $('#d-back',v).onclick=()=>{ if(history.length>1) history.back(); else go({name:'all'}); };
   if($('#d-nudge',v)) $('#d-nudge',v).onclick=()=>nudgeDialog('legacy',ROUTE.id);
+  wireAmend(v,'legacy',r.id);
+  if($('#a-amend',v)) $('#a-amend',v).onclick=()=>amendAskDialog('legacy',r.id,null);
+  if($('#d-slip',v)) $('#d-slip',v).onclick=()=>reqSlipDialog(r);
+  wireReqAcct(v,r);
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
   $$('[data-ldetour]',v).forEach(b=>b.onclick=()=>legacyDetourDialog(ROUTE.id,+b.dataset.ldetour));
@@ -2233,7 +2272,7 @@ function wireDetail(v){
       const nxt=last?null:user(r.chain[r.current+1].userId);
       modal({title:'Before you approve',
         body:'<p style="margin-top:0">'+(last
-              ? 'You are the last approver. Approving <b>closes '+esc(docNo(r))+'</b>.'
+              ? (r.type==='requisition'?'You are the last approver. Approving sends <b>'+esc(docNo(r))+'</b> to Accounts.':'You are the last approver. Approving <b>closes '+esc(docNo(r))+'</b>.')
               : 'After you, '+esc(docNo(r))+' goes to:')+'</p>'+
           (nxt?'<div class="filerow" style="margin-top:10px"><div class="av sm">'+inits(nxt.name)+'</div><div><b>'+esc(nxt.name)+'</b><div class="hint">'+esc(nxt.role||'')+(nxt.dept?' · '+esc(nxt.dept):'')+'</div></div></div>':'')+
           '<div id="ins-wrap" style="margin-top:14px"><button class="btn sm" id="ins-add">Add someone before '+(nxt?esc(nxt.name.split(" ")[0]):'closing')+'</button></div>'+
@@ -2775,7 +2814,7 @@ function accessLabel(u){
   const t=[]; if(u.owner)t.push('Owner'); if(u.admin)t.push('Admin');
   if(!u.admin&&!u.owner&&(u.canCreateUsers||u.canManageUsers)){const pr=[]; if(u.canCreateUsers)pr.push('create'); if(u.canManageUsers)pr.push('manage'); t.push('Sub-admin ('+pr.join('/')+')');}
   if(u.manager)t.push('Manager');
-  if(u.seeAll)t.push('Sees all'); if(u.gateman)t.push('Gateman'); if(u.hrHead)t.push('HR Head'); if(u.gateOnly)t.push('Gate only');
+  if(u.seeAll)t.push('Sees all'); if(u.gateman)t.push('Gateman'); if(u.hrHead)t.push('HR Head'); if(u.gateOnly)t.push('Gate only'); if(u.canReq===false)t.push('No requisition'); if(u.reqAccounts)t.push('Requisition accounts');
   if(u.assistsId){const pr=DB.users.find(x=>x.id===u.assistsId); t.push('Assistant to '+(pr?pr.name:'—'));}
   return t.join(', ')||'User';
 }
@@ -2834,6 +2873,8 @@ function wirePeople(v){
           '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gsite" style="width:auto" '+(u.garudaSite?'checked':'')+'> <span><b>Garuda — Site role</b><div class="hint">At the station: allots (fits) a QR and marks it consumed.</div></span></label>'+
           '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-cngpo" style="width:auto" '+(u.cngPo?'checked':'')+'> <span><b>Can raise CNG PO/WO</b><div class="hint">The "Create PO / WO" step of every CNG file lands on the people ticked here (like the ALDS purchase team). Ticking someone puts the live CNG files on their desk at once; if nobody is ticked, admins get them.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gate" style="width:auto" '+(u.gateman?'checked':'')+'> <span><b>Gateman</b><div class="hint">Clears people out at the gate: sees the approval selfies and closes each gate pass.</div></span></label>'+
+        (ME.owner?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-req" style="width:auto" '+(u.canReq!==false?'checked':'')+'> <span><b>Requisition</b><div class="hint">Can raise requisitions from the Requisition page. On for everyone by default; untick to switch it off for this person.</div></span></label>'+
+          '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-reqacct" style="width:auto" '+(u.reqAccounts?'checked':'')+'> <span><b>Requisition accounts</b><div class="hint">After the last approver signs, a requisition comes to the people ticked here. Any one of them fills the approved amount, Cash / Cheque and the voucher / cheque no. If nobody is ticked, administrators do it.</div></span></label>':'')+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gateonly" style="width:auto" '+(u.gateOnly?'checked':'')+'> <span><b>Gate Pass only</b><div class="hint">This account signs in to the Gate Pass page and nothing else — no dashboard, requests or records.</div></span></label>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-hrhead" style="width:auto" '+(u.hrHead?'checked':'')+'> <span><b>HR Head (Gate Pass reports)</b><div class="hint">Sees every gate pass (view only) and the Gate Pass Reports page. Restricted to those two pages.</div></span></label>'+
         '<div><label for="e-assist">Assistant to (proxy) <span class="hint" style="font-weight:400">optional</span></label><select id="e-assist"><option value="">— nobody —</option>'+DB.users.filter(x=>x.active&&x.id!==u.id&&!x.owner).slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>'<option value="'+x.id+'" '+(u.assistsId===x.id?'selected':'')+'>'+esc(x.name)+'</option>').join('')+'</select><div class="hint">Makes this a proxy for that person: a read-only view of their pending and approved items, no approval buttons, plus an “ERP entry done” button. Restricted to the Assisting page.</div></div>'+
@@ -2871,6 +2912,8 @@ function wirePeople(v){
           if(ccEl&&cmEl&&(ccEl.checked!==!!u.canCreateUsers||cmEl.checked!==!!u.canManageUsers)) await rpc('set_subadmin',{p_user:u.id,p_create:ccEl.checked,p_manage:cmEl.checked});
           if($('#e-gate',mv)&&$('#e-gate',mv).checked!==!!u.gateman) await rpc('set_gateman',{p_user:u.id,p_on:$('#e-gate',mv).checked});
           if($('#e-gateonly',mv)&&$('#e-gateonly',mv).checked!==!!u.gateOnly) await rpc('set_gate_only',{p_user:u.id,p_on:$('#e-gateonly',mv).checked});
+          if($('#e-req',mv)&&$('#e-req',mv).checked!==(u.canReq!==false)) await rpc('set_requisition',{p_user:u.id,p_on:$('#e-req',mv).checked});
+          if($('#e-reqacct',mv)&&$('#e-reqacct',mv).checked!==!!u.reqAccounts) await rpc('set_req_accounts',{p_user:u.id,p_on:$('#e-reqacct',mv).checked});
           if($('#e-hrhead',mv)&&$('#e-hrhead',mv).checked!==!!u.hrHead) await rpc('set_hr_head',{p_user:u.id,p_on:$('#e-hrhead',mv).checked});
           if($('#e-assist',mv)){ const av=$('#e-assist',mv).value||null; if((av||null)!==(u.assistsId||null)) await rpc('set_assists',{p_user:u.id,p_principal:av}); }
           if(!adm&&$('#e-pages',mv)) await rpc('set_pages',{p_user:u.id,p_pages:readChecklist('e-pages',mv)});
@@ -4755,8 +4798,10 @@ const flowActiveTag=s=>{ if(!s||!s.infoRequested) return null; const tg=infoTarg
 //   actionable  : it's with me and I can act now (not parked on an ask)
 //   taggedToMe  : I'm the person it's currently parked on (my input needed)
 //   awaitingMine: I asked / own the step but it's parked on someone else right now
-const flowActionableByMe=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
-const flowTaggedToMe=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false; const tg=infoTargets(s);
+const flowActionableByMe=f=>{const s=flowLive(f); return !!(!f.amendId&&s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
+// an ask stays open on its step even when a cross-check was put in front of it (98)
+const flowAskStep=f=>{const s=flowLive(f); if(s&&s.infoRequested) return s; return f.steps.find(x=>x.status==='waiting'&&x.infoRequested)||null};
+const flowTaggedToMe=f=>{const s=flowAskStep(f); if(!s||!s.infoRequested) return false; const tg=infoTargets(s);
   return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
 const flowAwaitingMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
   return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
@@ -4939,7 +4984,7 @@ function flowStepRow(f,s){
     assignBtn='<button class="btn ghost sm" data-fassign="'+s.id+'" style="color:var(--seal);padding:2px 9px">👤 Change approver</button>';
   // cross-check detour: the raiser or an admin can insert extra approver(s) after this step (not yet passed)
   let detourBtn='';
-  if(f.status==='running'&&(s.status==='pending'||s.status==='waiting')&&(f.requesterId===ME.id||ME.admin||ME.owner))
+  if(f.status==='running'&&!f.amendId&&(s.status==='pending'||s.status==='waiting')&&(f.requesterId===ME.id||ME.admin||ME.owner))
     detourBtn='<button class="btn ghost sm" data-fdetour="'+s.id+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
   const sysBtn=(ownerBtn||assignBtn||detourBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+detourBtn+'</div>':'';
   // item 9: show clearly WHO the live step is pending with (the tagged person when parked, else the actors)
@@ -4994,11 +5039,16 @@ function viewFlowDetail(id){
   });
   if(f.audit.length) left+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
     f.audit.slice().reverse().map(a=>'<div class="hint" style="padding:3px 0"><b>'+esc(a.actorName||'')+'</b> — '+esc(a.action)+(a.detail?' · '+esc(a.detail):'')+' · '+esc(fmtDT(a.ts))+'</div>').join('')+'</div></div>';
-  return '<div class="detail-grid"><div>'+left+'</div><div>'+flowSidePanel(f)+'</div></div>';
+  const amh=amendHistoryHTML(amendsOf('flow',f.id));
+  if(amh) left=left.replace('<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3>',amh+'<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3>');
+  if(amh&&left.indexOf(amh)<0) left+=amh;
+  return '<div class="detail-grid"><div>'+(f.amendId&&f.status==='running'?amendBannerHTML(amendOpen('flow',f.id)||{}):'')+left+'</div><div>'+flowSidePanel(f)+'</div></div>';
 }
 /* the right-hand options panel for whoever is viewing */
 function flowSidePanel(f){
-  const s=flowLive(f);
+  const am=amendOpen('flow',f.id); if(am&&f.status==='running') return amendPanelHTML(am);
+  let s=flowLive(f);
+  { const a=flowAskStep(f); if(a&&a!==s&&flowTaggedToMe(f)) s=a; }   // tagged on an ask that a cross-check went in front of
   if(!s) return '<div class="card pad"><h3>'+(f.status==='completed'?'Completed':f.status==='cancelled'?'Cancelled':'Nothing to do')+'</h3><p class="hint" style="margin-top:6px">This flow has no open step right now.</p></div>';
   const mine=s.actors.indexOf(ME.id)>-1||s.actorKind==='any', isReq=f.requesterId===ME.id;
   const canEsc=s.escalatable&&flowRaiserHod(f)===ME.id;
@@ -5062,6 +5112,7 @@ function flowSidePanel(f){
         '<button class="btn hold" data-fask="'+s.id+'">Ask the requester for more</button>'+
         (s.canReject?'<button class="btn bad" data-freject="'+s.id+'">Reject</button>':'');
     }
+    if(s.pos>0) body+='<button class="btn" data-famend="'+s.id+'">✎ Ask for an amendment</button>';
     if(canEsc) body+='<button class="btn hold" data-fesc="'+s.id+'">Escalate past CMD</button>';
     body+='</div>'+(s.cmdDual?'<p class="hint" style="margin-top:12px"><b>Approve</b> signs for you and the file still goes to the CMD desk. <b>Approve as CMD</b> signs for you and clears the CMD desk in one go, so the file moves straight on.</p>':'<p class="hint" style="margin-top:12px">The document cannot be changed from here. Ask the requester for more, or reject it and have it reissued.</p>')+'</div>';
     return body;
@@ -5073,6 +5124,8 @@ function wireFlowDetail(v){
   if($('#fl-back',v)) $('#fl-back',v).onclick=()=>history.back();
   if($('#fl-del',v)) $('#fl-del',v).onclick=()=>flowCancelDialog(ROUTE.id);
   if($('#fl-nudge',v)) $('#fl-nudge',v).onclick=()=>nudgeDialog('flow',ROUTE.id);
+  wireAmend(v,'flow',ROUTE.id);
+  $$('[data-famend]',v).forEach(b=>b.onclick=()=>amendAskDialog('flow',ROUTE.id,b.dataset.famend));
   $$('[data-ffile]',v).forEach(b=>b.onclick=()=>{ const id=b.dataset.ffile;
     let rec=null; DB.flows.forEach(f=>f.steps.forEach(s=>s.files.forEach(fl=>{if(fl.id===id)rec=fl}))); if(rec) openViewer(rec); });
   $$('[data-freject]',v).forEach(b=>b.onclick=()=>flowReject(b.dataset.freject));
@@ -5352,7 +5405,9 @@ function flowDetourDialog(stepId){
       :'<p class="hint" style="margin:6px 0 0">No one added yet.</p>';
     $$('.cd-rm',mv).forEach(b=>b.onclick=()=>{chosen.splice(+b.dataset.i,1);paint(mv);}); };
   modal({title:'Add a cross-check',
-    body:'<p class="hint" style="margin-top:0">The file will go to these people — one after another, in this order — right after <b>'+esc(s.label)+'</b>, then return to the normal flow. Each can approve or reject (a reject sends it back to you to re-raise).</p>'+
+    body:'<p class="hint" style="margin-top:0">'+(s.status==='pending'
+        ?'The file goes to these people <b>now</b> — one after another, in this order. <b>'+esc(s.label)+'</b> waits and gets it back once they approve.'
+        :'The file will go to these people — one after another, in this order — right after <b>'+esc(s.label)+'</b>, then return to the normal flow.')+' Each can approve or reject (a reject sends it back to you to re-raise). Someone who already has an open cross-check on this file cannot be added again.</p>'+
       '<div class="row" style="gap:8px;margin-top:12px"><select id="cd-u" style="flex:1"><option value="">— choose a person —</option>'+opts+'</select><button class="btn sm" id="cd-add">Add</button></div>'+
       '<div id="cd-list" style="margin-top:8px"></div>'+
       '<div id="cd-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
@@ -5361,7 +5416,7 @@ function flowDetourDialog(stepId){
       $('#cd-add',mv).onclick=()=>{ const id=$('#cd-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#cd-err',mv).textContent='Already added.';return;} chosen.push(id); $('#cd-u',mv).value=''; $('#cd-err',mv).textContent=''; paint(mv); };
       $('#cd-go',mv).onclick=async()=>{ if(!chosen.length) return $('#cd-err',mv).textContent='Add at least one person.';
         $('#cd-go',mv).disabled=true;
-        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast('Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
+        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast(s.status==='pending'?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' after '+s.label+'.','ok'); render(); }
         catch(e){ $('#cd-go',mv).disabled=false; $('#cd-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
 }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
@@ -5637,6 +5692,335 @@ document.addEventListener('visibilitychange',()=>{
 });
 if('serviceWorker' in navigator&&location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 document.title=CONFIG.APP_NAME||'SETU';
+
+/* ============================================================
+   v126 — Amendment (98) · Requisition + fixed hierarchies (99)
+   ============================================================ */
+/* a small "pick a person" box: type a name / employee ID / department, tap a result */
+function personPicker(mount,opts){
+  opts=opts||{};
+  mount.innerHTML='<div class="finder"><input type="text" class="pp-in" placeholder="'+esc(opts.placeholder||'Type a name, employee ID or department')+'" autocomplete="off"><div class="pp-res"></div></div>';
+  const inp=$('.pp-in',mount), res=$('.pp-res',mount);
+  inp.oninput=()=>{ const q=inp.value.trim().toLowerCase(); if(!q){res.innerHTML='';return}
+    const ex=(opts.exclude?opts.exclude():[]);
+    const hits=DB.users.filter(u=>u.active&&ex.indexOf(u.id)<0&&(u.name+' '+(u.empId||'')+' '+(u.email||'')+' '+(u.dept||'')+' '+(u.role||'')).toLowerCase().includes(q)).slice(0,7);
+    res.innerHTML='<div class="results">'+(hits.length?hits.map(u=>'<button type="button" data-u="'+u.id+'"><div class="av sm">'+inits(u.name)+'</div><div style="min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div></div></button>').join('')
+      :'<div style="padding:10px 12px" class="hint">Nobody matches.</div>')+'</div>';
+    $$('button[data-u]',res).forEach(b=>b.onclick=()=>{ inp.value=''; res.innerHTML=''; opts.onPick&&opts.onPick(b.dataset.u); });
+  };
+  return inp;
+}
+/* an ordered approver list with remove / move-up */
+function chainChips(ids,editable){
+  if(!ids.length) return '<p class="hint" style="margin:6px 0 0">No approvers yet.</p>';
+  return ids.map((id,i)=>{ const u=user(id);
+    return '<div class="filerow" style="gap:8px"><span class="tag t-prog">'+(i+1)+'</span><div style="flex:1;min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div>'+
+      (editable?(i>0?'<button type="button" class="btn ghost sm" data-up="'+i+'" title="Move up">↑</button>':'')+'<button type="button" class="btn ghost sm" data-rm="'+i+'" style="color:var(--stop)">Remove</button>':'')+'</div>'; }).join('');
+}
+function wireChainChips(scope,ids,repaint){
+  $$('[data-rm]',scope).forEach(b=>b.onclick=()=>{ ids.splice(+b.dataset.rm,1); repaint(); });
+  $$('[data-up]',scope).forEach(b=>b.onclick=()=>{ const i=+b.dataset.up; const t=ids[i-1]; ids[i-1]=ids[i]; ids[i]=t; repaint(); });
+}
+
+/* ---------------- Amendment ---------------- */
+const amendFileBtns=(am,which)=>{ const L=(which==='old'?am.oldFiles:am.newFiles)||[];
+  return L.length?L.map((x,i)=>'<button class="btn sm" data-amf="'+am.id+'|'+which+'|'+i+'" title="'+esc(x.name||'')+'">'+(which==='old'?'📄 ':'📝 ')+esc(x.name||'file')+'</button>').join(' '):'<span class="hint">—</span>'; };
+function amendBannerHTML(am){
+  if(!am||!am.id) return '<div class="banner hold" style="margin-bottom:12px"><div><b>Frozen for an amendment.</b></div></div>';
+  const t=user(am.targetId), a=user(am.askedBy);
+  return '<div class="banner hold" style="margin-bottom:12px"><div><b>Frozen for an amendment — with '+esc(t.name)+'.</b>'+
+    '<div class="hint" style="color:var(--hold)">'+esc(a.name)+' asked at <b>'+esc(am.stepLabel||'the current step')+'</b> on '+esc(fmtDT(am.askedAt))+': “'+esc(am.reason)+'”. Nobody can sign until the amended PDF is uploaded; then every signature restarts from the first approver.</div></div></div>';
+}
+function amendPanelHTML(am){
+  const t=user(am.targetId), a=user(am.askedBy), mineT=am.targetId===ME.id||ME.owner, canCancel=am.askedBy===ME.id||ME.admin||ME.owner;
+  return '<div class="card pad" style="border-color:var(--hold)"><h3>'+(am.targetId===ME.id?'Amendment asked of you':'Frozen for an amendment')+'</h3>'+
+    '<p class="hint" style="margin-top:6px">'+esc(a.name)+' asked <b>'+esc(t.name)+'</b> at <b>'+esc(am.stepLabel||'the current step')+'</b>:</p>'+
+    '<div class="banner hold" style="margin-top:8px"><div>'+esc(am.reason)+'</div></div>'+
+    '<div class="hint" style="margin-top:10px">Document as it stands: '+amendFileBtns(am,'old')+'</div>'+
+    (mineT?'<button class="btn primary" data-amup="'+am.id+'" style="margin-top:12px;width:100%">⬆ Upload the amended PDF</button>':'<p class="hint" style="margin-top:10px">Waiting for '+esc(t.name)+' to upload the amended PDF.</p>')+
+    (canCancel?'<button class="btn ghost sm" data-amcancel="'+am.id+'" style="margin-top:10px;color:var(--stop)">Cancel this amendment</button>':'')+
+    '<p class="hint" style="margin-top:12px">When the amended PDF is uploaded, the old and the new PDF both stay on this file and every signature restarts from the first approver.</p></div>';
+}
+function amendHistoryHTML(list){
+  if(!list||!list.length) return '';
+  return '<div class="card pad" style="margin-bottom:12px;margin-top:16px"><h3>Amendments</h3>'+list.slice().sort((x,y)=>x.askedAt-y.askedAt).map((am,i)=>{
+    const st=am.status==='done'?'<span class="tag t-ok">Amended</span>':am.status==='open'?'<span class="tag t-hold">Waiting for the amended PDF</span>':'<span class="tag t-wait">Cancelled</span>';
+    return '<div style="padding:10px 0;border-top:'+(i?'1px solid var(--line)':'0')+'"><div class="row" style="gap:8px;flex-wrap:wrap"><b>Amendment '+(i+1)+'</b>'+st+'</div>'+
+      '<div class="hint" style="margin-top:4px">'+esc(user(am.askedBy).name)+' asked '+esc(user(am.targetId).name)+' at '+esc(am.stepLabel||'—')+' · '+esc(fmtDT(am.askedAt))+'</div>'+
+      '<div class="said" style="margin-top:6px">'+esc(am.reason)+'</div>'+
+      '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px;align-items:center"><span class="hint" style="min-width:74px">Original</span>'+amendFileBtns(am,'old')+'</div>'+
+      (am.status==='done'?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center"><span class="hint" style="min-width:74px">Amended</span>'+amendFileBtns(am,'new')+'</div>'+
+        '<div class="hint" style="margin-top:4px">Uploaded by '+esc(user(am.doneBy).name)+' · '+esc(fmtDT(am.doneAt))+(am.note?' · “'+esc(am.note)+'”':'')+' — approvals restarted</div>':'')+
+      (am.status==='cancelled'?'<div class="hint" style="margin-top:4px">Cancelled by '+esc(user(am.doneBy).name)+' · '+esc(fmtDT(am.doneAt))+(am.note?' · “'+esc(am.note)+'”':'')+'</div>':'')+
+      '</div>'; }).join('')+'</div>';
+}
+function wireAmend(v,engine,id){
+  $$('[data-amf]',v).forEach(b=>b.onclick=()=>{ const [aid,which,i]=b.dataset.amf.split('|'); const am=(DB.amends||[]).find(m=>m.id===aid); if(!am) return;
+    const x=(which==='old'?am.oldFiles:am.newFiles)[+i]; if(!x) return;
+    openViewer({id:'am-'+aid+'-'+which+'-'+i,name:x.name||'file',path:x.path,size:Number(x.size)||0,_tbl:'amend',reqId:id}); });
+  $$('[data-amup]',v).forEach(b=>b.onclick=()=>{ const am=(DB.amends||[]).find(m=>m.id===b.dataset.amup); if(am) amendUploadDialog(am); });
+  $$('[data-amcancel]',v).forEach(b=>b.onclick=()=>{ const am=(DB.amends||[]).find(m=>m.id===b.dataset.amcancel); if(am) amendCancelDialog(am); });
+}
+async function amendRefresh(engine,id){
+  if(engine==='flow') await load(['flows','notif'],[id]); else await load(['legacy','notif']);
+  await loadAmends();
+}
+function amendAskDialog(engine,reqId,stepId){
+  let target=null;
+  const raiser=engine==='flow'?((DB.flows.find(f=>f.id===reqId)||{}).requesterId):((DB.requests.find(r=>r.id===reqId)||{}).requesterId);
+  modal({title:'Ask for an amendment',
+    body:'<p class="hint" style="margin-top:0">Tag the person who should correct the document. The file <b>freezes here</b> — nobody can sign it — until they upload the amended PDF. Then <b>every signature restarts</b> from the first approver, and the old and the amended PDF both stay on the file.</p>'+
+      '<label style="margin-top:12px">Who should make the amendment</label><div id="am-picked" style="margin-top:4px"></div><div id="am-pick" style="margin-top:6px"></div>'+
+      (raiser&&raiser!==ME.id?'<button type="button" class="btn ghost sm" id="am-raiser" style="margin-top:6px">Tag the raiser — '+esc(user(raiser).name)+'</button>':'')+
+      '<div style="margin-top:12px"><label for="am-why">What needs to be amended</label><textarea id="am-why" placeholder="e.g. Rate on line 2 should be 610, not 650"></textarea></div>'+
+      '<div id="am-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="am-go">Ask for amendment</button>',
+    onOpen:(mv,cl)=>{
+      const paint=()=>{ $('#am-picked',mv).innerHTML=target?'<div class="filerow"><div class="av sm">'+inits(user(target).name)+'</div><div style="flex:1"><b>'+esc(user(target).name)+'</b><div class="hint">'+esc(user(target).role||'')+'</div></div><button type="button" class="btn ghost sm" id="am-clear">Change</button></div>':'';
+        $('#am-pick',mv).style.display=target?'none':''; if($('#am-clear',mv)) $('#am-clear',mv).onclick=()=>{target=null;paint();}; };
+      personPicker($('#am-pick',mv),{onPick:id=>{target=id;paint();}}); paint();
+      if($('#am-raiser',mv)) $('#am-raiser',mv).onclick=()=>{target=raiser;paint();};
+      $('#am-go',mv).onclick=()=>{ const why=$('#am-why',mv).value.trim();
+        if(!target) return $('#am-err',mv).textContent='Tag the person who should amend it.';
+        if(why.length<3) return $('#am-err',mv).textContent='Say what needs to be amended.';
+        cl(); setTimeout(()=>confirmPin('ask '+user(target).name+' for an amendment',async pin=>{
+          if(engine==='flow') await rpc('flow_amend_ask',{p_step:stepId,p_target:target,p_reason:why,p_pin:pin});
+          else await rpc('legacy_amend_ask',{p_request:reqId,p_target:target,p_reason:why,p_pin:pin});
+          await amendRefresh(engine,reqId); toast('Frozen — sent to '+user(target).name+' for the amendment.','ok'); render();
+        }),0); };
+    }});
+}
+function amendUploadDialog(am){
+  const files=[];
+  modal({title:'Upload the amended PDF',
+    body:'<p class="hint" style="margin-top:0">'+esc(user(am.askedBy).name)+' asked: <b>'+esc(am.reason)+'</b></p><div id="au-files" style="margin-top:10px"></div>'+
+      '<div style="margin-top:12px"><label for="au-note">Note <span class="hint" style="font-weight:400">optional</span></label><textarea id="au-note" placeholder="What you changed"></textarea></div>'+
+      '<p class="hint" style="margin-top:10px">The original stays on the file next to this one. Every signature restarts from the first approver.</p>'+
+      '<div id="au-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="au-go">Upload and restart approvals</button>',
+    onOpen:(mv,cl)=>{
+      uploader($('#au-files',mv),files,{label:'Attach the amended PDF (Excel or Word also accepted)'});
+      $('#au-go',mv).onclick=async()=>{ if(!files.length) return $('#au-err',mv).textContent='Attach the amended PDF.';
+        $('#au-go',mv).disabled=true;
+        try{ await rpc('amend_submit',{p_amend:am.id,p_files:filesPayload(files),p_note:$('#au-note',mv).value.trim()});
+          cl(); await amendRefresh(am.engine,am.requestId); toast('Amended PDF uploaded — approvals restart from the first approver.','ok'); render(); }
+        catch(e){ $('#au-go',mv).disabled=false; $('#au-err',mv).textContent=(e&&e.message||'Could not upload.').replace(/^.*?: /,''); } };
+    }});
+}
+function amendCancelDialog(am){
+  modal({title:'Cancel this amendment?',
+    body:'<p style="margin-top:0">The file unfreezes and stays where it was (<b>'+esc(am.stepLabel||'the current step')+'</b>). No signature is undone.</p><div style="margin-top:10px"><label for="ac-why">Reason <span class="hint" style="font-weight:400">optional</span></label><textarea id="ac-why"></textarea></div><div id="ac-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="ac-go">Cancel the amendment</button>',
+    onOpen:(mv,cl)=>{ $('#ac-go',mv).onclick=async()=>{ $('#ac-go',mv).disabled=true;
+      try{ await rpc('amend_cancel',{p_amend:am.id,p_reason:$('#ac-why',mv).value.trim()}); cl(); await amendRefresh(am.engine,am.requestId); toast('Amendment cancelled — the file moves again.','ok'); render(); }
+      catch(e){ $('#ac-go',mv).disabled=false; $('#ac-err',mv).textContent=(e&&e.message||'Could not cancel.').replace(/^.*?: /,''); } }; }});
+}
+/* "Needs my input": amendments asked of me */
+function amendMineSection(){
+  const L=myAmends(); if(!L.length) return '';
+  return '<div class="card" style="margin-top:16px;margin-bottom:16px;border-color:var(--hold)"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Amendments asked of you</h3><span class="tag t-hold" style="margin-left:auto">'+L.length+'</span></div><table class="cards"><tbody>'+
+    L.map(am=>'<tr data-amgo="'+am.engine+'|'+am.requestId+'" style="cursor:pointer"><td><b>'+esc(am.ref)+'</b><div class="hint">'+esc(user(am.askedBy).name)+' · '+esc(am.stepLabel||'')+'</div><div class="hint">“'+esc(am.reason)+'”</div></td><td class="meta"><span class="tag t-hold">Upload the amended PDF</span></td></tr>').join('')+
+    '</tbody></table></div>';
+}
+function wireAmendRows(v){
+  $$('[data-amgo]',v).forEach(tr=>tr.onclick=()=>{ const [e,id]=tr.dataset.amgo.split('|'); go(e==='flow'?{name:'flowdetail',id}:{name:'detail',id}); });
+}
+
+/* ---------------- Requisition ---------------- */
+let reqDraft=null;
+const reqNewDraft=()=>({work:'',amount:'',purpose:'',chain:[],files:[]});
+const myFixed=()=>(DB.reqHier||[]).filter(h=>h.userId===ME.id);
+const fixedFor=w=>{ const k=String(w||'').trim().toLowerCase(); return k?myFixed().find(h=>h.work.toLowerCase()===k)||null:null; };
+/* rupees in words, Indian style: 1,25,000.50 → "Rupees One Lakh Twenty Five Thousand and Fifty Paise Only" */
+function numToWordsIN(n){
+  n=Number(n); if(!isFinite(n)||n<=0) return '';
+  const ones=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const tens=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  const two=x=>x<20?ones[x]:tens[Math.floor(x/10)]+(x%10?' '+ones[x%10]:'');
+  const three=x=>(x>=100?ones[Math.floor(x/100)]+' Hundred'+(x%100?' '+two(x%100):''):two(x));
+  let r=Math.floor(n), p=Math.round((n-r)*100); if(p===100){ r+=1; p=0; }
+  const parts=[]; const cr=Math.floor(r/1e7); r%=1e7; const la=Math.floor(r/1e5); r%=1e5; const th=Math.floor(r/1e3); r%=1e3;
+  if(cr) parts.push((cr>=1000?numToWordsIN(cr).replace(/^Rupees |\sOnly$/g,''):three(cr))+' Crore');
+  if(la) parts.push(two(la)+' Lakh'); if(th) parts.push(two(th)+' Thousand'); if(r) parts.push(three(r));
+  let w='Rupees '+(parts.join(' ')||'Zero'); if(p) w+=' and '+two(p)+' Paise'; return w+' Only';
+}
+const reqApproverRows=r=>r.chain.map(s=>{ const u=user(s.userId), signed=s.status==='approved'||s.status==='conditional';
+  return {name:u.name,role:u.role||'',date:signed?fmtDT(s.actedAt):'',state:signed?(s.status==='conditional'?'Approved with a condition':'Approved'):s.status==='rejected'?'Rejected':s.status==='pending'?'With them now':s.status==='info'?'Asked for more':'Waiting'}; });
+function reqFactsHTML(r){
+  const f=r.f, ap=f.approval||null, raiser=user(r.requesterId);
+  const row=(k,v)=>'<dt>'+esc(k)+'</dt><dd>'+v+'</dd>';
+  return '<div class="card pad" style="margin-bottom:16px"><div class="row" style="gap:8px;align-items:center"><h3 style="margin:0">Requisition Slip</h3><span style="margin-left:auto">'+tagFor(r)+'</span></div>'+
+    (r.amendId?'<div style="margin-top:6px"><span class="tag t-hold">Frozen for an amendment</span></div>':'')+
+    '<dl class="kv" style="margin-top:12px">'+row('Reference','<span class="num">'+esc(r.ref)+'</span>')+row('Name',esc(f.name||raiser.name))+row('Designation',esc(f.designation||raiser.role||'—'))+
+      row('Rupees','<b class="num">'+esc(money(f.amount))+'</b>')+row('In words',esc(numToWordsIN(f.amount)||'—'))+(f.work?row('Type of work',esc(f.work)):'')+
+      row('Sign',esc(f.name||raiser.name)+' <span class="hint">· signed on raising</span>')+row('Date',esc(fmtDT(r.createdAt)))+'</dl>'+
+    '<div class="sep"></div><div class="hint" style="margin-bottom:5px">Purpose</div><div style="white-space:pre-wrap">'+esc(f.purpose||f.title||'—')+'</div>'+
+    '<div class="sep"></div><h3 style="font-size:15px">Approval</h3><dl class="kv" style="margin-top:8px">'+
+      row('Approved for amount',ap?'<b class="num">'+esc(money(ap.amount))+'</b><div class="hint">'+esc(numToWordsIN(ap.amount))+'</div>':'<span class="hint">'+(r.acctPending?'With Accounts':'After all approvals')+'</span>')+
+      row('Disbursement',ap?esc(ap.method==='cheque'?'Cheque':'Cash'):'<span class="hint">Cash / Cheque</span>')+
+      row(ap&&ap.method==='cheque'?'Cheque No.':'Voucher / Cheque No.',ap?'<span class="num">'+esc(ap.ref)+'</span>':'<span class="hint">—</span>')+
+      (ap?row('By accounts',esc(ap.by_name||'')+(ap.at?' · '+esc(fmtDT(ap.at)):'')):'')+'</dl>'+
+    '<table class="cards" style="margin-top:10px"><thead><tr><th>Approving authority</th><th>Designation</th><th>Date</th></tr></thead><tbody>'+
+      reqApproverRows(r).map(x=>'<tr><td><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.state)+'</div></td><td class="meta">'+esc(x.role||'—')+'</td><td class="meta">'+esc(x.date||'—')+'</td></tr>').join('')+'</tbody></table>'+
+    (r.chainLocked?'<div class="hint" style="margin-top:8px">🔒 Approvers fixed by the super admin</div>':'')+
+    '<button class="btn sm" id="d-slip" style="width:100%;margin-top:12px">🖨 Print / Download slip</button>'+
+    (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
+}
+/* the Accounts step panel (100) */
+function reqAcctPanelHTML(r){
+  if(!CAN_ACCT()) return '<div class="card pad"><h3>With Accounts</h3><p class="hint" style="margin-top:6px">Every approver has signed. The requisition accounts team fills the approved amount and the voucher / cheque no., then it closes.</p></div>';
+  return '<div class="card pad" style="border-color:var(--indigo)"><h3>Accounts — complete the slip</h3><p class="hint" style="margin-top:5px">Requested '+esc(money(r.f.amount))+'. Fill the approval part and sign with your PIN; the requisition then closes as approved.</p>'+
+    '<div style="margin-top:12px"><label for="ra-amt">Approved for amount (₹)</label><input id="ra-amt" type="number" min="0" step="0.01" value="'+esc(r.f.amount||'')+'"><div class="hint" id="ra-words" style="margin-top:4px">'+esc(numToWordsIN(r.f.amount))+'</div></div>'+
+    '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
+    '<div style="margin-top:12px"><label for="ra-ref" id="ra-reflbl">Voucher / Cheque No.</label><input id="ra-ref" type="text"></div>'+
+    '<div id="ra-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
+    '<button class="btn primary" id="ra-go" style="width:100%;margin-top:12px">Sign and close the requisition</button></div>';
+}
+function wireReqAcct(v,r){
+  if(!$('#ra-go',v)) return;
+  let method='';
+  const amt=$('#ra-amt',v); amt.oninput=()=>{ $('#ra-words',v).textContent=numToWordsIN(amt.value); };
+  $$('[data-ram]',v).forEach(b=>b.onclick=()=>{ method=b.dataset.ram; $$('[data-ram]',v).forEach(x=>x.classList.toggle('primary',x===b));
+    $('#ra-reflbl',v).textContent=method==='cash'?'Voucher No.':'Cheque No.'; });
+  $('#ra-go',v).onclick=()=>{ const err=$('#ra-err',v), a=Number(amt.value), ref=$('#ra-ref',v).value.trim();
+    if(!(a>0)) return err.textContent='Enter the approved amount.'; if(!method) return err.textContent='Choose Cash or Cheque.';
+    if(!ref) return err.textContent=method==='cash'?'Enter the voucher number.':'Enter the cheque number.';
+    confirmPin('close '+r.ref+' for '+money(a),async pin=>{
+      await rpc('req_accounts_close',{p_request:r.id,p_amount:a,p_method:method,p_ref:ref,p_pin:pin});
+      await load(['legacy','notif']); toast('Requisition closed — approved for '+money(a)+'.','ok'); go({name:'detail',id:r.id}); }); };
+}
+/* printable slip, laid out like the paper Requisition Slip */
+function reqSlipHTML(r){
+  const f=r.f, ap=f.approval||{}, raiser=user(r.requesterId), line=(k,v)=>'<div class="ln"><span class="k">'+esc(k)+'</span><span class="v">'+v+'</span></div>';
+  const rows=reqApproverRows(r);
+  return '<!doctype html><html><head><meta charset="utf-8"><title>'+esc(r.ref)+'</title><style>'+
+    'body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:0;padding:24px}.slip{max-width:720px;margin:0 auto;border:1px solid #999;padding:28px 32px}'+
+    'h1{text-align:center;font-size:24px;margin:0 0 6px}.ref{text-align:center;color:#555;font-size:12px;margin-bottom:18px}'+
+    '.ln{display:flex;gap:8px;align-items:flex-end;margin:10px 0}.k{font-weight:600;white-space:nowrap;font-size:14px}.v{flex:1;border-bottom:1px solid #333;min-height:20px;padding:0 4px 2px;font-size:14px;white-space:pre-wrap}'+
+    'h2{font-size:16px;margin:22px 0 6px;border-top:1px solid #333;padding-top:12px}table{width:100%;border-collapse:collapse;margin-top:14px}td,th{border:1px solid #333;padding:8px;font-size:13px;text-align:left;vertical-align:top}th{background:#f2f2f2}'+
+    '.foot{margin-top:14px;font-size:11px;color:#666}@media print{body{padding:0}.slip{border:0}}</style></head><body><div class="slip">'+
+    '<h1>Requisition Slip</h1><div class="ref">Confidence Petroleum India Ltd · '+esc(r.ref)+' · SETU</div>'+
+    line('NAME :',esc(f.name||raiser.name))+line('DESIGNATION :',esc(f.designation||raiser.role||''))+
+    '<div style="display:flex;gap:16px">'+line('Rupees :',esc(money(f.amount)))+'</div>'+line('In Words',esc(numToWordsIN(f.amount)))+
+    (f.work?line('Type of work :',esc(f.work)):'')+line('Purpose :',esc(f.purpose||f.title||''))+
+    '<div style="display:flex;gap:24px">'+line('Sign.',esc(f.name||raiser.name)+' (signed in SETU)')+line('Date :',esc(fmtDT(r.createdAt)))+'</div>'+
+    '<h2>APPROVAL</h2>'+line('Approved for Amount',ap.amount?esc(money(ap.amount))+' — '+esc(numToWordsIN(ap.amount)):'')+
+    line('Method of disbursement :',ap.method?(ap.method==='cheque'?'Cheque':'Cash'):'Cash / Cheque')+
+    line('Details : Voucher / Cheque No.',esc(ap.ref||''))+
+    '<table><thead><tr><th>Approving authority</th><th>Designation</th><th>Date</th></tr></thead><tbody>'+
+      rows.map(x=>'<tr><td>'+esc(x.name)+(x.date?'':' <i style="color:#777">('+esc(x.state)+')</i>')+'</td><td>'+esc(x.role)+'</td><td>'+esc(x.date)+'</td></tr>').join('')+
+      (ap.by_name?'<tr><td>'+esc(ap.by_name)+' <i style="color:#777">(Accounts)</i></td><td>'+esc(ap.by_role||'')+'</td><td>'+esc(fmtDT(ap.at))+'</td></tr>':'')+
+    '</tbody></table><div class="foot">Every signature above was made in SETU with that person\'s daily PIN. Printed '+esc(fmtDT(Date.now()))+'.</div></div></body></html>';
+}
+function reqSlipDialog(r){
+  modal({title:'Requisition slip · '+r.ref,cls:'wide',
+    body:'<iframe id="rs-frame" style="width:100%;height:65vh;border:1px solid var(--line);border-radius:8px;background:#fff"></iframe>',
+    footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="rs-print">🖨 Print / Save as PDF</button>',
+    onOpen:(mv)=>{ const fr=$('#rs-frame',mv); fr.srcdoc=reqSlipHTML(r);
+      $('#rs-print',mv).onclick=()=>{ try{ fr.contentWindow.focus(); fr.contentWindow.print(); }catch(e){ toast('Printing is not available here — open SETU in a browser to print.','bad'); } }; }});
+}
+function reqRows(list,empty){
+  if(!list.length) return '<div class="hint" style="padding:12px 18px">'+esc(empty)+'</div>';
+  return '<table class="cards"><tbody>'+list.map(r=>{ const h=holder(r);
+    return '<tr data-rq="'+r.id+'" style="cursor:pointer"><td><b>'+esc(money(r.f.amount))+'</b> · '+esc(reqShort(r))+'<div class="hint">'+esc(r.ref)+(r.f.work?' · '+esc(r.f.work):'')+' · '+esc(user(r.requesterId).name)+' · '+esc(fmtD(r.createdAt))+'</div>'+
+      (r.amendId?'<div class="hint" style="color:var(--hold)">Frozen for an amendment</div>':h&&r.status==='In Progress'?'<div class="hint">With <b>'+esc(h.name)+'</b></div>':'')+'</td><td class="meta">'+tagFor(r)+'</td></tr>'; }).join('')+'</tbody></table>';
+}
+function viewReq(){
+  head('Requisition','Raise a requisition and follow its signatures');
+  if(!reqDraft) reqDraft=reqNewDraft();
+  const d=reqDraft, fx=fixedFor(d.work), works=myFixed().map(h=>h.work), me=ME;
+  let h='';
+  if(CAN_REQ()){
+    h+='<div class="card pad" style="margin-bottom:16px"><h3>Requisition Slip</h3>'+
+      '<div class="grid g2" style="gap:13px;margin-top:12px">'+
+        '<div><label>Name</label><input type="text" value="'+esc(me.name)+'" disabled></div>'+
+        '<div><label>Designation</label><input type="text" value="'+esc(me.role||'')+'" disabled></div>'+
+        '<div><label for="rq-amt">Rupees</label><input id="rq-amt" type="number" min="1" step="0.01" inputmode="decimal" value="'+esc(d.amount)+'" placeholder="Amount in ₹"></div>'+
+        '<div><label for="rq-work">Type of work <span class="hint" style="font-weight:400">optional</span></label><input id="rq-work" type="text" list="rq-works" value="'+esc(d.work)+'" placeholder="Anything — e.g. Stationery, Travel advance">'+
+          '<datalist id="rq-works">'+works.map(w=>'<option value="'+esc(w)+'">').join('')+'</datalist></div>'+
+      '</div>'+
+      '<div style="margin-top:8px"><label>In words</label><div id="rq-words" class="said" style="margin:4px 0 0;min-height:22px">'+esc(numToWordsIN(d.amount)||'—')+'</div></div>'+
+      '<div style="margin-top:12px"><label for="rq-purpose">Purpose</label><textarea id="rq-purpose" rows="4" placeholder="What the money is for">'+esc(d.purpose)+'</textarea></div>'+
+      '<div style="margin-top:12px"><label>Attachments <span class="hint" style="font-weight:400">optional</span></label><div id="rq-files"></div></div>'+
+      '<div class="hint" style="margin-top:10px">Sign · Date — your name and the date are signed in when you send it.</div>'+
+      '<div class="sep"></div><h3 style="font-size:15px">Approving authorities, in order</h3>'+
+      (fx?'<div class="banner" style="margin-top:8px"><div><b>🔒 Fixed by the super admin for “'+esc(fx.work)+'”.</b><div class="hint">This chain is set for you and cannot be changed.</div></div></div><div style="margin-top:8px">'+chainChips(fx.chain,false)+'</div>'
+         :'<div id="rq-chain" style="margin-top:8px">'+chainChips(d.chain,true)+'</div><div id="rq-find" style="margin-top:8px"></div>')+
+      '<div class="hint" style="margin-top:8px">After the last approver, Accounts fills the approved amount, Cash / Cheque and the voucher / cheque no.</div>'+
+      '<div id="rq-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
+      '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="rq-clear">Clear</button><button class="btn primary" id="rq-send" style="margin-left:auto">Send requisition</button></div></div>';
+  } else {
+    h+='<div class="card pad" style="margin-bottom:16px"><h3>Requisition is switched off for you</h3><p class="hint" style="margin-top:6px">You can still sign requisitions that reach you. Ask the super admin if you need to raise one.</p></div>';
+  }
+  const all=reqAll(), wait=reqWaiting(), mine=all.filter(r=>r.requesterId===ME.id), others=all.filter(r=>r.requesterId!==ME.id&&wait.indexOf(r)<0);
+  h+='<div class="card" style="margin-bottom:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on you</h3>'+(wait.length?'<span class="tag t-prog" style="margin-left:auto">'+wait.length+'</span>':'')+'</div>'+reqRows(wait,'Nothing is waiting on you.')+'</div>';
+  h+='<div class="card" style="margin-bottom:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Raised by you</h3></div>'+reqRows(mine,'You have not raised a requisition yet.')+'</div>';
+  if(others.length) h+='<div class="card" style="margin-bottom:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Others you can see</h3></div>'+reqRows(others,'')+'</div>';
+  if(ME.owner){
+    const H=(DB.reqHier||[]).slice().sort((a,b)=>user(a.userId).name.localeCompare(user(b.userId).name)||a.work.localeCompare(b.work));
+    h+='<div class="card" style="margin-bottom:16px;border-color:var(--indigo)"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Fixed hierarchies <span class="hint" style="font-weight:400">· super admin</span></h3><button class="btn primary sm" id="rh-add" style="margin-left:auto">+ Add</button></div>'+
+      '<p class="hint" style="padding:10px 18px 0;margin:0">Set the approver chain for one person and one kind of work. When they raise that work, this chain is used and they cannot change it.</p>'+
+      (H.length?'<table class="cards"><tbody>'+H.map(x=>'<tr><td><b>'+esc(user(x.userId).name)+'</b> <span class="tag t-wait" style="font-size:11px">'+esc(x.work)+'</span><div class="hint">'+x.chain.map((id,i)=>(i+1)+'. '+esc(user(id).name)).join(' → ')+'</div></td><td class="acts" style="text-align:right;white-space:nowrap"><button class="btn sm" data-rhe="'+x.id+'">Edit</button> <button class="btn ghost sm" data-rhd="'+x.id+'" style="color:var(--stop)">Remove</button></td></tr>').join('')+'</tbody></table>'
+        :'<div class="hint" style="padding:12px 18px">None yet.</div>')+'</div>';
+  }
+  return h;
+}
+function wireReq(v){
+  // the page reads fresh rows when opened (gate-only accounts get no live updates)
+  if(!wireReq._at||Date.now()-wireReq._at>60000){ wireReq._at=Date.now(); load(['legacy']).then(()=>{ if(ROUTE.name==='req'&&!document.querySelector('.veil')) render(); }).catch(()=>{}); }
+  $$('[data-rq]',v).forEach(tr=>tr.onclick=()=>go({name:'detail',id:tr.dataset.rq}));
+  if(ME.owner){
+    if($('#rh-add',v)) $('#rh-add',v).onclick=()=>reqHierDialog(null);
+    $$('[data-rhe]',v).forEach(b=>b.onclick=()=>reqHierDialog((DB.reqHier||[]).find(x=>x.id===b.dataset.rhe)));
+    $$('[data-rhd]',v).forEach(b=>b.onclick=()=>{ const x=(DB.reqHier||[]).find(y=>y.id===b.dataset.rhd); if(!x) return;
+      modal({title:'Remove this fixed hierarchy?',body:'<p style="margin-top:0"><b>'+esc(user(x.userId).name)+'</b> · '+esc(x.work)+'. Requisitions already raised keep their chain.</p>',
+        footer:'<button class="btn" data-x>Keep</button><button class="btn bad" id="rhd-go">Remove</button>',
+        onOpen:(mv,cl)=>{ $('#rhd-go',mv).onclick=async()=>{ try{ await rpc('req_hier_delete',{p_id:x.id}); cl(); await load(['people']); toast('Removed.','ok'); render(); }catch(e){ fail(e); } }; }}); });
+  }
+  if(!CAN_REQ()) return;
+  const d=reqDraft;
+  const amt=$('#rq-amt',v); if(amt) amt.oninput=()=>{ d.amount=amt.value; $('#rq-words',v).textContent=numToWordsIN(amt.value)||'—'; };
+  const pu=$('#rq-purpose',v); if(pu) pu.oninput=()=>{ d.purpose=pu.value; };
+  const w=$('#rq-work',v); if(w){ w.oninput=()=>{ d.work=w.value; }; w.onchange=()=>{ const was=!!fixedFor(w.dataset.prev||''), now=!!fixedFor(w.value); d.work=w.value; if(was!==now) render(); w.dataset.prev=w.value; }; w.dataset.prev=d.work; }
+  uploader($('#rq-files',v),d.files,{mode:'support',label:'Bill, quotation, photo or anything the approvers should see'});
+  const repaint=()=>{ const c=$('#rq-chain',v); if(!c) return; c.innerHTML=chainChips(d.chain,true); wireChainChips(c,d.chain,repaint); };
+  if($('#rq-find',v)){ personPicker($('#rq-find',v),{placeholder:'Add an approver — name, employee ID or department',exclude:()=>d.chain.concat([ME.id]),onPick:id=>{ d.chain.push(id); repaint(); }}); repaint(); }
+  $('#rq-clear',v).onclick=()=>{ reqDraft=reqNewDraft(); render(); };
+  $('#rq-send',v).onclick=async()=>{ const err=$('#rq-err',v); err.textContent='';
+    const fx=fixedFor(d.work), a=Number(d.amount);
+    if(!(a>0)) return err.textContent='Enter the amount in rupees.';
+    if(d.purpose.trim().length<3) return err.textContent='Write the purpose.';
+    if(!fx&&!d.chain.length) return err.textContent='Add at least one approver.';
+    $('#rq-send',v).disabled=true;
+    try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim()},p_chain:fx?[]:d.chain,p_files:filesPayload(d.files)});
+      reqDraft=null; await load(['legacy']); const r=DB.requests.find(x=>x.id===id);
+      toast('Requisition sent'+(r&&r.chain[0]?' to '+user(r.chain[0].userId).name:'')+'.','ok'); go({name:'detail',id}); }
+    catch(e){ $('#rq-send',v).disabled=false; err.textContent=(e&&e.message||'Could not send.').replace(/^.*?: /,''); }
+  };
+}
+/* super admin: build / edit one person's fixed chain for one kind of work */
+function reqHierDialog(x){
+  let who=x?x.userId:null; const chain=x?x.chain.slice():[];
+  modal({title:x?'Edit fixed hierarchy':'Add a fixed hierarchy',
+    body:'<label>Person</label><div id="rh-who" style="margin-top:4px"></div><div id="rh-whof" style="margin-top:6px"></div>'+
+      '<div style="margin-top:12px"><label for="rh-work">Kind of work</label><input id="rh-work" type="text" value="'+esc(x?x.work:'')+'" placeholder="e.g. Stationery"></div>'+
+      '<div style="margin-top:12px"><label>Approvers, in order</label><div id="rh-chain" style="margin-top:4px"></div><div id="rh-find" style="margin-top:6px"></div></div>'+
+      '<p class="hint" style="margin-top:10px">When this person raises a requisition for this work, the chain above is used and they cannot change it.</p>'+
+      '<div id="rh-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rh-go">Save</button>',
+    onOpen:(mv,cl)=>{
+      const paintWho=()=>{ $('#rh-who',mv).innerHTML=who?'<div class="filerow"><div class="av sm">'+inits(user(who).name)+'</div><div style="flex:1"><b>'+esc(user(who).name)+'</b><div class="hint">'+esc(user(who).role||'')+(user(who).dept?' · '+esc(user(who).dept):'')+'</div></div><button type="button" class="btn ghost sm" id="rh-wc">Change</button></div>':'';
+        $('#rh-whof',mv).style.display=who?'none':''; if($('#rh-wc',mv)) $('#rh-wc',mv).onclick=()=>{who=null;paintWho();}; };
+      personPicker($('#rh-whof',mv),{placeholder:'Whose requisitions — name or employee ID',onPick:id=>{who=id;paintWho();}}); paintWho();
+      const paint=()=>{ const c=$('#rh-chain',mv); c.innerHTML=chainChips(chain,true); wireChainChips(c,chain,paint); };
+      personPicker($('#rh-find',mv),{placeholder:'Add an approver',exclude:()=>chain.concat(who?[who]:[]),onPick:id=>{chain.push(id);paint();}}); paint();
+      $('#rh-go',mv).onclick=async()=>{ const err=$('#rh-err',mv), work=$('#rh-work',mv).value.trim();
+        if(!who) return err.textContent='Pick the person.'; if(work.length<2) return err.textContent='Name the kind of work.'; if(!chain.length) return err.textContent='Add at least one approver.';
+        $('#rh-go',mv).disabled=true;
+        try{ await rpc('req_hier_save',{p_id:x?x.id:null,p_user:who,p_work:work,p_chain:chain}); cl(); await load(['people']); toast('Fixed hierarchy saved.','ok'); render(); }
+        catch(e){ $('#rh-go',mv).disabled=false; err.textContent=(e&&e.message||'Could not save.').replace(/^.*?: /,''); } };
+    }});
+}
 
 (async function boot(){
   // If a session looks stored, raise the splash at once so the sign-in page never
