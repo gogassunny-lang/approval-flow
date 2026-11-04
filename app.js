@@ -170,7 +170,7 @@ async function loadPeople(){
   DB.reqHier=((r[6]&&!r[6].error&&r[6].data)?r[6].data:[]).map(h=>({id:h.id,userId:h.user_id,work:h.work||'',chain:h.chain||[],updatedAt:ts(h.updated_at)}));
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
-    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,reqAccounts:!!p.req_accounts,
+    canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,garudaPages:Array.isArray(p.garuda_pages)?p.garuda_pages:null,reqAccounts:!!p.req_accounts,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
     stats:{lastLogin:ts(p.last_login),logins:p.logins||0,activeMs:Number(p.active_ms)||0,daily:{}}}));
   DB.templates=tpl.map(t=>({id:t.id,name:t.name,ownerId:t.owner_id,shared:t.shared,steps:t.steps||[],createdAt:ts(t.created_at)}));
@@ -1479,7 +1479,10 @@ const PAGES=[
   {k:'garuda',label:'Garuda (CNG stock)',grp:'Records',when:()=>canUseGaruda()},
   {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll}
 ];
-const GAR_NAV=()=>GAR_COLS.concat([['download','Download report']]);
+const GAR_ALL=()=>GAR_COLS.concat([['download','Download report']]);
+// 103: page-wise Garuda access — null = every page; the super admin always has all of them
+const garPageOK=(k,u)=>{ u=u||ME; return !!(u&&(u.owner||!Array.isArray(u.garudaPages)||u.garudaPages.indexOf(k)>-1)); };
+const GAR_NAV=()=>GAR_ALL().filter(c=>garPageOK(c[0]));
 function garExit(){ go({name:'dash'}); }
 function garGo(col){ garudaTab=col; garudaStationSel=''; garudaItemSel=''; paintNav(); render(); }
 function paintNav(){
@@ -2876,7 +2879,7 @@ function wirePeople(v){
         '<div class="sep" style="margin:2px 0"></div>'+
         '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-man" style="width:auto" '+(u.manager?'checked':'')+'> <span><b>Manager</b><div class="hint">Can assign work to their team inside a request.</div></span></label>'+
         (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-see" style="width:auto" '+(u.seeAll?'checked':'')+'> <span><b>Can see every request</b><div class="hint">For audit or finance oversight, without full admin rights.</div></span></label>':'')+
-        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-garuda" style="width:auto" '+(u.garudaAccess?'checked':'')+'> <span><b>Garuda (CNG stock) access</b><div class="hint">Opens the Garuda page for this person. CNG people get it anyway; use this to give an ALDS person access.</div></span></label>'+
+        (GRANTS_ROLES()?'<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-garuda" style="width:auto" '+(u.garudaAccess?'checked':'')+'> <span><b>Garuda (CNG stock) access</b><div class="hint">Opens the Garuda page for this person. CNG people get it anyway; use this to give an ALDS person access.</div></span></label>'+(ME.owner?'<button type="button" class="btn sm" id="e-garpages" style="margin:-4px 0 4px 26px">Garuda pages &amp; roles…</button>':'')+
           '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gstore" style="width:auto" '+(u.garudaStore?'checked':'')+'> <span><b>Garuda — Store role</b><div class="hint">Issues QRs out to a station, and accepts returns at the store.</div></span></label>'+
           '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-gsite" style="width:auto" '+(u.garudaSite?'checked':'')+'> <span><b>Garuda — Site role</b><div class="hint">At the station: allots (fits) a QR and marks it consumed.</div></span></label>'+
           '<label style="display:flex;align-items:center;gap:9px;margin:0"><input type="checkbox" id="e-cngpo" style="width:auto" '+(u.cngPo?'checked':'')+'> <span><b>Can raise CNG PO/WO</b><div class="hint">The "Create PO / WO" step of every CNG file lands on the people ticked here (like the ALDS purchase team). Ticking someone puts the live CNG files on their desk at once; if nobody is ticked, admins get them.</div></span></label>':'')+
@@ -2895,6 +2898,7 @@ function wirePeople(v){
       footer:'<button class="btn bad" id="e-reset" style="margin-right:auto">Reset password</button><button class="btn" data-x>Cancel</button><button class="btn primary" id="eg">Save</button>',
       onOpen:(mv,cl)=>{
         $('#e-reset',mv).onclick=()=>{ cl(); resetPasswordDialog(u) };
+        if($('#e-garpages',mv)) $('#e-garpages',mv).onclick=()=>garUserDialog(u);
         // Department quick-switch — persists on click, no Save needed
         $$('.e-unitbtn',mv).forEach(b=>b.onclick=async()=>{
           const nd=b.dataset.unit; if((u.unit||'ALDS')===nd) return;
@@ -3149,6 +3153,8 @@ function garImportExcel(kind){
   inp.click();
 }
 function viewGaruda(){
+  if(!GAR_NAV().length) return '<div class="card pad"><h3>No Garuda pages</h3><p class="hint" style="margin-top:6px">You have Garuda access but no page is switched on for you. Ask the super admin.</p><button class="btn sm" id="gar-exit">← Back to SETU</button></div>';
+  if(!garPageOK(garudaTab)) garudaTab=GAR_NAV()[0][0];
   if(!garudaLoaded) return garTopBar()+(garudaLoadError
     ? '<div class="card pad"><p style="margin:0 0 8px"><b>Garuda could not load.</b></p><p class="hint" style="margin:0 0 12px">'+esc(garudaLoadError)+'</p><button class="btn primary" id="gar-retry">Retry</button></div>'
     : '<div class="card pad"><p class="hint" style="margin:0">Loading Garuda…</p></div>');
@@ -3639,8 +3645,9 @@ function garResolvePO(q){ if(!q) return ''; const Q=q.trim().toLowerCase(); cons
 }
 /* Admin — masters (add/edit arrives in a later update) */
 function garAdmin(){
-  const tab=garudaAdminTab||'items';
-  const sub='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(tab==='items'?'primary':'')+'" data-admtab="items">Item master</button><button class="btn sm '+(tab==='stations'?'primary':'')+'" data-admtab="stations">Station master</button></div>';
+  let tab=garudaAdminTab||'items'; if(tab==='users'&&!ME.owner) tab='items';
+  if(tab==='users') return garAdminTabs(tab)+garUsersAdmin();
+  const sub='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px">'+(ME.owner?'<button class="btn sm" data-admtab="users">Users &amp; access</button>':'')+'<button class="btn sm '+(tab==='items'?'primary':'')+'" data-admtab="items">Item master</button><button class="btn sm '+(tab==='stations'?'primary':'')+'" data-admtab="stations">Station master</button></div>';
   return sub+(tab==='stations'?garStationMaster():garItemMaster());
 }
 function garItemMaster(){
@@ -3768,6 +3775,7 @@ function wireGaruda(v){
   // Garuda Admin masters (item / station)
   $$('[data-garcol]',v).forEach(b=>b.onclick=()=>garGo(b.dataset.garcol));
   $$('[data-admtab]',v).forEach(b=>b.onclick=()=>{ garudaAdminTab=b.dataset.admtab; garudaAdmQ=''; garudaAdmType=''; render(); });
+  wireGarUsers(v);
   wireSearch('adm-isearch',x=>garudaAdmQ=x); wireSearch('adm-ssearch',x=>garudaAdmQ=x);
   const aty=$('#adm-itype',v); if(aty) aty.onchange=()=>{ garudaAdmType=aty.value; render(); };
   if($('#ai-go',v)) $('#ai-go',v).onclick=async()=>{ const code=($('#ai-code',v).value||'').trim(), name=($('#ai-name',v).value||'').trim(), err=$('#ai-err',v);
@@ -6147,6 +6155,63 @@ function reqAddApproverDialog(r){
         $('#ra-go',mv).disabled=true;
         try{ await rpc('requisition_add_approvers',{p_request:r.id,p_users:chosen,p_why:why}); cl(); await load(['legacy','notif']); toast('Added — it goes to '+user(chosen[0]).name+' next.','ok'); render(); }
         catch(e){ $('#ra-go',mv).disabled=false; err.textContent=(e&&e.message||'Could not add.').replace(/^.*?: /,''); } };
+    }});
+}
+/* v130 — Garuda → Admin → Users & access (super admin only) */
+let garUserQ='';
+const garUsers=()=>DB.users.filter(u=>u.active&&(u.garudaAccess||u.garudaStore||u.garudaSite||u.cngPo||u.unit==='CNG'||(u.deptsVisible||[]).indexOf('CNG')>-1||u.admin||u.owner));
+function garAdminTabs(tab){ return '<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(tab==='users'?'primary':'')+'" data-admtab="users">Users &amp; access</button><button class="btn sm '+(tab==='items'?'primary':'')+'" data-admtab="items">Item master</button><button class="btn sm '+(tab==='stations'?'primary':'')+'" data-admtab="stations">Station master</button></div>'; }
+const garPagesCount=u=>Array.isArray(u.garudaPages)?u.garudaPages.length:GAR_ALL().length;
+function garUsersAdmin(){
+  const q=garUserQ.trim().toLowerCase();
+  let L=garUsers().slice().sort((a,b)=>a.name.localeCompare(b.name));
+  if(q) L=L.filter(u=>(u.name+' '+(u.empId||'')+' '+(u.dept||'')+' '+(u.role||'')).toLowerCase().includes(q));
+  const roles=u=>[u.owner?'Super admin':u.admin?'Admin':'',u.garudaStore?'Store':'',u.garudaSite?'Site':'',u.cngPo?'Raise CNG PO/WO':'',u.unit==='CNG'?'CNG dept':'',u.garudaAccess?'Garuda access':''].filter(Boolean);
+  return '<div class="card pad" style="margin-bottom:12px"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><b style="flex:1">Add a person to Garuda</b></div><div id="gu-add" style="margin-top:8px"></div>'+
+      '<div class="hint" style="margin-top:6px">They get Garuda access with every page; untick pages after.</div></div>'+
+    '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px"><input id="gu-q" type="text" placeholder="Search name, employee ID, department" value="'+esc(garUserQ)+'" style="flex:1;min-width:0"><span class="tag t-prog" style="align-self:center">'+L.length+'</span></div>'+
+    '<table class="cards"><thead><tr><th>Person</th><th>Roles</th><th>Pages</th><th></th></tr></thead><tbody>'+
+    (L.length?L.map(u=>'<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div></td>'+
+      '<td>'+roles(u).map(r=>'<span class="tag t-wait" style="font-size:10.5px;margin:1px">'+esc(r)+'</span>').join(' ')+'</td>'+
+      '<td class="num">'+(u.owner?'All':garPagesCount(u)+' / '+GAR_ALL().length)+'</td>'+
+      '<td style="text-align:right">'+(u.owner?'<span class="hint">always all</span>':'<button class="btn sm" data-guedit="'+u.id+'">Edit</button>')+'</td></tr>').join('')
+      :'<tr><td colspan="4"><div class="empty" style="padding:16px"><p class="hint">Nobody matches.</p></div></td></tr>')+'</tbody></table></div>';
+}
+function wireGarUsers(v){
+  if(!$('#gu-q',v)) return;
+  $('#gu-q',v).oninput=e=>{ garUserQ=e.target.value; const pos=e.target.selectionStart; render(); const el=$('#gu-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
+  personPicker($('#gu-add',v),{placeholder:'Search anyone in SETU',exclude:()=>garUsers().map(u=>u.id),onPick:async id=>{
+    try{ await rpc('set_garuda_access',{p_user:id,p_on:true}); await load(['people']); toast(user(id).name+' added to Garuda.','ok'); render(); setTimeout(()=>garUserDialog(user(id)),0); }catch(e){ fail(e); } }});
+  $$('[data-guedit]',v).forEach(b=>b.onclick=()=>garUserDialog(user(b.dataset.guedit)));
+}
+function garUserDialog(u){
+  if(!u||!u.id||!ME.owner) return;
+  const all=GAR_ALL(), on=new Set(Array.isArray(u.garudaPages)?u.garudaPages:all.map(c=>c[0]));
+  const tick=(id,lbl,hint,val)=>'<label style="display:flex;align-items:flex-start;gap:9px;margin:6px 0"><input type="checkbox" id="'+id+'" style="width:auto;margin-top:3px" '+(val?'checked':'')+'><span><b>'+esc(lbl)+'</b>'+(hint?'<div class="hint">'+esc(hint)+'</div>':'')+'</span></label>';
+  modal({title:'Garuda — '+u.name,
+    body:tick('gu-acc','Garuda access','Can open Garuda.',u.garudaAccess||u.unit==='CNG')+(u.unit==='CNG'&&!u.garudaAccess?'<div class="hint" style="margin:-2px 0 6px 26px">In the CNG department, so Garuda opens for them anyway — use the page ticks below to limit what they see.</div>':'')+
+      '<div class="sep"></div><b style="font-size:14px">Roles</b>'+
+      tick('gu-store','Store','Issues QRs out and accepts returns.',u.garudaStore)+tick('gu-site','Site','Allots (fits) and consumes at the station.',u.garudaSite)+tick('gu-po','Can raise CNG PO/WO','Raises direct POs in Garuda and creates the PO/WO on CNG files.',u.cngPo)+
+      '<div class="sep"></div><div class="row" style="gap:8px;align-items:center"><b style="font-size:14px;flex:1">Pages</b><button type="button" class="btn sm" id="gu-allp">All pages</button><button type="button" class="btn sm" id="gu-nonep">None</button></div>'+
+      '<div class="grid g2" style="gap:2px 12px;margin-top:6px">'+all.map(c=>'<label style="display:flex;align-items:center;gap:8px;margin:4px 0"><input type="checkbox" class="gu-pg" value="'+c[0]+'" style="width:auto" '+(on.has(c[0])?'checked':'')+'> '+esc(c[1])+'</label>').join('')+'</div>'+
+      '<div class="hint" style="margin-top:6px">The server enforces these: without a page, its lists come back empty and its actions are refused.</div>'+
+      '<div id="gu-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn bad" id="gu-remove" style="margin-right:auto">Remove from Garuda</button><button class="btn" data-x>Cancel</button><button class="btn primary" id="gu-save">Save</button>',
+    onOpen:(mv,cl)=>{
+      $('#gu-allp',mv).onclick=()=>$$('.gu-pg',mv).forEach(x=>x.checked=true);
+      $('#gu-nonep',mv).onclick=()=>$$('.gu-pg',mv).forEach(x=>x.checked=false);
+      $('#gu-save',mv).onclick=async()=>{ const err=$('#gu-err',mv); $('#gu-save',mv).disabled=true;
+        try{ const acc=$('#gu-acc',mv).checked, st=$('#gu-store',mv).checked, si=$('#gu-site',mv).checked, po=$('#gu-po',mv).checked;
+          const pages=$$('.gu-pg',mv).filter(x=>x.checked).map(x=>x.value);
+          if(acc!==!!u.garudaAccess) await rpc('set_garuda_access',{p_user:u.id,p_on:acc});
+          if(st!==!!u.garudaStore||si!==!!u.garudaSite) await rpc('set_garuda_role',{p_user:u.id,p_store:st,p_site:si});
+          if(po!==!!u.cngPo) await rpc('set_cng_po',{p_user:u.id,p_on:po});
+          await rpc('set_garuda_pages',{p_user:u.id,p_pages:pages.length===all.length?null:pages});
+          cl(); await load(['people']); toast('Garuda access saved for '+u.name+'.','ok'); render(); }
+        catch(e){ $('#gu-save',mv).disabled=false; err.textContent=(e&&e.message||'Could not save.').replace(/^.*?: /,''); } };
+      $('#gu-remove',mv).onclick=async()=>{ try{ await rpc('set_garuda_access',{p_user:u.id,p_on:false}); if(u.garudaStore||u.garudaSite) await rpc('set_garuda_role',{p_user:u.id,p_store:false,p_site:false}); if(u.cngPo) await rpc('set_cng_po',{p_user:u.id,p_on:false});
+          cl(); await load(['people']); toast(u.name+' removed from Garuda'+(u.unit==='CNG'?' (still opens it as CNG department — untick pages to limit)':'')+'.','ok'); render(); }
+        catch(e){ $('#gu-err',mv).textContent=(e&&e.message||'Could not remove.').replace(/^.*?: /,''); } };
     }});
 }
 (async function boot(){
