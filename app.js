@@ -207,7 +207,7 @@ async function loadLegacy(){
   const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
   DB.requests=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
@@ -369,7 +369,7 @@ function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
   if(r.status==='Info Requested'){   // parked on an ask: it's with the tagged person (first not yet replied), else the requester
     const tg=infoTargets(r), pend=tg.filter(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id));
     return tg.length?user((pend.length?pend:tg)[0]):user(r.requesterId); }
-  if(r.type==='requisition'&&r.acctPending) return {id:'',name:'Accounts',role:'Requisition accounts',dept:'',email:''};   // 100: the Accounts step
+  if(r.type==='requisition'&&r.acctPending) return {id:'',name:'Accounts — '+acctNames(r),role:'Requisition accounts',dept:'',email:''};   // 100/102: the Accounts step
   const s=r.chain[r.current]; return s?user(s.userId):null }
 const isMyTurn=r=>r.status==='In Progress'&&!r.amendId&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;   // frozen for an amendment = nobody's turn
 // one reply per tagged person — did I already answer this ask?
@@ -427,9 +427,12 @@ const pinOK=u=>!!(u&&u.pinDate===DAY());
 const CAN_REQ=()=>!!(ME&&ME.canReq!==false);
 const reqAll=()=>DB.requests.filter(r=>r.type==='requisition');
 // 100: the Accounts step — the ticked team, else administrators (the server decides; this only shows it)
-const CAN_ACCT=()=>!!(ME&&(ME.owner||ME.reqAccounts||(ME.admin&&!DB.users.some(u=>u.reqAccounts&&u.active))));
+const acctTeam=()=>{ const t=DB.users.filter(u=>u.reqAccounts&&u.active); return t.length?t:DB.users.filter(u=>(u.admin||u.owner)&&u.active); };
+const acctFor=r=>(r&&r.acctUser&&user(r.acctUser).id)?[user(r.acctUser)]:acctTeam();   // who does the Accounts step of this requisition
+const acctNames=r=>{ const L=acctFor(r); return L.length?L.map(u=>u.name).join(', '):'the accounts team'; };
+const CAN_ACCT=r=>!!(ME&&(ME.owner||acctFor(r).some(u=>u.id===ME.id)));
 const reqShort=r=>{ const t=String(r.f.purpose||r.f.title||'Requisition').replace(/\s+/g,' ').trim(); return t.length>60?t.slice(0,58)+'…':t; };
-const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&CAN_ACCT()));
+const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&CAN_ACCT(r)));
 const reqInvolved=()=>reqAll().filter(r=>inChain(r));
 const reqPageOn=()=>CAN_REQ()||reqInvolved().length>0||myAmends().some(m=>m.engine==='legacy');
 const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
@@ -961,7 +964,7 @@ async function enter(session){
     await load(['people']);
     if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); hideSplash(); busy(false); return }
     if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); hideSplash(); busy(false); return }
-    await load(gateScopeOnly()?['gate','notif']:['legacy','flows','notif']);
+    await load(gateScopeOnly()?['gate','notif','legacy']:['legacy','flows','notif']);   // gate-only: legacy = only the requisitions they are on (RLS)
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
@@ -1741,11 +1744,11 @@ function orgFields(){
   const f=draft.f, divs=f.department?(DEPT_DIV[f.department]||[]):[];
   const req='<span style="color:var(--stop)">*</span>';
   // Division is mandatory only for ALDS (it selects the fixed flow); optional elsewhere.
-  const divReq=f.department==='ALDS'?req:'<span class="hint" style="font-weight:400">optional</span>';
+  const divReq='<span class="hint" style="font-weight:400">optional'+(f.department==='ALDS'?' — pick one for the fixed PO/WO flow':'')+'</span>';
   return '<div class="grid g2">'+
     '<div><label for="o-dept">Department <span class="hint" style="font-weight:400">optional</span></label><select id="o-dept"><option value="">Choose… (optional)</option>'+
       DEPTS.map(d=>'<option '+(f.department===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
-    '<div><label for="o-div">Division '+divReq+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?(f.department==='ALDS'?'Choose…':'Choose… (optional)'):'Pick a department first')+'</option>'+
+    '<div><label for="o-div">Division '+divReq+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?'Choose… (optional)':'Pick a department first')+'</option>'+
       divs.map(x=>'<option '+(f.division===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select></div></div>';
 }
 const uploadCard=()=>'<div class="card pad"><h3>The ERP document</h3><p class="hint" style="margin-top:5px">The indent or work order PDF the ERP generated. The fields below fill in from it — every one of them stays editable.</p><div id="n-files" style="margin-top:14px"></div></div>'+
@@ -1925,7 +1928,6 @@ async function submit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
   // Division is only required for ALDS (it decides the fixed PO/WO flow vs Transport).
   // For every other department the request is a custom chain, so Division is optional.
-  if(f.department==='ALDS'&&!f.division) return note.textContent='Choose a division for the ALDS request.';
   if(isFlowDraft()) return flowRaiseSubmit(note);
   if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; if(!f.indentDate) return note.textContent='Date of indent is needed.';
     if(f.category==='Project'){ if(!f.projectName) f.projectName='ALDS Project' } else if(!f.siteName) return note.textContent='Site name is needed.'; }
@@ -2069,7 +2071,7 @@ function viewDetail(id){
     banner='<div class="banner hold"><div><b>You asked '+esc(who)+' for more.</b><div class="hint">'+(tg.length>1?done+' of '+tg.length+' have replied. ':'')+'It comes back to you once '+(tg.length>1?'everyone has':'they have')+' responded.</div></div></div>'; }
   else if(r.status==='In Progress'&&r.chain[r.current]) banner='<div class="banner live"><div><b>With '+esc(user(r.chain[r.current].userId).name)+' at step '+(r.current+2)+'.</b><div class="hint">You can follow the whole chain, but only the holder can act.</div></div></div>';
   if(am) banner=amendBannerHTML(am);
-  if(r.type==='requisition'&&r.acctPending&&r.status==='In Progress') banner='<div class="banner live"><div><b>All approvers have signed — with Accounts.</b><div class="hint">The requisition accounts team fills the approved amount, cash / cheque and the voucher / cheque no.</div></div></div>';
+  if(r.type==='requisition'&&r.acctPending&&r.status==='In Progress') banner='<div class="banner live"><div><b>All approvers have signed — pending with Accounts: '+esc(acctNames(r))+'.</b><div class="hint">'+(r.acctUser?'Chosen accounts person.':'Any one of the requisition accounts team')+' fills the approved amount, cash / cheque and the voucher / cheque no.</div></div></div>';
 
   let nodes='<div class="node done"><div class="dot">1</div><div class="body"><div class="row"><div><h4>'+esc(user(r.requesterId).name)+'</h4><div class="meta">'+esc(user(r.requesterId).role)+(user(r.requesterId).dept?' · '+esc(user(r.requesterId).dept):'')+' — raised this request</div></div>'+
     '<span class="tag t-ok" style="margin-left:auto">Raised</span></div><div class="meta" style="margin-top:6px">'+esc(fmtDT(r.createdAt))+'</div>'+fileListHTML(r.files)+'</div></div>';
@@ -2102,6 +2104,10 @@ function viewDetail(id){
       (s.erpDone?'<div class="meta" style="margin-top:6px;color:var(--seal)">ERP entered'+(s.erpDoneBy?' by '+esc(user(s.erpDoneBy).name):'')+(s.erpDoneAt?' · '+esc(fmtDT(s.erpDoneAt)):'')+'</div>':'')+
       fileListHTML(s.files)+subBranchHTML(r,s)+sysBtn+'</div></div>';
   });
+  if(r.type==='requisition'){ const ap=r.f.approval, live=r.acctPending&&r.status==='In Progress';
+    nodes+='<div class="node '+(ap?'done':live?'live':'locked')+'"><div class="dot">'+(ap?'✓':'₹')+'</div><div class="body"><div class="row"><div><h4>Accounts</h4><div class="meta">'+esc(ap?(ap.by_name||''):acctNames(r))+'</div></div><span style="margin-left:auto">'+
+      (ap?'<span class="tag t-ok">Completed</span>':live?'<span class="tag t-prog">Pending with them now</span>':'<span class="tag t-wait">After the last approver</span>')+'</span></div>'+
+      (ap?'<div class="meta" style="margin-top:6px">'+esc(money(ap.amount))+' · '+esc(ap.method==='cheque'?'Cheque':'Cash')+' '+esc(ap.ref||'')+(ap.at?' · '+esc(fmtDT(ap.at)):'')+'</div>':'')+'</div></div>'; }
   const notes=r.notes.length?'<div class="card pad" style="margin-top:16px"><h3>Notes</h3>'+r.notes.map(n=>'<div style="display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--line)"><div class="av sm">'+inits(user(n.userId).name)+'</div><div><div style="font-size:13.5px"><b>'+esc(user(n.userId).name)+'</b> <span class="hint">'+esc(fmtDT(n.ts))+'</span></div><div style="white-space:pre-wrap">'+esc(n.text)+'</div></div></div>').join('')+'</div>':'';
 
   let panel='';
@@ -2221,6 +2227,8 @@ function wireDetail(v){
   wireAmend(v,'legacy',r.id);
   if($('#a-amend',v)) $('#a-amend',v).onclick=()=>amendAskDialog('legacy',r.id,null);
   if($('#d-slip',v)) $('#d-slip',v).onclick=()=>reqSlipDialog(r);
+  if($('#rq-addappr',v)) $('#rq-addappr',v).onclick=()=>reqAddApproverDialog(r);
+  if($('#rq-acctp',v)) $('#rq-acctp',v).onchange=async e=>{ try{ await rpc('req_set_accounts_person',{p_request:r.id,p_user:e.target.value||null}); await load(['legacy']); toast('Accounts person: '+(e.target.value?user(e.target.value).name:'the whole accounts team')+'.','ok'); render(); }catch(err){ fail(err); render(); } };
   wireReqAcct(v,r);
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
@@ -5777,12 +5785,13 @@ function reqFactsHTML(r){
     '<table class="cards" style="margin-top:10px"><thead><tr><th>Approving authority</th><th>Designation</th><th>Date</th></tr></thead><tbody>'+
       reqApproverRows(r).map(x=>'<tr><td><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.state)+'</div></td><td class="meta">'+esc(x.role||'—')+'</td><td class="meta">'+esc(x.date||'—')+'</td></tr>').join('')+'</tbody></table>'+
     (r.chainLocked?'<div class="hint" style="margin-top:8px">🔒 Approvers fixed by the super admin</div>':'')+
+    reqManageHTML(r)+
     '<button class="btn sm" id="d-slip" style="width:100%;margin-top:12px">🖨 Print / Download slip</button>'+
     (ME.owner?'<div class="sep"></div><button class="btn ghost sm" id="d-purge" style="color:var(--stop);padding:0">Delete this request (owner only)</button>':'')+'</div>';
 }
 /* the Accounts step panel (100) */
 function reqAcctPanelHTML(r){
-  if(!CAN_ACCT()) return '<div class="card pad"><h3>With Accounts</h3><p class="hint" style="margin-top:6px">Every approver has signed. The requisition accounts team fills the approved amount and the voucher / cheque no., then it closes.</p></div>';
+  if(!CAN_ACCT(r)) return '<div class="card pad"><h3>With Accounts — '+esc(acctNames(r))+'</h3><p class="hint" style="margin-top:6px">Every approver has signed. The requisition accounts team fills the approved amount and the voucher / cheque no., then it closes.</p></div>';
   return '<div class="card pad" style="border-color:var(--indigo)"><h3>Accounts — complete the slip</h3><p class="hint" style="margin-top:5px">Requested '+esc(money(r.f.amount))+'. Fill the approval part and sign with your PIN; the requisition then closes as approved.</p>'+
     '<div style="margin-top:12px"><label for="ra-amt">Approved for amount (₹)</label><input id="ra-amt" type="number" min="0" step="0.01" value="'+esc(r.f.amount||'')+'"><div class="hint" id="ra-words" style="margin-top:4px">'+esc(numToWordsIN(r.f.amount))+'</div></div>'+
     '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
@@ -5860,7 +5869,8 @@ function viewReq(){
       '<div class="sep"></div><h3 style="font-size:15px">Approving authorities, in order</h3>'+
       (fx?'<div class="banner" style="margin-top:8px"><div><b>🔒 Fixed by the super admin for “'+esc(fx.work)+'”.</b><div class="hint">This chain is set for you and cannot be changed.</div></div></div><div style="margin-top:8px">'+chainChips(fx.chain,false)+'</div>'
          :'<div id="rq-chain" style="margin-top:8px">'+chainChips(d.chain,true)+'</div><div id="rq-find" style="margin-top:8px"></div>')+
-      '<div class="hint" style="margin-top:8px">After the last approver, Accounts fills the approved amount, Cash / Cheque and the voucher / cheque no.</div>'+
+      '<div style="margin-top:12px"><label for="rq-acct">Accounts person <span class="hint" style="font-weight:400">optional</span></label><select id="rq-acct"><option value="">Any of the accounts team</option>'+acctTeam().map(u=>'<option value="'+u.id+'" '+(d.acctUser===u.id?'selected':'')+'>'+esc(u.name)+'</option>').join('')+'</select>'+
+        '<div class="hint" style="margin-top:4px">After the last approver, this person (or the accounts team) fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>'+
       '<div id="rq-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
       '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="rq-clear">Clear</button><button class="btn primary" id="rq-send" style="margin-left:auto">Send requisition</button></div></div>';
   } else {
@@ -5895,6 +5905,7 @@ function wireReq(v){
   const d=reqDraft;
   const amt=$('#rq-amt',v); if(amt) amt.oninput=()=>{ d.amount=amt.value; $('#rq-words',v).textContent=numToWordsIN(amt.value)||'—'; };
   const pu=$('#rq-purpose',v); if(pu) pu.oninput=()=>{ d.purpose=pu.value; };
+  const ac=$('#rq-acct',v); if(ac) ac.onchange=()=>{ d.acctUser=ac.value||''; };
   const w=$('#rq-work',v); if(w){ w.oninput=()=>{ d.work=w.value; }; w.onchange=()=>{ const was=!!fixedFor(w.dataset.prev||''), now=!!fixedFor(w.value); d.work=w.value; if(was!==now) render(); w.dataset.prev=w.value; }; w.dataset.prev=d.work; }
   uploader($('#rq-files',v),d.files,{mode:'support',label:'Bill, quotation, photo or anything the approvers should see'});
   const repaint=()=>{ const c=$('#rq-chain',v); if(!c) return; c.innerHTML=chainChips(d.chain,true); wireChainChips(c,d.chain,repaint); };
@@ -5907,6 +5918,7 @@ function wireReq(v){
     if(!fx&&!d.chain.length) return err.textContent='Add at least one approver.';
     $('#rq-send',v).disabled=true;
     try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim()},p_chain:fx?[]:d.chain,p_files:filesPayload(d.files)});
+      if(d.acctUser){ try{ await rpc('req_set_accounts_person',{p_request:id,p_user:d.acctUser}); }catch(_){} }
       reqDraft=null; await load(['legacy']); const r=DB.requests.find(x=>x.id===id);
       toast('Requisition sent'+(r&&r.chain[0]?' to '+user(r.chain[0].userId).name:'')+'.','ok'); go({name:'detail',id}); }
     catch(e){ $('#rq-send',v).disabled=false; err.textContent=(e&&e.message||'Could not send.').replace(/^.*?: /,''); }
@@ -6110,6 +6122,33 @@ function garTrace(){
   return h;
 }
 
+/* v129 — requisition: who is it with at Accounts, choose the accounts person, add an approver at any stage */
+function reqManageHTML(r){
+  if(r.status!=='In Progress'&&r.status!=='Info Requested') return '';
+  const mine=r.requesterId===ME.id||ME.admin||ME.owner; if(!mine) return '<div class="hint" style="margin-top:10px">Accounts: '+esc(acctNames(r))+'</div>';
+  const team=DB.users.filter(u=>u.reqAccounts&&u.active);
+  return '<div class="sep"></div><label for="rq-acctp">Accounts person</label><select id="rq-acctp">'+
+      '<option value="">Any of the accounts team'+(team.length?'':' (administrators)')+'</option>'+team.map(u=>'<option value="'+u.id+'" '+(r.acctUser===u.id?'selected':'')+'>'+esc(u.name)+'</option>').join('')+'</select>'+
+    ((r.status==='In Progress'&&!r.amendId&&!(r.chainLocked&&!ME.owner))?'<button class="btn sm" id="rq-addappr" style="width:100%;margin-top:10px">＋ Add an approver'+(r.acctPending?' before Accounts':'')+'</button>':'');
+}
+function reqAddApproverDialog(r){
+  const chosen=[];
+  modal({title:'Add an approver',
+    body:'<p class="hint" style="margin-top:0">'+(r.acctPending?'It is with Accounts now. The people you add sign first, in this order; then it goes back to Accounts.':'The people you add sign after the current approvers, in this order.')+'</p>'+
+      '<div id="ra-list" style="margin-top:8px"></div><div id="ra-find" style="margin-top:8px"></div>'+
+      '<div style="margin-top:12px"><label for="ra-why">Why</label><input id="ra-why" type="text" placeholder="e.g. Above ₹10,000 — needs HOD sign"></div>'+
+      '<div id="ra-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="ra-go">Add</button>',
+    onOpen:(mv,cl)=>{
+      const paint=()=>{ const c=$('#ra-list',mv); c.innerHTML=chainChips(chosen,true); wireChainChips(c,chosen,paint); };
+      personPicker($('#ra-find',mv),{placeholder:'Name, employee ID or department',exclude:()=>chosen.concat([r.requesterId]).concat(r.chain.map(s=>s.userId)),onPick:id=>{chosen.push(id);paint();}}); paint();
+      $('#ra-go',mv).onclick=async()=>{ const err=$('#ra-err',mv), why=$('#ra-why',mv).value.trim();
+        if(!chosen.length) return err.textContent='Pick at least one person.'; if(why.length<4) return err.textContent='Say why, in a few words.';
+        $('#ra-go',mv).disabled=true;
+        try{ await rpc('requisition_add_approvers',{p_request:r.id,p_users:chosen,p_why:why}); cl(); await load(['legacy','notif']); toast('Added — it goes to '+user(chosen[0]).name+' next.','ok'); render(); }
+        catch(e){ $('#ra-go',mv).disabled=false; err.textContent=(e&&e.message||'Could not add.').replace(/^.*?: /,''); } };
+    }});
+}
 (async function boot(){
   // If a session looks stored, raise the splash at once so the sign-in page never
   // flashes (and can't be tapped) while the token is restored. Departments are
