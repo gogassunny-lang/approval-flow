@@ -237,7 +237,7 @@ const mapPass=g=>({id:g.id,ref:g.ref,kind:g.kind,halfPart:g.half_part||'',employ
     requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
     hodAt:ts(g.hod_at),hrAt:ts(g.hr_at),rejectBy:g.reject_by,rejectReason:g.reject_reason||'',rejectedAt:ts(g.rejected_at),
     gateBy:g.gate_by,outAt:ts(g.out_at),returnAt:ts(g.return_at),status:g.status,passDate:g.pass_date,createdAt:ts(g.created_at)});
-const mapNotif=x=>({id:x.id,requestId:x.request_id,route:x.route||'',kind:x.kind,title:x.title,body:x.body||'',ts:ts(x.created_at),read:!!x.read_at});
+const mapNotif=x=>({id:x.id,requestId:x.request_id,route:x.route||'',kind:x.kind,title:x.title,body:x.body||'',gif:x.gif||'',ts:ts(x.created_at),read:!!x.read_at});
 async function loadGate(){
   // gate passes from the last 120 days (reports default to 30; selfies expire after 7)
   const since=new Date(Date.now()-120*864e5).toISOString();
@@ -362,7 +362,7 @@ function catchUp(){
   if(!ME||document.hidden) return;
   clearTimeout(catchUpT);
   catchUpT=setTimeout(async()=>{ if($('.veil')||$('#busy')){ catchUp(); return; }
-    try{ await load(['legacy','gate','notif'].concat(gateScopeOnly()?[]:['flows']),'changed'); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
+    try{ await Promise.all([load(['legacy','gate','notif'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
 }
 /* redraw without any download (a live event that carried its own data) */
 function renderSoon(){
@@ -1006,7 +1006,7 @@ async function enter(session){
     await load(['people']);
     if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); hideSplash(); busy(false); return }
     if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); hideSplash(); busy(false); return }
-    await load(gateScopeOnly()?['gate','notif','legacy']:['legacy','flows','notif']);   // gate-only: legacy = only the requisitions they are on (RLS)
+    await Promise.all([load(gateScopeOnly()?['gate','notif','legacy']:['legacy','flows','notif']), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
@@ -1020,6 +1020,7 @@ async function enter(session){
     if(routeHash(target)!==routeHash(base)){ go(base,true); go(target); } else { go(base,true); }
     subscribe();
     hideSplash();
+    funWelcomeMaybe();
     if(pubTag){ const id=decodeURIComponent(pubTag); setTimeout(()=>{ if(canUseGaruda()) cngTagPanel(id); else garPublicView(id); },500); }
     Promise.resolve(SB.rpc('record_login')).catch(()=>{});                             // stamp the login once the app is visible (builder isn't a real Promise)
     if(!gateScopeOnly()) load(['gate']).then(()=>reloadSoon(['gate'])).catch(()=>{});   // stream gate passes in behind the first screen
@@ -1263,6 +1264,7 @@ function viewInbox(){
       '<span class="av sm" style="'+(x.read?'':'background:var(--indigo);color:#fff;border-color:var(--indigo)')+'">'+(KIND_ICON[x.kind]||'•')+'</span>'+
       '<div style="min-width:0;flex:1"><div style="font-size:14px;'+(x.read?'':'font-weight:700')+'">'+esc(x.title)+'</div>'+
       (x.body?'<div class="hint" style="white-space:pre-line;margin-top:2px">'+esc(x.body)+'</div>':'')+
+      (x.gif?'<img class="n-gif" src="'+esc(x.gif)+'" alt="" loading="lazy" onerror="this.remove()">':'')+
       '<div class="hint" style="margin-top:3px">'+esc(fmtDT(x.ts))+'</div></div></div>').join('')+'</div>';
 }
 /* turn a notification's stored route (#detail/… , #flowdetail/… , #gate) into a screen,
@@ -1519,7 +1521,8 @@ const PAGES=[
   {k:'overview',label:'System overview',grp:'Records',when:()=>ME.owner},
   {k:'people',label:'People & masters',grp:'Records'},
   {k:'garuda',label:'Garuda (CNG stock)',grp:'Records',when:()=>canUseGaruda()},
-  {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll}
+  {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll},
+  {k:'fun',label:'Celebrations & Fun',grp:'Records',when:()=>ME.owner}
 ];
 const GAR_ALL=()=>GAR_COLS.concat([['download','Download report']]);
 // 103: page-wise Garuda access — null = every page; the super admin always has all of them
@@ -1626,7 +1629,7 @@ function render(){
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
   if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
   const v=$('#view');
-  try{ renderRoute(v); }
+  try{ renderRoute(v); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
   catch(e){ console.error(e); v.innerHTML='<div class="card pad"><h3>This page could not be drawn</h3><p class="hint" style="margin-top:6px">Something on this page is unexpected. Go back and try again; if it keeps happening, tell the super admin which page.</p><div class="hint" style="margin-top:8px;font-size:11px">'+esc(String((e&&e.message)||e))+'</div><button class="btn sm" style="margin-top:10px" onclick="go({name:\'dash\'})">Back to dashboard</button></div>'; }
 }
 function renderRoute(v){
@@ -1638,6 +1641,7 @@ function renderRoute(v){
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
     case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.',flowTagged().length>0||myAmends().length>0)+amendMineSection()+flowSection('tagged'); wireList(v); wireFlowRows(v); wireAmendRows(v); break;
     case 'req': v.innerHTML=viewReq(); wireReq(v); break;
+    case 'fun': if(!ME.owner){ROUTE={name:'dash'};return render();} if($('#fun-root',v)) break; /* a live event must not wipe what the owner is typing */ v.innerHTML=viewFun(); wireFun(v); break;
     case 'mine': v.innerHTML=viewList(DB.requests.filter(r=>r.requesterId===ME.id),'My requests','Everything you have raised.','You have not raised anything yet','Start with Raise a request.',flowMine().length>0)+flowSection('mine'); wireList(v); wireFlowRows(v); break;
     case 'running': v.innerHTML=flowSection('running')||'<div class="card"><div class="empty"><h3>Nothing in progress</h3><p class="hint">Every running ALDS / CNG file you can see would be listed here.</p></div></div>'; wireFlowRows(v);
       head('In progress','Every running file you can see — who it is with and at which stage'); break;
@@ -4133,7 +4137,7 @@ function sfPixelFilter(ctx,w,h,css){
   ctx.putImageData(img,0,0);
 }
 /* draws a frame (camera, photo or canvas) with the chosen orientation and filter, <= edge px */
-function sfRender(src,sw,sh,f,mirror,edge){
+function sfRender(src,sw,sh,f,mirror,edge,fest){
   const sc=Math.min(1,(edge||1000)/Math.max(sw,sh));
   const cv=document.createElement('canvas'); cv.width=Math.max(1,Math.round(sw*sc)); cv.height=Math.max(1,Math.round(sh*sc));
   const ctx=cv.getContext('2d');
@@ -4144,6 +4148,7 @@ function sfRender(src,sw,sh,f,mirror,edge){
   ctx.setTransform(1,0,0,1,0,0);
   if(f.css&&!SF_CTX_FILTER) sfPixelFilter(ctx,cv.width,cv.height,f.css);
   if(f.tint){ ctx.globalCompositeOperation='soft-light'; ctx.fillStyle=f.tint; ctx.fillRect(0,0,cv.width,cv.height); ctx.globalCompositeOperation='source-over'; }
+  if(fest) sfFestiveFrame(ctx,cv.width,cv.height);
   return cv;
 }
 /* a small centre square of the frame, for the round filter previews */
@@ -4176,7 +4181,7 @@ function captureSelfie(title){
         const stage=$('#sf-stage',v), look=$('#sf-look',v), msg=$('#sf-msg',v), shoot=$('#sf-shoot',v), retake=$('#sf-retake',v);
         const obs=new MutationObserver(()=>{ if(!v.isConnected){ obs.disconnect(); finish(path) } });
         obs.observe(v.parentNode||document.body,{childList:true});
-        const render=()=>sfRender(raw,raw.width,raw.height,filt,false,1000);
+        const render=()=>sfRender(raw,raw.width,raw.height,filt,false,1000,!!FUN.selfie);
         // apply the current look to whatever is on screen
         const applyLook=()=>{
           look.querySelectorAll('.sf-chip').forEach(c=>{ const on=c.dataset.sf===filt.id; c.classList.toggle('on',on); c.setAttribute('aria-checked',String(on));
@@ -4221,6 +4226,7 @@ function captureSelfie(title){
           const video=document.createElement('video'); video.autoplay=true; video.playsInline=true; video.setAttribute('playsinline','');
           video.muted=true; video.className='selfie-video'; video.srcObject=stream; stage.innerHTML=''; stage.appendChild(video); video.play().catch(()=>{});
           const tint=document.createElement('div'); tint.className='sf-tint'; stage.appendChild(tint);   // colour wash for the Warm / Cool / Glow / Retro looks
+          if(FUN.selfie){ const fr=document.createElement('div'); fr.className='sf-fest'; fr.innerHTML='<i>🪔</i><i>🪔</i><i>🪔</i><i>🪔</i><b>✨ Happy Diwali ✨</b>'; stage.appendChild(fr); }
           look.hidden=false; centreChip(); applyLook();
           // once real frames arrive, put a still of the person in each round filter preview
           video.addEventListener('playing',()=>setTimeout(()=>{ if(video.isConnected&&video.videoWidth) paintChips(video,video.videoWidth,video.videoHeight); },350),{once:true});
@@ -6313,3 +6319,150 @@ function garUserDialog(u){
   else if(_pubTag){ hideSplash(); garPublicView(decodeURIComponent(_pubTag)); }
   else { hideSplash(); paintSignIn(); }
 })();
+
+
+
+/* ============================================================
+   v133 — Celebrations & Fun (105): welcome screen, thought of the day,
+   festive theme, Diwali selfie frame, funny notifications + GIFs.
+   Everything is decided by the server (fun_state); the app only paints it.
+   ============================================================ */
+let FUN={welcome:null,thought:null,theme:null,selfie:false,funny:false};
+async function loadFun(){ try{ const st=await rpc('fun_state'); if(st&&typeof st==='object') FUN=st; }catch(e){} funApplyTheme(); }
+function funApplyTheme(){ document.body.classList.toggle('theme-diwali',FUN.theme==='diwali'); }
+function funThoughtHTML(){ return '<div class="card pad fun-thought"><span class="fun-bulb">💡</span><div><div class="hint" style="letter-spacing:.08em;text-transform:uppercase;font-size:11px">Thought of the day</div><div class="fun-thought-txt">'+esc(FUN.thought)+'</div></div></div>'; }
+/* the welcome screen: once a day while it is on */
+function funWelcomeMaybe(){
+  const w=FUN.welcome; if(!w) return;
+  const key=istToday()+':'+w.ver; let seen=''; try{ seen=localStorage.getItem('fun_welcome_seen')||''; }catch(e){}
+  if(seen===key) return;
+  setTimeout(()=>{ if($('.veil')) { setTimeout(funWelcomeMaybe,4000); return; } try{ localStorage.setItem('fun_welcome_seen',key); }catch(e){} funWelcomeShow(w); },700);
+}
+async function funWelcomeImage(ver){
+  let c=null; try{ c=JSON.parse(localStorage.getItem('fun_wimg')||'null'); }catch(e){}
+  if(c&&c.ver===ver&&c.data) return c.data;
+  try{ const d=await rpc('fun_welcome_image'); if(d){ try{ localStorage.setItem('fun_wimg',JSON.stringify({ver,data:d})); }catch(e){} return d; } }catch(e){}
+  return '';
+}
+function funWelcomeShow(w,preview){
+  modal({title:'',cls:'fun-welcome',body:'<div class="fun-wel"><div class="fun-wel-img" id="fw-img"></div><h2>'+esc(w.title||'Welcome')+'</h2>'+(w.text?'<p>'+esc(w.text).replace(/\n/g,'<br>')+'</p>':'')+'</div>',
+    footer:'<button class="btn primary" data-x style="width:100%">'+(preview?'Close preview':'Let’s go')+'</button>',
+    onOpen:async(v)=>{ if(!w.has_img) return; const d=preview&&w.data?w.data:await funWelcomeImage(w.ver); const box=$('#fw-img',v); if(d&&box) box.innerHTML='<img src="'+esc(d)+'" alt="">'; }});
+}
+/* golden Diwali frame on a selfie canvas — the middle (the face) is untouched */
+function sfFestiveFrame(ctx,w,h){
+  const m=Math.min(w,h), b=Math.max(10,Math.round(m*0.045));
+  const g=ctx.createLinearGradient(0,0,w,h); g.addColorStop(0,'#F7C94B'); g.addColorStop(.5,'#B8441F'); g.addColorStop(1,'#F7C94B');
+  ctx.save(); ctx.fillStyle=g;
+  ctx.fillRect(0,0,w,b); ctx.fillRect(0,h-b,w,b); ctx.fillRect(0,0,b,h); ctx.fillRect(w-b,0,b,h);
+  ctx.strokeStyle='rgba(255,255,255,.75)'; ctx.lineWidth=Math.max(1,Math.round(b*0.18)); ctx.strokeRect(b*1.5,b*1.5,w-b*3,h-b*3);
+  const fs=Math.round(m*0.085); ctx.font=fs+'px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",sans-serif'; ctx.textBaseline='middle'; ctx.textAlign='center';
+  const o=b*1.1+fs*0.55; [[o,o],[w-o,o],[o,h-o],[w-o,h-o]].forEach(([x,y])=>ctx.fillText('🪔',x,y));
+  const rh=Math.round(m*0.075), rw=Math.round(w*0.46), rx=(w-rw)/2, ry=h-b-rh-Math.round(m*0.02);
+  ctx.fillStyle='rgba(122,31,31,.78)'; ctx.beginPath(); ctx.roundRect?ctx.roundRect(rx,ry,rw,rh,rh/2):ctx.rect(rx,ry,rw,rh); ctx.fill();
+  ctx.fillStyle='#FFE7A3'; ctx.font='bold '+Math.round(rh*0.5)+'px -apple-system,"Segoe UI",Roboto,sans-serif'; ctx.fillText('✨ Happy Diwali ✨',w/2,ry+rh/2+1);
+  ctx.restore();
+}
+/* ---------------- the owner's page ---------------- */
+const FUN_KINDS=[['any','Any notification'],['landed','File reached my desk'],['flow','ALDS / CNG step'],['remind','Reminder'],['approved','Approved'],['nudge','Nudge'],['gate','Gate pass'],['reply','Reply'],['info','Asked for more'],['task','Task given']];
+let funS=null;
+function viewFun(){ head('Celebrations & Fun','Welcome screen, thought of the day, festive theme, selfie frame and funny mode — owner only'); return '<div id="fun-root"><div class="card pad hint">Loading…</div></div>'; }
+async function wireFun(v){
+  const root=$('#fun-root',v);
+  try{ funS=await rpc('fun_settings_get'); }catch(e){ root.innerHTML='<div class="card pad"><b>Could not open.</b><div class="hint">'+esc((e&&e.message)||'')+'</div></div>'; return; }
+  funPaint(root);
+}
+const funDate=(id,val,label)=>'<div><label for="'+id+'">'+label+' <span class="hint" style="font-weight:400">optional</span></label><input type="date" id="'+id+'" value="'+esc(val||'')+'"></div>';
+const funOn=(id,on,label,hint)=>'<label class="fun-switch"><input type="checkbox" id="'+id+'" '+(on?'checked':'')+'><span><b>'+label+'</b>'+(hint?'<div class="hint">'+hint+'</div>':'')+'</span></label>';
+const funDates=(k,S)=>'<div class="grid g2" style="gap:10px;margin-top:10px">'+funDate(k+'-from',S[k+'_from'],'From')+funDate(k+'-to',S[k+'_to'],'To')+'</div><div class="hint" style="margin-top:4px">Leave the dates empty to keep it on until you switch it off. Dates are Indian time.</div>';
+function funPaint(root){
+  const S=funS, live=d=>d?'<span class="tag t-ok" style="margin-left:8px">ON now</span>':'<span class="tag" style="margin-left:8px">off</span>';
+  root.innerHTML=
+    '<div class="card pad fun-sec"><h3>1. Welcome screen'+live(FUN.welcome)+'</h3><p class="hint">Shown once a day to everyone when they open SETU, while it is on.</p>'+
+      funOn('fw-on',S.welcome_on,'Show the welcome screen')+funDates('welcome',S)+
+      '<div style="margin-top:10px"><label for="fw-title">Title</label><input type="text" id="fw-title" maxlength="80" value="'+esc(S.welcome_title||'')+'" placeholder="Happy Diwali from Confidence Group"></div>'+
+      '<div style="margin-top:10px"><label for="fw-text">Message</label><textarea id="fw-text" rows="3" maxlength="600" placeholder="A few warm lines…">'+esc(S.welcome_text||'')+'</textarea></div>'+
+      '<div style="margin-top:10px"><label>Picture <span class="hint" style="font-weight:400">optional — a banner, poster or photo</span></label><div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn sm" id="fw-pick">'+(S.has_img?'Change picture':'Add a picture')+'</button>'+(S.has_img?'<button class="btn sm" id="fw-rmimg" style="color:var(--stop)">Remove picture</button>':'')+'<span class="hint" id="fw-imghint">'+(S.has_img?'A picture is set.':'')+'</span></div><input type="file" id="fw-file" accept="image/*" style="display:none"></div>'+
+      '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="fw-preview">Preview</button><button class="btn primary" id="fw-save" style="margin-left:auto">Save welcome</button></div><div class="hint" id="fw-err" style="color:var(--stop)"></div></div>'+
+    '<div class="card pad fun-sec"><h3>2. Thought of the day'+live(FUN.thought)+'</h3><p class="hint">One line per row. A different line shows each day, in turn, on the Dashboard and Gate Pass screens.</p>'+
+      funOn('ft-on',S.thought_on,'Show a thought of the day')+
+      '<div style="margin-top:10px"><textarea id="ft-list" rows="6" placeholder="One thought per line">'+esc((S.thoughts||[]).join('\n'))+'</textarea></div>'+
+      '<div class="row" style="gap:8px;margin-top:12px"><span class="hint" id="ft-today"></span><button class="btn primary" id="ft-save" style="margin-left:auto">Save thoughts</button></div><div class="hint" id="ft-err" style="color:var(--stop)"></div></div>'+
+    '<div class="card pad fun-sec"><h3>3. Festive theme'+live(FUN.theme)+'</h3><p class="hint">The Diwali look — warm colours, a diya garland on the top bar. Off = the normal SETU look.</p>'+
+      funOn('fh-on',S.theme_on,'Diwali theme')+funDates('theme',S)+
+      '<div class="row" style="gap:8px;margin-top:12px"><button class="btn primary" id="fh-save" style="margin-left:auto">Save theme</button></div><div class="hint" id="fh-err" style="color:var(--stop)"></div></div>'+
+    '<div class="card pad fun-sec"><h3>4. Diwali selfie frame'+live(FUN.selfie)+'</h3><p class="hint">A golden frame with diyas on <b>gate-pass selfies only</b>, and only on the days you keep this on. The face stays clear, so the photo remains proof of who signed.</p>'+
+      funOn('fs-on',S.selfie_on,'Selfie frame on gate-pass selfies')+funDates('selfie',S)+
+      '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="fs-preview">See the frame</button><button class="btn primary" id="fs-save" style="margin-left:auto">Save selfie frame</button></div><div class="hint" id="fs-err" style="color:var(--stop)"></div></div>'+
+    '<div class="card pad fun-sec"><h3>5. Funny mode'+live(FUN.funny)+'</h3><p class="hint">While on, notifications carry a filmy one-liner with emojis (and a GIF if you have picked some below). Rejections and amendments always stay plain. Staff cannot switch this themselves.</p>'+
+      funOn('ff-on',S.funny_on,'Funny mode for everyone')+funDates('funny',S)+
+      '<div style="margin-top:14px"><label>Always funny — these people get it even when the switch above is off</label><div id="ff-list"></div><div id="ff-find" style="margin-top:6px"></div></div>'+
+      '<div style="margin-top:12px"><label>See a sample line</label><div class="row" style="gap:6px;flex-wrap:wrap">'+FUN_KINDS.filter(k=>k[0]!=='any').map(k=>'<button class="btn sm" data-fl="'+k[0]+'">'+esc(k[1])+'</button>').join('')+'</div><div class="fun-sample" id="ff-sample"></div></div>'+
+      '<div class="row" style="gap:8px;margin-top:12px"><button class="btn primary" id="ff-save" style="margin-left:auto">Save funny mode</button></div><div class="hint" id="ff-err" style="color:var(--stop)"></div></div>'+
+    '<div class="card pad fun-sec"><h3>6. GIFs <span class="hint" style="font-weight:400">(Tenor or GIPHY)</span></h3><p class="hint">Pick GIFs here; funny mode attaches a random one of the matching kind to each notification. The key is kept on the server and is never shown to staff.</p>'+
+      '<div class="grid g2" style="gap:10px"><div><label for="fg-prov">Provider</label><select id="fg-prov"><option value="">— none —</option><option value="tenor" '+(S.gif_provider==='tenor'?'selected':'')+'>Tenor</option><option value="giphy" '+(S.gif_provider==='giphy'?'selected':'')+'>GIPHY</option></select></div>'+
+      '<div><label for="fg-key">API key</label><input type="text" id="fg-key" autocomplete="off" value="'+esc(S.gif_key||'')+'" placeholder="Paste the key from the provider’s site"></div></div>'+
+      '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn sm" id="fg-savekey">Save provider & key</button><button class="btn sm" id="fg-net">Check network</button><span class="hint" id="fg-nethint"></span></div>'+
+      '<div class="sep"></div><div class="grid g2" style="gap:10px"><div><label for="fg-q">Search GIFs</label><input type="text" id="fg-q" placeholder="e.g. Hera Pheri, Mogambo, thumbs up"></div><div><label for="fg-kind">Use for</label><select id="fg-kind">'+FUN_KINDS.map(k=>'<option value="'+k[0]+'">'+esc(k[1])+'</option>').join('')+'</select></div></div>'+
+      '<div class="row" style="gap:8px;margin-top:8px"><button class="btn sm primary" id="fg-go">Search</button><span class="hint" id="fg-hint">Tap a result to add it.</span></div><div class="fun-gifgrid" id="fg-res"></div>'+
+      '<div class="sep"></div><label>Chosen GIFs</label><div id="fg-list"></div></div>';
+  funWire(root);
+}
+function funWire(root){
+  const S=funS, errOf=id=>$('#'+id,root);
+  const save=async(patch,errId,btnId)=>{ const err=errOf(errId); err.textContent=''; const b=$('#'+btnId,root); if(b) b.disabled=true;
+    try{ await rpc('fun_settings_save',{p:patch}); funS=await rpc('fun_settings_get'); await loadFun(); toast('Saved.','ok'); funPaint(root); }
+    catch(e){ err.textContent=(e&&e.message||'Could not save.').replace(/^.*?: /,''); if(b) b.disabled=false; } };
+  const val=id=>{ const el=$('#'+id,root); return el?el.value:''; }, chk=id=>!!($('#'+id,root)&&$('#'+id,root).checked);
+  // 1 welcome
+  let newImg=undefined;
+  $('#fw-pick',root).onclick=()=>$('#fw-file',root).click();
+  $('#fw-file',root).onchange=async()=>{ const f=$('#fw-file',root).files[0]; if(!f) return;
+    try{ const blob=await downscaleToJpeg(f,900,0.8); if(blob.size>320000){ const b2=await downscaleToJpeg(f,640,0.7); newImg=await blobToDataURL(b2); } else newImg=await blobToDataURL(blob);
+      $('#fw-imghint',root).textContent='New picture ready — tap Save welcome.'; }catch(e){ $('#fw-imghint',root).textContent='Could not read that picture.'; } };
+  if($('#fw-rmimg',root)) $('#fw-rmimg',root).onclick=()=>{ newImg=''; $('#fw-imghint',root).textContent='Picture will be removed when you save.'; };
+  $('#fw-preview',root).onclick=()=>funWelcomeShow({title:val('fw-title'),text:val('fw-text'),has_img:newImg!==undefined?!!newImg:S.has_img,ver:S.welcome_ver,data:newImg},true);
+  $('#fw-save',root).onclick=()=>{ const p={welcome_on:chk('fw-on'),welcome_from:val('welcome-from'),welcome_to:val('welcome-to'),welcome_title:val('fw-title').trim(),welcome_text:val('fw-text').trim()}; if(newImg!==undefined) p.welcome_img=newImg; save(p,'fw-err','fw-save'); };
+  // 2 thought
+  const todayLine=()=>{ const L=val('ft-list').split('\n').map(x=>x.trim()).filter(Boolean); const d=new Date(Date.now()+5.5*3600e3), doy=Math.floor((d-Date.UTC(d.getUTCFullYear(),0,0))/864e5);
+    $('#ft-today',root).textContent=L.length?'Today’s line: “'+L[doy%L.length]+'”':'No lines yet.'; };
+  todayLine(); $('#ft-list',root).oninput=todayLine;
+  $('#ft-save',root).onclick=()=>save({thought_on:chk('ft-on'),thoughts:val('ft-list').split('\n').map(x=>x.trim()).filter(Boolean)},'ft-err','ft-save');
+  // 3 theme
+  $('#fh-save',root).onclick=()=>save({theme_on:chk('fh-on'),theme_from:val('theme-from'),theme_to:val('theme-to'),theme:'diwali'},'fh-err','fh-save');
+  // 4 selfie frame
+  $('#fs-preview',root).onclick=()=>{ const cv=document.createElement('canvas'); cv.width=480; cv.height=640; const c=cv.getContext('2d'); c.fillStyle='#d9d4cc'; c.fillRect(0,0,480,640);
+    c.fillStyle='#b8a999'; c.beginPath(); c.arc(240,290,110,0,Math.PI*2); c.fill(); c.fillStyle='#8b7b6a'; c.beginPath(); c.ellipse(240,560,170,120,0,0,Math.PI*2); c.fill(); sfFestiveFrame(c,480,640);
+    modal({title:'The Diwali selfie frame',body:'<img src="'+cv.toDataURL('image/jpeg',0.85)+'" alt="" style="width:100%;border-radius:12px"><p class="hint" style="margin-top:8px">The person stays in the middle; only the edges are decorated.</p>',footer:'<button class="btn primary" data-x style="width:100%">Close</button>'}); };
+  $('#fs-save',root).onclick=()=>save({selfie_on:chk('fs-on'),selfie_from:val('selfie-from'),selfie_to:val('selfie-to')},'fs-err','fs-save');
+  // 5 funny mode
+  const always=(S.funny_always||[]).slice();
+  const paintAlways=()=>{ $('#ff-list',root).innerHTML=always.length?always.map(id=>{ const u=user(id); return '<span class="chip">'+esc(u.name)+' <button type="button" class="chip-x" data-rmf="'+id+'" aria-label="Remove">×</button></span>'; }).join(''):'<div class="hint">Nobody yet.</div>';
+    $$('[data-rmf]',root).forEach(b=>b.onclick=()=>{ always.splice(always.indexOf(b.dataset.rmf),1); paintAlways(); }); };
+  paintAlways(); personPicker($('#ff-find',root),{placeholder:'Add a person who is always funny',exclude:()=>always,onPick:id=>{ always.push(id); paintAlways(); }});
+  $$('[data-fl]',root).forEach(b=>b.onclick=async()=>{ try{ const l=await rpc('fun_line_preview',{p_kind:b.dataset.fl}); $('#ff-sample',root).textContent=l||'(this kind stays plain)'; }catch(e){ $('#ff-sample',root).textContent='Could not fetch a sample.'; } });
+  $('#ff-save',root).onclick=()=>save({funny_on:chk('ff-on'),funny_from:val('funny-from'),funny_to:val('funny-to'),funny_always:always},'ff-err','ff-save');
+  // 6 gifs
+  $('#fg-savekey',root).onclick=()=>save({gif_provider:val('fg-prov'),gif_key:val('fg-key').trim()},'fg-hint','fg-savekey');
+  const search=async q=>{ const prov=val('fg-prov'), key=val('fg-key').trim(); if(!prov||!key) throw new Error('Choose a provider and paste its key first.');
+    const u=prov==='tenor'?'https://tenor.googleapis.com/v2/search?q='+encodeURIComponent(q)+'&key='+encodeURIComponent(key)+'&client_key=setu&limit=16&contentfilter=medium&media_filter=gif,tinygif'
+      :'https://api.giphy.com/v1/gifs/search?api_key='+encodeURIComponent(key)+'&q='+encodeURIComponent(q)+'&limit=16&rating=pg';
+    const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),9000);
+    let r; try{ r=await fetch(u,{signal:ctl.signal}); } finally{ clearTimeout(t); }
+    if(!r.ok) throw new Error(r.status===401||r.status===403?'The key was refused by '+(prov==='tenor'?'Tenor':'GIPHY')+'.':'The provider answered '+r.status+'.');
+    const j=await r.json();
+    return prov==='tenor'?(j.results||[]).map(x=>({url:(x.media_formats.gif||{}).url,thumb:(x.media_formats.tinygif||x.media_formats.gif||{}).url,caption:x.content_description||''})).filter(x=>x.url)
+      :(j.data||[]).map(x=>({url:(x.images.downsized||x.images.original||{}).url,thumb:(x.images.fixed_height_small||x.images.fixed_height||{}).url,caption:x.title||''})).filter(x=>x.url); };
+  $('#fg-net',root).onclick=async()=>{ const h=$('#fg-nethint',root); h.textContent='Checking…'; try{ const res=await search('hello'); h.textContent='Reachable from this network — '+res.length+' results came back.'; }catch(e){ h.textContent=(e.name==='AbortError'||/Failed to fetch|NetworkError/i.test(String(e.message)))?'Blocked or unreachable from this network (the office firewall may be stopping it). Try from the phone on mobile data.':(e.message||'Could not check.'); } };
+  $('#fg-go',root).onclick=async()=>{ const q=val('fg-q').trim(); if(!q) return; const res=$('#fg-res',root), h=$('#fg-hint',root); h.textContent='Searching…'; res.innerHTML='';
+    try{ const list=await search(q); h.textContent=list.length?'Tap a result to add it for “'+($('#fg-kind option:checked',root)||{}).textContent+'”.':'Nothing found.';
+      res.innerHTML=list.map((x,i)=>'<button type="button" class="fun-gif" data-gi="'+i+'" title="'+esc(x.caption)+'"><img src="'+esc(x.thumb)+'" alt="" loading="lazy"></button>').join('');
+      $$('[data-gi]',res).forEach(b=>b.onclick=async()=>{ const x=list[+b.dataset.gi]; b.disabled=true; try{ await rpc('fun_gif_add',{p_kind:val('fg-kind'),p_url:x.url,p_thumb:x.thumb,p_caption:x.caption}); funS=await rpc('fun_settings_get'); toast('GIF added.','ok'); paintGifs(); }catch(e){ b.disabled=false; h.textContent=(e.message||'Could not add.').replace(/^.*?: /,''); } }); }
+    catch(e){ h.textContent=(e.name==='AbortError'||/Failed to fetch|NetworkError/i.test(String(e.message)))?'Could not reach the provider from this network.':(e.message||'Search failed.'); } };
+  $('#fg-q',root).onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); $('#fg-go',root).click(); } };
+  const paintGifs=()=>{ const L=funS.gifs||[]; const box=$('#fg-list',root);
+    box.innerHTML=L.length?FUN_KINDS.filter(k=>L.some(g=>g.kind===k[0])).map(k=>'<div class="hint" style="margin-top:8px"><b>'+esc(k[1])+'</b></div><div class="fun-gifgrid">'+L.filter(g=>g.kind===k[0]).map(g=>'<span class="fun-gif has"><img src="'+esc(g.thumb||g.url)+'" alt="" loading="lazy"><button type="button" class="chip-x" data-rmg="'+g.id+'" aria-label="Remove">×</button></span>').join('')+'</div>').join(''):'<div class="hint">None yet — search above and tap a result.</div>';
+    $$('[data-rmg]',box).forEach(b=>b.onclick=async()=>{ try{ await rpc('fun_gif_remove',{p_id:+b.dataset.rmg}); funS=await rpc('fun_settings_get'); paintGifs(); }catch(e){ fail(e); } }); };
+  paintGifs();
+}
+const blobToDataURL=b=>new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=()=>rej(new Error('read')); r.readAsDataURL(b); });
