@@ -15,10 +15,16 @@ const $=(s,r=document)=>r.querySelector(s);
 const $$=(s,r=document)=>Array.from(r.querySelectorAll(s));
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const money=n=>(n===''||n==null||isNaN(n))?'—':'₹'+Number(n).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
-const fmtDT=t=>t?new Date(t).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'—';
-const fmtT=t=>t?new Date(t).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}):'—';
-const fmtD=t=>t?new Date(t).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}):'—';
+// v132: formatters are built once (building one per call was ~90% of list render time)
+const _NF=new Intl.NumberFormat('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const _DTF=new Intl.DateTimeFormat('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+const _TF=new Intl.DateTimeFormat('en-IN',{hour:'2-digit',minute:'2-digit'});
+const _DF=new Intl.DateTimeFormat('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+const _fmt=(F,t)=>{ try{ return F.format(new Date(t)); }catch(e){ return '—'; } };
+const money=n=>(n===''||n==null||isNaN(n))?'—':'₹'+_NF.format(Number(n));
+const fmtDT=t=>t?_fmt(_DTF,t):'—';
+const fmtT=t=>t?_fmt(_TF,t):'—';
+const fmtD=t=>t?_fmt(_DF,t):'—';
 const inits=n=>String(n||'?').trim().split(/\s+/).map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const DAY=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});   // matches ist_today() in the database
 const daysBetween=(a,b)=>Math.max(0,Math.round((b-a)/864e5));
@@ -133,7 +139,7 @@ const LOAD_PARTS=['people','legacy','flows','gate','notif'];
 const DATA_PARTS=['legacy','flows','gate','notif'];
 let lastLoadAt=0;
 const gateScopeOnly=()=>!!(ME&&ME.name&&(GATE_ONLY()||HR_HEAD()));   // sees only the gate pages
-async function load(parts,flowIds){
+async function load(parts,flowIds,legacyIds){
   const P=new Set(parts&&parts.length?parts:LOAD_PARTS);
   if(P.has('people')){ P.delete('people'); await loadPeople(); const me=DB.users.find(u=>u.id===(ME&&ME.id)); if(me) ME=me; }
   // Gate-Pass-only and HR-Head accounts only ever see the gate pages — don't download
@@ -141,8 +147,8 @@ async function load(parts,flowIds){
   // (legacy rows are still loaded for them: the server returns only requisitions they are part of)
   if(gateScopeOnly()){ P.delete('flows'); DB.flows=[]; }
   const jobs=[];
-  if(P.has('legacy')) jobs.push(loadLegacy());
-  if(P.has('flows'))  jobs.push((flowIds&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):loadFlows());
+  if(P.has('legacy')) jobs.push(loadLegacy(legacyIds));
+  if(P.has('flows'))  jobs.push((flowIds&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):(flowIds==='changed'&&DB.flows.length?loadFlowsChanged():loadFlows()));
   if(P.has('gate'))   jobs.push(loadGate());
   if(P.has('notif'))  jobs.push(loadNotifs());
   if(P.has('legacy')||P.has('flows')) jobs.push(loadAmends());
@@ -194,19 +200,19 @@ async function loadUsage(){
 }
 function ensureUsage(){ if(DB._usageLoaded) return;
   loadUsage().then(()=>{ if((ROUTE.name==='usage'||ROUTE.name==='overview')&&!document.querySelector('.veil')) render(); }); }
-async function loadLegacy(){
+async function loadLegacy(ids){
+  // v132: a live change on one request re-fetches only that request (ids); a full load otherwise
+  const scoped=Array.isArray(ids)&&ids.length>0&&ids.length<=8&&DB.requests.length>0;
+  const q=(t,col,asc)=>{ let b=SB.from(t).select('*'); if(scoped) b=b.in('request_id',ids); return b.order(col,{ascending:asc!==false}); };
   const r=await Promise.all([
-    SB.from('requests').select('*').order('created_at',{ascending:false}),
-    SB.from('steps').select('*').order('position'),
-    SB.from('tasks').select('*').order('assigned_at'),
-    SB.from('files').select('*').order('created_at'),
-    SB.from('notes').select('*').order('created_at'),
-    SB.from('audit').select('*').order('created_at',{ascending:false}).limit(500)
+    (scoped?SB.from('requests').select('*').in('id',ids):SB.from('requests').select('*')).order('created_at',{ascending:false}),
+    q('steps','position'), q('tasks','assigned_at'), q('files','created_at'), q('notes','created_at'),
+    gateScopeOnly()?Promise.resolve({data:[]}):SB.from('audit').select('*').order('created_at',{ascending:false}).limit(500)   // v132: gate-only never shows the trail
   ]);
   const bad=r.find(x=>x.error); if(bad) throw bad.error;
   const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
-  DB.requests=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
+  const built=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
     current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
@@ -224,7 +230,8 @@ async function loadLegacy(){
     else if(f.step_id&&S[f.step_id]) S[f.step_id].files.push(rec);
     else if(R[f.request_id]) R[f.request_id].files.push(rec)});
   notes.forEach(n=>{const r=R[n.request_id]; if(r) r.notes.push({id:n.id,userId:n.user_id,ts:ts(n.created_at),text:n.text})});
-  DB.audit=audit.map(a=>({id:a.id,ts:ts(a.created_at),reqId:a.request_id,ref:a.ref,actorId:a.actor_id,actorName:a.actor_name,action:a.action,detail:a.detail||''}));
+  if(scoped){ DB.requests=DB.requests.filter(x=>ids.indexOf(x.id)<0).concat(built).sort((a,b)=>b.createdAt-a.createdAt); }
+  else { DB.requests=built; DB.audit=audit.map(a=>({id:a.id,ts:ts(a.created_at),reqId:a.request_id,ref:a.ref,actorId:a.actor_id,actorName:a.actor_name,action:a.action,detail:a.detail||''})); }
 }
 const mapPass=g=>({id:g.id,ref:g.ref,kind:g.kind,halfPart:g.half_part||'',employeeId:g.employee_id||'',name:g.emp_name||'',dept:g.dept||'',purpose:g.purpose||'',
     requesterId:g.requester_id,hodId:g.hod_id,hrId:g.hr_id,reqSelfie:g.requester_selfie,hodSelfie:g.hod_selfie,hrSelfie:g.hr_selfie,
@@ -281,6 +288,20 @@ async function loadFlows(){
 }
 /* re-fetch just these flows (a live change or your own action on one flow) and
    swap them into the list, instead of re-downloading every flow */
+/* v132: after a sleep / reconnect, fetch only the flows that changed since the last load
+   (anything with a newer audit row or created since), instead of every flow again */
+async function loadFlowsChanged(){
+  const since=new Date(Math.max(0,lastLoadAt-60000)).toISOString();
+  const [a,b]=await Promise.all([
+    SB.from('flow_audit').select('request_id').gte('created_at',since).limit(1000),
+    SB.from('flow_requests').select('id').gte('created_at',since).limit(1000)
+  ]);
+  if(a.error||b.error) return loadFlows();
+  const ids=[...new Set((a.data||[]).map(x=>x.request_id).concat((b.data||[]).map(x=>x.id)))];
+  if(!ids.length) return;
+  if(ids.length>40) return loadFlows();      // a lot changed: one full load is cheaper than many small ones
+  for(let i=0;i<ids.length;i+=8) await loadFlowsSome(ids.slice(i,i+8));
+}
 async function loadFlowsSome(ids){
   const r=await Promise.all([
     SB.from('flow_requests').select('*').in('id',ids),
@@ -294,7 +315,6 @@ async function loadFlowsSome(ids){
   if(stepIds.length){ const {data,error}=await SB.from('flow_step_actors').select('*').in('step_id',stepIds); if(error) throw error; factors=data||[]; }
   const fresh=buildFlows(freq,fsteps,factors,ffiles,faudit);
   DB.flows=DB.flows.filter(f=>ids.indexOf(f.id)<0).concat(fresh).sort((a,b)=>b.createdAt-a.createdAt);
-  await loadAmends();
 }
 /* amendments (98): small table, RLS returns only what this person may see; tolerated before 98 runs */
 const mapAmend=m=>({id:m.id,engine:m.engine,requestId:m.request_id,ref:m.ref||'',stepLabel:m.step_label||'',askedBy:m.asked_by,askedAt:ts(m.asked_at),
@@ -315,13 +335,14 @@ async function gpExpireSweep(){
   }catch(e){}
 }
 let reloadT=null, renderT=null, hiddenAt=0;
-const pendingParts=new Set(), pendingFlowIds=new Set(); let pendingFlowsAll=false;
-async function reload(parts,flowIds){ try{ await load(parts,flowIds); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
+const pendingParts=new Set(), pendingFlowIds=new Set(), pendingLegacyIds=new Set(); let pendingFlowsAll=false, pendingLegacyAll=false;
+async function reload(parts,flowIds,legacyIds){ try{ await load(parts,flowIds,legacyIds); render(); paintNav(); paintPin() }catch(e){ fail(e) } }   // paintNav also repaints the tab bar
 /* live changes are batched (2 s) and fetched only for the slice they touched; while
    the app is in the background nothing is fetched — it catches up when it returns */
-function reloadSoon(parts,scopedFlows){
+function reloadSoon(parts,scopedFlows,scopedLegacy){
   (parts&&parts.length?parts:DATA_PARTS).forEach(p=>pendingParts.add(p));
   if(pendingParts.has('flows')&&!scopedFlows) pendingFlowsAll=true;
+  if(pendingParts.has('legacy')&&!scopedLegacy) pendingLegacyAll=true;
   if(document.hidden) return;
   clearTimeout(reloadT); reloadT=setTimeout(flushReload,2000);
 }
@@ -331,8 +352,17 @@ function flushReload(){
   if($('.veil')||$('#busy')){ reloadT=setTimeout(flushReload,3000); return; }   // don't redraw under an open dialog; retry shortly
   const parts=[...pendingParts]; pendingParts.clear();
   const ids=(!pendingFlowsAll&&pendingFlowIds.size)?[...pendingFlowIds]:null;
-  pendingFlowIds.clear(); pendingFlowsAll=false;
-  reload(parts,ids);
+  const lids=(!pendingLegacyAll&&pendingLegacyIds.size)?[...pendingLegacyIds]:null;
+  pendingFlowIds.clear(); pendingFlowsAll=false; pendingLegacyIds.clear(); pendingLegacyAll=false;
+  reload(parts,ids,lids);
+}
+/* v132: coming back after a sleep / reconnect — flows: only what changed; legacy/gate/notif: their normal (small) slices */
+let catchUpT=null;
+function catchUp(){
+  if(!ME||document.hidden) return;
+  clearTimeout(catchUpT);
+  catchUpT=setTimeout(async()=>{ if($('.veil')||$('#busy')){ catchUp(); return; }
+    try{ await load(['legacy','gate','notif'].concat(gateScopeOnly()?[]:['flows']),'changed'); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
 }
 /* redraw without any download (a live event that carried its own data) */
 function renderSoon(){
@@ -352,19 +382,27 @@ function applyPassChange(p){
 }
 /* live flow change: re-fetch only the flow it belongs to (a new flow, or anything
    we can't place, refreshes the whole flow list once) */
+/* v132: a legacy change re-fetches only its request (a brand-new request, unknown here, still loads just itself) */
+function legacyChanged(p,table){
+  const row=(p.new&&Object.keys(p.new).length)?p.new:(p.old||{});
+  const rid=table==='requests'?row.id:row.request_id;
+  if(rid){ pendingLegacyIds.add(rid); reloadSoon(['legacy'],false,true); } else reloadSoon(['legacy']);
+}
 function flowChanged(p,table){
   const row=(p.new&&Object.keys(p.new).length)?p.new:(p.old||{});
   let fid=null;
-  if(table==='flow_requests'&&p.eventType!=='INSERT') fid=row.id||null;
+  if(table==='flow_requests') fid=row.id||null;   // v132: a new flow loads just itself too
   else if(table==='flow_steps') fid=row.request_id||null;
   else if(table==='flow_step_actors'){ const x=row.step_id?flowFindStep(row.step_id):null; fid=x?x.f.id:null; }
-  if(fid&&DB.flows.some(f=>f.id===fid)){ pendingFlowIds.add(fid); reloadSoon(['flows'],true); }
+  if(fid){ pendingFlowIds.add(fid); reloadSoon(['flows'],true); }
   else reloadSoon(['flows']);
 }
 const flowIdsOfStep=stepId=>{ const x=flowFindStep(stepId); return x?[x.f.id]:null; };
 
 /* ---------- model helpers (read-only views over what was loaded) ---------- */
-const user=id=>DB.users.find(u=>u.id===id)||{name:'Unknown',role:'',email:'',id:'',dept:''};
+// v132: people are looked up through a map rebuilt only when DB.users is replaced (was a linear scan per call)
+let _uSrc=null,_uMap=null; const _USTUB={name:'Unknown',role:'',email:'',id:'',dept:''};
+const user=id=>{ if(_uSrc!==DB.users){ _uSrc=DB.users; _uMap=new Map(DB.users.map(u=>[u.id,u])); } return (id&&_uMap.get(id))||_USTUB; };
 function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
   if(r.status==='Info Requested'){   // parked on an ask: it's with the tagged person (first not yet replied), else the requester
     const tg=infoTargets(r), pend=tg.filter(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id));
@@ -378,7 +416,9 @@ const iReplied=repl=>Array.isArray(repl)&&repl.some(e=>(e.user_id||e.userId)===M
 const infoTargets=o=>(o&&o.infoTos&&o.infoTos.length)?o.infoTos:(o&&o.infoTo?[o.infoTo]:[]);
 // the active tagged person = the first, in order, who has not yet replied (sequential tagging)
 const legacyActiveTag=r=>{ const tg=infoTargets(r); if(!tg.length) return null; return tg.find(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id))||null; };
-const legacyTagged=r=>r&&r.status==='Info Requested'&&infoTargets(r).indexOf(ME.id)>-1;   // am I tagged on this (replied or not)
+const legacyTagged=r=>r&&r.status==='Info Requested'&&infoTargets(r).indexOf(ME.id)>-1;
+// v132: the step that asked for more may be gone after a purge/rewind — never crash a whole page on it
+const legacyAskerId=r=>((r&&r.chain&&r.chain[r.infoStep])||{}).userId||null;   // am I tagged on this (replied or not)
 const needsMyInfo=r=>{ if(r.status!=='Info Requested') return false;
   const tg=infoTargets(r); return tg.length?(legacyActiveTag(r)===ME.id):(r.requesterId===ME.id); };
 // the ordered "1. A ✓ → 2. B · now → 3. C → back to asker" chain, for a legacy request
@@ -386,7 +426,7 @@ function legacyTagChain(r){ const tg=infoTargets(r); if(tg.length<2) return '';
   const active=legacyActiveTag(r), rep=r.infoReplies||[], done=id=>rep.some(e=>(e.user_id||e.userId)===id);
   const chips=tg.map((id,i)=>{ const st=done(id)?'done':(id===active?'now':'next');
     return '<span class="tchain-chip tc-'+st+'">'+(i+1)+'. '+esc(user(id).name)+(st==='done'?' ✓':st==='now'?' · now':'')+'</span>'; });
-  chips.push('<span class="tchain-chip tc-back">back to '+esc(user(r.chain[r.infoStep].userId).name)+'</span>');
+  chips.push('<span class="tchain-chip tc-back">back to '+esc(user(legacyAskerId(r)).name)+'</span>');
   return '<div class="tchain" style="margin-top:7px">'+chips.join('<span class="tchain-arr">→</span>')+'</div>'; }
 function legacyReplyThread(r){ const rep=r.infoReplies||[]; if(!rep.length) return '';
   return '<div class="cmt-thread" style="margin-top:8px">'+rep.map(e=>'<div class="cmt"><div class="cmt-h"><b>'+esc(e.name||user(e.user_id||e.userId).name)+'</b> <span class="hint">'+esc(e.at?fmtDT(ts(e.at)):'')+'</span></div><div class="cmt-b" style="white-space:pre-wrap">'+esc(e.text)+'</div></div>').join('')+'</div>'; }
@@ -722,6 +762,8 @@ async function uploadFile(file,kind){
   const path=ME.id+'/'+uid()+'-'+safe;
   const {error}=await SB.storage.from('documents').upload(path,file,{contentType:MIME[extOf(file.name)]||file.type,upsert:false});
   if(error) throw error;
+  // v132: photos get a ~240px list thumbnail in the background (lists never download the full photo)
+  if(kindOf(file.name)==='img'&&/\.jpg$/i.test(path)) (async()=>{ try{ const tb=await downscaleToJpeg(file,240,0.7); if(tb) await SB.storage.from('documents').upload(thumbOf(path),tb,{contentType:'image/jpeg',upsert:false}); }catch(e){} })();
   return {id:uid(),name:file.name,path,size:file.size,kind:kind||'primary',original};
 }
 async function fetchFile(f){
@@ -1329,9 +1371,9 @@ function subscribe(){
   channel=SB.channel('setu-live');
   // gate-only / HR-Head accounts don't listen to request & flow changes at all
   if(!gateScopeOnly()) channel
-    .on('postgres_changes',{event:'*',schema:'public',table:'requests'},()=>reloadSoon(['legacy']))
-    .on('postgres_changes',{event:'*',schema:'public',table:'steps'},()=>reloadSoon(['legacy']))
-    .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},()=>reloadSoon(['legacy']))
+    .on('postgres_changes',{event:'*',schema:'public',table:'requests'},p=>legacyChanged(p,'requests'))
+    .on('postgres_changes',{event:'*',schema:'public',table:'steps'},p=>legacyChanged(p,'steps'))
+    .on('postgres_changes',{event:'*',schema:'public',table:'tasks'},p=>legacyChanged(p,'tasks'))
     .on('postgres_changes',{event:'*',schema:'public',table:'flow_requests'},p=>flowChanged(p,'flow_requests'))
     .on('postgres_changes',{event:'*',schema:'public',table:'flow_steps'},p=>flowChanged(p,'flow_steps'))
     .on('postgres_changes',{event:'*',schema:'public',table:'flow_step_actors'},p=>flowChanged(p,'flow_step_actors'));
@@ -1348,7 +1390,7 @@ function subscribe(){
     .subscribe(status=>{
       // if the live connection dropped (phone asleep, network blip) we may have missed
       // changes — catch up once when it reconnects, instead of on every app switch
-      if(status==='SUBSCRIBED'){ if(subscribe._gap){ subscribe._gap=false; pendingFlowsAll=true; reloadSoon(DATA_PARTS); } }
+      if(status==='SUBSCRIBED'){ if(subscribe._gap){ subscribe._gap=false; catchUp(); } }
       else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT'||status==='CLOSED'){ subscribe._gap=true; }
     });
   /* on the web, ask once for browser notifications so a background tab can still be tapped on the shoulder */
@@ -1584,6 +1626,10 @@ function render(){
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
   if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
   const v=$('#view');
+  try{ renderRoute(v); }
+  catch(e){ console.error(e); v.innerHTML='<div class="card pad"><h3>This page could not be drawn</h3><p class="hint" style="margin-top:6px">Something on this page is unexpected. Go back and try again; if it keeps happening, tell the super admin which page.</p><div class="hint" style="margin-top:8px;font-size:11px">'+esc(String((e&&e.message)||e))+'</div><button class="btn sm" style="margin-top:10px" onclick="go({name:\'dash\'})">Back to dashboard</button></div>'; }
+}
+function renderRoute(v){
   switch(ROUTE.name){
     case 'dash': v.innerHTML=viewDash(); wireDash(v); break;
     case 'inbox': v.innerHTML=viewInbox(); wireInbox(v); break;
@@ -1657,7 +1703,7 @@ function viewDash(){
   (q.length||st.length
     ?'<div class="grid g2" style="margin-top:14px;align-items:start">'+
       (q.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Waiting on me</h3><span class="tag t-prog" style="margin-left:auto">'+q.length+'</span></div><table class="cards"><tbody>'+q.map(line).join('')+'</tbody></table></div>':'')+
-      (st.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Sent back to me</h3><span class="tag t-hold" style="margin-left:auto">'+st.length+'</span></div><table class="cards"><tbody>'+st.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">Stuck at step '+(r.infoStep+2)+' with '+esc(user(r.chain[r.infoStep].userId).name)+'</div></td></tr>').join('')+'</tbody></table></div>':'')+
+      (st.length?'<div class="card"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Sent back to me</h3><span class="tag t-hold" style="margin-left:auto">'+st.length+'</span></div><table class="cards"><tbody>'+st.map(r=>'<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">Stuck at step '+(r.infoStep+2)+' with '+esc(user(legacyAskerId(r)).name)+'</div></td></tr>').join('')+'</tbody></table></div>':'')+
      '</div>'
     :'<div class="card" style="margin-top:14px"><div class="empty" style="padding:26px 16px"><h3>Your desk is clear</h3><p class="hint">Requests appear here the moment the person before you signs off, and anything sent back to you lands here too.</p></div></div>')+
   '<div class="grid g2" style="margin-top:18px;align-items:start">'+
@@ -1989,7 +2035,7 @@ async function flowRaiseSubmit(note){
 function stepLabel(r){
   if(r.status==='Approved') return 'Cleared all '+r.chain.length+' approvers';
   if(r.status==='Rejected'){const i=r.chain.findIndex(s=>s.status==='rejected');return i>-1?'Closed by '+user(r.chain[i].userId).name:'Closed'}
-  if(r.status==='Info Requested') return user(r.chain[r.infoStep].userId).name+' asked for more';
+  if(r.status==='Info Requested') return user(legacyAskerId(r)).name+' asked for more';
   if(!r.chain[r.current]) return r.type==='requisition'&&r.acctPending?'All approvers signed — with Accounts':'No one left on the chain';
   return 'Step '+(r.current+2)+' of '+(r.chain.length+1)+' — with '+user(r.chain[r.current].userId).name;
 }
@@ -2069,7 +2115,7 @@ function viewDetail(id){
   else if(mayExtend&&r.status==='In Progress'&&!holder(r)) banner='<div class="banner hold"><div><b>This request has no one left to act on it.</b><div class="hint" style="color:var(--hold)">Add the next approver(s) to keep it moving.</div></div><button class="btn hold sm" style="margin-left:auto" id="d-extend">Add approvers</button></div>';
   if(mt) banner='<div class="banner live"><div><b>You have a task on this request.</b><div class="hint">Close it below and it goes back to '+esc(user(r.chain[mt.stepIndex].userId).name)+'.</div></div></div>';
   else if(mine) banner='<div class="banner live"><div><b>This is with you.</b><div class="hint">Everyone after you is locked out until you act. Open the attached document before signing.</div></div></div>';
-  else if(info) banner='<div class="banner hold"><div><b>'+esc(user(r.chain[r.infoStep].userId).name)+' has asked you for more.</b><div class="hint">Reply at step '+(r.infoStep+2)+' below. The chain picks up where it stopped.</div></div></div>';
+  else if(info) banner='<div class="banner hold"><div><b>'+esc(user(legacyAskerId(r)).name)+' has asked you for more.</b><div class="hint">Reply at step '+(r.infoStep+2)+' below. The chain picks up where it stopped.</div></div></div>';
   else if(r.status==='Info Requested'&&r.chain[r.infoStep]&&r.chain[r.infoStep].userId===ME.id){ const tg=infoTargets(r), who=tg.length?tg.map(id=>user(id).name).join(', '):user(r.requesterId).name, done=(r.infoReplies||[]).length;
     banner='<div class="banner hold"><div><b>You asked '+esc(who)+' for more.</b><div class="hint">'+(tg.length>1?done+' of '+tg.length+' have replied. ':'')+'It comes back to you once '+(tg.length>1?'everyone has':'they have')+' responded.</div></div></div>'; }
   else if(r.status==='In Progress'&&r.chain[r.current]) banner='<div class="banner live"><div><b>With '+esc(user(r.chain[r.current].userId).name)+' at step '+(r.current+2)+'.</b><div class="hint">You can follow the whole chain, but only the holder can act.</div></div></div>';
@@ -2130,7 +2176,7 @@ function viewDetail(id){
       '<button class="btn hold" id="a-info">Ask the requester for more</button>'+(r.type!=='requisition'?'<button class="btn" id="a-amend">✎ Ask for an amendment</button>':'')+'<button class="btn bad" id="a-no">Reject and close</button></div>'+
       '<div class="hint" style="margin-top:11px">The ERP document cannot be changed from here. If it is wrong, reject it and have it reissued.</div></div>';
   } else if(info){
-    const tg=infoTargets(r), idx=tg.indexOf(ME.id), more=tg.length>1&&idx>-1&&idx<tg.length-1, asker=user(r.chain[r.infoStep].userId);
+    const tg=infoTargets(r), idx=tg.indexOf(ME.id), more=tg.length>1&&idx>-1&&idx<tg.length-1, asker=user(legacyAskerId(r));
     panel='<div class="card pad" style="border-color:var(--hold)"><h3>'+(tg.length>1?'You were tagged to check':'Reply to step '+(r.infoStep+2))+'</h3>'+
       '<p class="hint" style="margin-top:5px">'+esc(asker.name)+' asked:</p><div class="banner hold" style="margin-top:8px"><div>'+esc(r.chain[r.infoStep].remark||'—')+'</div></div>'+
       legacyTagChain(r)+legacyReplyThread(r)+
@@ -2140,7 +2186,7 @@ function viewDetail(id){
   } else if(legacyTagged(r)){
     const active=legacyActiveTag(r);
     panel='<div class="card pad"><h3>You are tagged — not your turn yet</h3>'+
-      '<p class="hint" style="margin-top:5px">'+esc(user(r.chain[r.infoStep].userId).name)+' asked: <b>'+esc(r.chain[r.infoStep].remark||'')+'</b></p>'+legacyTagChain(r)+legacyReplyThread(r)+
+      '<p class="hint" style="margin-top:5px">'+esc(user(legacyAskerId(r)).name)+' asked: <b>'+esc(r.chain[r.infoStep].remark||'')+'</b></p>'+legacyTagChain(r)+legacyReplyThread(r)+
       '<p class="hint" style="margin-top:10px">'+(active?'It comes to you after <b>'+esc(user(active).name)+'</b> replies. You will get a notification.':'You have already replied.')+'</p></div>';
   } else {
     const h=holder(r);
@@ -2231,7 +2277,7 @@ function wireDetail(v){
   if($('#a-amend',v)) $('#a-amend',v).onclick=()=>amendAskDialog('legacy',r.id,null);
   if($('#d-slip',v)) $('#d-slip',v).onclick=()=>reqSlipDialog(r);
   if($('#rq-addappr',v)) $('#rq-addappr',v).onclick=()=>reqAddApproverDialog(r);
-  if($('#rq-acctp',v)) $('#rq-acctp',v).onchange=async e=>{ try{ await rpc('req_set_accounts_person',{p_request:r.id,p_user:e.target.value||null}); await load(['legacy']); toast('Accounts person: '+(e.target.value?user(e.target.value).name:'the whole accounts team')+'.','ok'); render(); }catch(err){ fail(err); render(); } };
+  if($('#rq-acctp',v)) $('#rq-acctp',v).onchange=async e=>{ if(!e.target.value) return; try{ await rpc('req_set_accounts_person',{p_request:r.id,p_user:e.target.value}); await load(['legacy']); toast('Accounts person: '+(e.target.value?user(e.target.value).name:'the whole accounts team')+'.','ok'); render(); }catch(err){ fail(err); render(); } };
   wireReqAcct(v,r);
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
@@ -3835,7 +3881,11 @@ function wireGaruda(v){
 /* ---------- CNG QR lifecycle: scan / find a sticker, then act on it ---------- */
 const CNG_ST={in_store:['t-ok','In store'],issued:['t-prog','Issued'],allotted:['t-wait','Allotted'],consumed:['t-hold','Consumed'],returned:['t-bad','Returned'],replaced:['t-bad','Replaced']};
 async function cngFetchTag(code){ const {data}=await SB.from('cng_tags').select('*').eq('id',(code||'').trim().toUpperCase()).maybeSingle(); return data||null; }
-async function cngReload(){ await loadGaruda(true); if(ROUTE.name==='garuda') render(); }
+async function cngReload(tagId){
+  // v132: after an action on one sticker, re-fetch that sticker only (was: every tag and lot again)
+  if(tagId){ try{ const t=await cngFetchTag(tagId); if(t){ const i=(DB.garudaTags||[]).findIndex(x=>x.id===t.id); if(i>-1) DB.garudaTags[i]=t; else (DB.garudaTags=DB.garudaTags||[]).push(t); DB.garudaTags=DB.garudaTags.slice(); _garIdx=null; if(ROUTE.name==='garuda') render(); return; } }catch(e){} }
+  await loadGaruda(true); if(ROUTE.name==='garuda') render();
+}
 function cngScanDialog(){
   let stream=null, raf=0, stopped=false;
   const stop=()=>{ stopped=true; if(raf)cancelAnimationFrame(raf); if(stream){try{stream.getTracks().forEach(t=>t.stop())}catch(e){}} };
@@ -3846,8 +3896,11 @@ function cngScanDialog(){
       '<div id="sc-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Close</button><button class="btn primary" id="sc-cam">Use camera</button>',
     onOpen:(mv,close)=>{
-      const open=async(code)=>{ const raw=(code||$('#sc-code',mv).value||'').trim(); if(!raw) return $('#sc-err',mv).textContent='Type a QR code.'; const c=garTagCode(raw);
-        const t=await cngFetchTag(c); if(!t){ $('#sc-err',mv).textContent='No QR found for '+c+'.'; return; } stop(); close(); setTimeout(()=>cngTagPanel(t.id),0); };
+      let lastMiss='';
+      const open=async(code)=>{ const raw=(code||$('#sc-code',mv).value||'').trim(); if(!raw){ $('#sc-err',mv).textContent='Type a QR code.'; return false; } const c=garTagCode(raw);
+        if(c===lastMiss) return false;   // the same unknown sticker is still in front of the camera
+        const t=await cngFetchTag(c); if(!t){ lastMiss=c; $('#sc-err',mv).textContent=(/^GAR-/.test(c)?'No QR found for '+c:'That is not a SETU QR')+' — keep scanning or type the code.'; return false; }
+        stop(); close(); setTimeout(()=>cngTagPanel(t.id),0); return true; };
       $('#sc-find',mv).onclick=()=>open();
       $('#sc-code',mv).onkeydown=e=>{ if(e.key==='Enter') open(); };
       $('#sc-cam',mv).onclick=async()=>{
@@ -3877,9 +3930,12 @@ function cngScanDialog(){
         try{ await ensureJsQR(); }
         catch(e){ $('#sc-hint',mv).textContent='Live view is on, but the QR reader could not load — type the code below.'; return; }
         $('#sc-hint',mv).textContent='Scanning… place the QR inside the square and hold steady.';
-        const cv=document.createElement('canvas'), ctx=cv.getContext('2d');
-        const tick=()=>{ if(stopped) return; if(vid.readyState===vid.HAVE_ENOUGH_DATA){ cv.width=vid.videoWidth; cv.height=vid.videoHeight; ctx.drawImage(vid,0,0,cv.width,cv.height);
-            try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height); if(r&&r.data){ open(r.data); return; } }catch(e){} }
+        const cv=document.createElement('canvas'), ctx=cv.getContext('2d',{willReadFrequently:true}); let n=0, busyScan=false;
+        // v132: decode a ~640px frame every 3rd tick (cooler phone), and keep scanning after an unknown QR
+        const tick=()=>{ if(stopped) return; n++;
+          if(!busyScan&&n%3===0&&vid.readyState===vid.HAVE_ENOUGH_DATA){ const sc=Math.min(1,640/Math.max(vid.videoWidth||640,vid.videoHeight||640)); cv.width=Math.round((vid.videoWidth||640)*sc); cv.height=Math.round((vid.videoHeight||640)*sc); ctx.drawImage(vid,0,0,cv.width,cv.height);
+            try{ const img=ctx.getImageData(0,0,cv.width,cv.height); const r=window.jsQR&&jsQR(img.data,cv.width,cv.height,{inversionAttempts:'dontInvert'});
+              if(r&&r.data){ busyScan=true; open(r.data).then(ok=>{ busyScan=false; if(ok) return; raf=requestAnimationFrame(tick); }); return; } }catch(e){} }
           raf=requestAnimationFrame(tick); };
         tick();
       };
@@ -3915,7 +3971,7 @@ function cngIssueDialog(t,parentClose){
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="is-go">Issue</button>',
     onOpen:(mv,cl)=>{ $('#is-go',mv).onclick=async()=>{ const stn=$('#is-stn',mv).value.trim(), to=$('#is-to',mv).value.trim(), by=$('#is-by',mv).value.trim(), dt=$('#is-date',mv).value||null;
       if(!stn) return $('#is-err',mv).textContent='Choose a station.'; if(!to) return $('#is-err',mv).textContent='Enter who it is issued to.';
-      busy(true); try{ await rpc('cng_issue',{p_tag:t.id,p_station:stn,p_to:to,p_by_name:by,p_issue_date:dt}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Issued.','ok'); }
+      busy(true); try{ await rpc('cng_issue',{p_tag:t.id,p_station:stn,p_to:to,p_by_name:by,p_issue_date:dt}); cl(); if(parentClose)parentClose(); await cngReload(t.id); toast('Issued.','ok'); }
       catch(e){ busy(false); $('#is-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
 }
 /* Allot at facility — who allotted it, and an optional item photo */
@@ -3934,11 +3990,11 @@ function cngAllotDialog(t,parentClose){
             const p=ME.id+'/garuda-'+t.id+'-'+uid()+'.jpg';
             const up=SB.storage.from('documents').upload(p,blob,{contentType:'image/jpeg',upsert:false});
             const r=await Promise.race([up,new Promise(res=>setTimeout(()=>res({error:{message:'timeout'}}),25000))]);
-            if(r&&r.error) note=' (the photo could not be saved — allotted without it)'; else path=p; }
+            if(r&&r.error) note=' (the photo could not be saved — allotted without it)'; else { path=p; (async()=>{ try{ const tb=await downscaleToJpeg(blob,240,0.7); if(tb) await SB.storage.from('documents').upload(thumbOf(p),tb,{contentType:'image/jpeg',upsert:false}); }catch(_){} })(); } }
           catch(_){ note=' (the photo could not be saved — allotted without it)'; } }
         btn.textContent='Saving…';
         await rpc('cng_allot',{p_tag:t.id,p_photo:path,p_by_name:by});
-        cl(); if(parentClose)parentClose(); await cngReload(); toast('Allotted'+note+'.','ok');
+        cl(); if(parentClose)parentClose(); await cngReload(t.id); toast('Allotted'+note+'.','ok');
       }catch(e){ btn.disabled=false; btn.textContent='Mark allotted'; err.textContent=((e&&e.message)||'Could not allot.').replace(/^.*?: /,''); } }; }});
 }
 /* Consume on site — who consumed it, and a short remark */
@@ -3950,7 +4006,7 @@ function cngConsumeDialog(t,parentClose){
       '<div id="cs-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="cs-go">Mark consumed</button>',
     onOpen:(mv,cl)=>{ $('#cs-go',mv).onclick=async()=>{ const by=$('#cs-by',mv).value.trim(), rmk=$('#cs-rmk',mv).value.trim();
-      busy(true); try{ await rpc('cng_consume',{p_tag:t.id,p_remark:rmk,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Consumed.','ok'); }
+      busy(true); try{ await rpc('cng_consume',{p_tag:t.id,p_remark:rmk,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(t.id); toast('Consumed.','ok'); }
       catch(e){ busy(false); $('#cs-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
 }
 /* Warehouse accept — who accepted the old part back */
@@ -3961,7 +4017,7 @@ function cngReturnDialog(t,parentClose){
       '<div id="rt-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rt-go">Accept return</button>',
     onOpen:(mv,cl)=>{ $('#rt-go',mv).onclick=async()=>{ const by=$('#rt-by',mv).value.trim();
-      busy(true); try{ await rpc('cng_return',{p_tag:t.id,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(); toast('Return accepted.','ok'); }
+      busy(true); try{ await rpc('cng_return',{p_tag:t.id,p_by_name:by}); cl(); if(parentClose)parentClose(); await cngReload(t.id); toast('Return accepted.','ok'); }
       catch(e){ busy(false); $('#rt-err',mv).textContent=(e.message||'').replace(/^.*?: /,''); return; } busy(false); }; }});
 }
 function cngReplaceDialog(t,parentClose){
@@ -5352,7 +5408,7 @@ function flowDetourDialog(stepId){
       :'<p class="hint" style="margin:6px 0 0">No one added yet.</p>';
     $$('.cd-rm',mv).forEach(b=>b.onclick=()=>{chosen.splice(+b.dataset.i,1);paint(mv);}); };
   modal({title:'Add a cross-check',
-    body:'<p class="hint" style="margin-top:0">'+(s.status==='pending'
+    body:'<p class="hint" style="margin-top:0">'+((s.status==='pending'&&s.actorKind!=='raiser'&&s.pos>0)
         ?'The file goes to these people <b>now</b> — one after another, in this order. <b>'+esc(s.label)+'</b> waits and gets it back once they approve.'
         :'The file will go to these people — one after another, in this order — right after <b>'+esc(s.label)+'</b>, then return to the normal flow.')+' Each can approve or reject (a reject sends it back to you to re-raise). Someone who already has an open cross-check on this file cannot be added again.</p>'+
       '<div class="row" style="gap:8px;margin-top:12px"><select id="cd-u" style="flex:1"><option value="">— choose a person —</option>'+opts+'</select><button class="btn sm" id="cd-add">Add</button></div>'+
@@ -5363,7 +5419,7 @@ function flowDetourDialog(stepId){
       $('#cd-add',mv).onclick=()=>{ const id=$('#cd-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#cd-err',mv).textContent='Already added.';return;} chosen.push(id); $('#cd-u',mv).value=''; $('#cd-err',mv).textContent=''; paint(mv); };
       $('#cd-go',mv).onclick=async()=>{ if(!chosen.length) return $('#cd-err',mv).textContent='Add at least one person.';
         $('#cd-go',mv).disabled=true;
-        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast(s.status==='pending'?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' after '+s.label+'.','ok'); render(); }
+        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast((s.status==='pending'&&s.actorKind!=='raiser'&&s.pos>0)?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' after '+s.label+'.','ok'); render(); }
         catch(e){ $('#cd-go',mv).disabled=false; $('#cd-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
 }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
@@ -5622,7 +5678,7 @@ function flowAct(stepId,kind){
    Boot
    ============================================================ */
 window.addEventListener('offline',()=>{if(!$('#off')){const d=document.createElement('div');d.id='off';d.className='offline';d.textContent='You are offline — changes cannot be saved until the connection is back.';document.body.appendChild(d)}});
-window.addEventListener('online',()=>{const d=$('#off');if(d)d.remove();if(ME){ pendingFlowsAll=true; reloadSoon(DATA_PARTS); }});
+window.addEventListener('online',()=>{const d=$('#off');if(d)d.remove();if(ME) catchUp();});
 /* When the app returns to the foreground: apply anything that arrived while it was
    in the background. It no longer re-downloads everything on every app switch (that
    was a big share of the data transfer) — only if the live connection dropped (the
@@ -5632,8 +5688,8 @@ document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState==='hidden'){ hiddenAt=Date.now(); return; }
   if(!ME) return;
   const away=hiddenAt?Date.now()-hiddenAt:0; hiddenAt=0;
-  if(away>10*60000){ DATA_PARTS.forEach(p=>pendingParts.add(p)); pendingFlowsAll=true; }
   if(away>60*60000) pendingParts.add('people');
+  if(away>10*60000&&navigator.onLine){ catchUp(); return; }
   if(pendingParts.size&&navigator.onLine){ clearTimeout(reloadT); reloadT=setTimeout(flushReload,300); }
   else if(renderSoon._due){ renderSoon._due=false; renderSoon(); }
 });
@@ -5709,8 +5765,7 @@ function wireAmend(v,engine,id){
   $$('[data-amcancel]',v).forEach(b=>b.onclick=()=>{ const am=(DB.amends||[]).find(m=>m.id===b.dataset.amcancel); if(am) amendCancelDialog(am); });
 }
 async function amendRefresh(engine,id){
-  if(engine==='flow') await load(['flows','notif'],[id]); else await load(['legacy','notif']);
-  await loadAmends();
+  if(engine==='flow') await load(['flows','notif'],[id]); else await load(['legacy','notif'],null,[id]);   // load() fetches the amendments once
 }
 function amendAskDialog(engine,reqId,stepId){
   let target=null;
@@ -5884,8 +5939,9 @@ function viewReq(){
         '<div><label>Name</label><input type="text" value="'+esc(me.name)+'" disabled></div>'+
         '<div><label>Designation</label><input type="text" value="'+esc(me.role||'')+'" disabled></div>'+
         '<div><label for="rq-amt">Rupees</label><input id="rq-amt" type="number" min="1" step="0.01" inputmode="decimal" value="'+esc(d.amount)+'" placeholder="Amount in ₹"></div>'+
-        '<div><label for="rq-work">Type of work <span class="hint" style="font-weight:400">optional</span></label><input id="rq-work" type="text" list="rq-works" value="'+esc(d.work)+'" placeholder="Anything — e.g. Stationery, Travel advance">'+
-          '<datalist id="rq-works">'+works.map(w=>'<option value="'+esc(w)+'">').join('')+'</datalist></div>'+
+        (works.length
+          ?'<div><label for="rq-work">Type of work</label><select id="rq-work"><option value="">Choose…</option>'+works.map(w=>'<option '+(d.work.toLowerCase()===w.toLowerCase()?'selected':'')+'>'+esc(w)+'</option>').join('')+'</select><div class="hint">🔒 Your types of work are fixed by the super admin.</div></div>'
+          :'<div><label for="rq-work">Type of work <span class="hint" style="font-weight:400">optional</span></label><input id="rq-work" type="text" value="'+esc(d.work)+'" placeholder="Anything — e.g. Stationery, Travel advance"></div>')+
       '</div>'+
       '<div style="margin-top:8px"><label>In words</label><div id="rq-words" class="said" style="margin:4px 0 0;min-height:22px">'+esc(numToWordsIN(d.amount)||'—')+'</div></div>'+
       '<div style="margin-top:12px"><label for="rq-purpose">Purpose</label><textarea id="rq-purpose" rows="4" placeholder="What the money is for">'+esc(d.purpose)+'</textarea></div>'+
@@ -5894,8 +5950,10 @@ function viewReq(){
       '<div class="sep"></div><h3 style="font-size:15px">Approving authorities, in order</h3>'+
       (fx?'<div class="banner" style="margin-top:8px"><div><b>🔒 Fixed by the super admin for “'+esc(fx.work)+'”.</b><div class="hint">This chain is set for you and cannot be changed.</div></div></div><div style="margin-top:8px">'+chainChips(fx.chain,false)+'</div>'
          :'<div id="rq-chain" style="margin-top:8px">'+chainChips(d.chain,true)+'</div><div id="rq-find" style="margin-top:8px"></div>')+
-      '<div style="margin-top:12px"><label for="rq-acct">Accounts person <span class="hint" style="font-weight:400">optional</span></label><select id="rq-acct"><option value="">Any of the accounts team</option>'+acctTeam().map(u=>'<option value="'+u.id+'" '+(d.acctUser===u.id?'selected':'')+'>'+esc(u.name)+'</option>').join('')+'</select>'+
-        '<div class="hint" style="margin-top:4px">After the last approver, this person (or the accounts team) fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>'+
+      '<div style="margin-top:12px"><label for="rq-acct">Accounts person <span style="color:var(--stop)">*</span></label>'+(acctTeam().length
+          ?'<select id="rq-acct"><option value="">Choose who in Accounts will close this slip…</option>'+acctTeam().map(u=>'<option value="'+u.id+'" '+(d.acctUser===u.id?'selected':'')+'>'+esc(u.name)+(u.role?' · '+esc(u.role):'')+'</option>').join('')+'</select>'
+          :'<div class="banner hold"><div><b>No accounts team is set up yet.</b><div class="hint">Ask the super admin to tick “Requisition accounts” for the accounts people; until then a slip cannot be sent.</div></div></div>')+
+        '<div class="hint" style="margin-top:4px">After the last approver, this person fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>'+
       '<div id="rq-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
       '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="rq-clear">Clear</button><button class="btn primary" id="rq-send" style="margin-left:auto">Send requisition</button></div></div>';
   } else {
@@ -5916,7 +5974,7 @@ function viewReq(){
 }
 function wireReq(v){
   // the page reads fresh rows when opened (gate-only accounts get no live updates)
-  if(!wireReq._at||Date.now()-wireReq._at>60000){ wireReq._at=Date.now(); load(['legacy']).then(()=>{ if(ROUTE.name==='req'&&!document.querySelector('.veil')) render(); }).catch(()=>{}); }
+  if(gateScopeOnly()&&(!wireReq._at||Date.now()-wireReq._at>60000)){ wireReq._at=Date.now(); load(['legacy']).then(()=>{ if(ROUTE.name==='req'&&!document.querySelector('.veil')) render(); }).catch(()=>{}); }
   $$('[data-rq]',v).forEach(tr=>tr.onclick=()=>go({name:'detail',id:tr.dataset.rq}));
   if(ME.owner){
     if($('#rh-add',v)) $('#rh-add',v).onclick=()=>reqHierDialog(null);
@@ -5940,10 +5998,11 @@ function wireReq(v){
     const fx=fixedFor(d.work), a=Number(d.amount);
     if(!(a>0)) return err.textContent='Enter the amount in rupees.';
     if(d.purpose.trim().length<3) return err.textContent='Write the purpose.';
+    if(myFixed().length&&!fx) return err.textContent='Choose your type of work.';
+    if(!d.acctUser) return err.textContent='Choose the accounts person who will close this slip.';
     if(!fx&&!d.chain.length) return err.textContent='Add at least one approver.';
     $('#rq-send',v).disabled=true;
-    try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim()},p_chain:fx?[]:d.chain,p_files:filesPayload(d.files)});
-      if(d.acctUser){ try{ await rpc('req_set_accounts_person',{p_request:id,p_user:d.acctUser}); }catch(_){} }
+    try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim(),acct_user:d.acctUser},p_chain:fx?[]:d.chain,p_files:filesPayload(d.files)});
       reqDraft=null; await load(['legacy']); const r=DB.requests.find(x=>x.id===id);
       toast('Requisition sent'+(r&&r.chain[0]?' to '+user(r.chain[0].userId).name:'')+'.','ok'); go({name:'detail',id}); }
     catch(e){ $('#rq-send',v).disabled=false; err.textContent=(e&&e.message||'Could not send.').replace(/^.*?: /,''); }
@@ -6153,7 +6212,7 @@ function reqManageHTML(r){
   const mine=r.requesterId===ME.id||ME.admin||ME.owner; if(!mine) return '<div class="hint" style="margin-top:10px">Accounts: '+esc(acctNames(r))+'</div>';
   const team=DB.users.filter(u=>u.reqAccounts&&u.active);
   return '<div class="sep"></div><label for="rq-acctp">Accounts person</label><select id="rq-acctp">'+
-      '<option value="">Any of the accounts team'+(team.length?'':' (administrators)')+'</option>'+team.map(u=>'<option value="'+u.id+'" '+(r.acctUser===u.id?'selected':'')+'>'+esc(u.name)+'</option>').join('')+'</select>'+
+      (r.acctUser&&team.some(u=>u.id===r.acctUser)?'':'<option value="">— not chosen / no longer in the team —</option>')+team.map(u=>'<option value="'+u.id+'" '+(r.acctUser===u.id?'selected':'')+'>'+esc(u.name)+'</option>').join('')+'</select>'+
     ((r.status==='In Progress'&&!r.amendId&&!(r.chainLocked&&!ME.owner))?'<button class="btn sm" id="rq-addappr" style="width:100%;margin-top:10px">＋ Add an approver'+(r.acctPending?' before Accounts':'')+'</button>':'');
 }
 function reqAddApproverDialog(r){
