@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v136';
+const APP_VER='v137';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -353,7 +353,7 @@ function reloadSoon(parts,scopedFlows,scopedLegacy){
 function flushReload(){
   clearTimeout(reloadT);
   if(!ME||!pendingParts.size) return;
-  if($('.veil')||$('#busy')){ reloadT=setTimeout(flushReload,3000); return; }   // don't redraw under an open dialog; retry shortly
+  if($('.veil')||$('#busy')||typingInView()){ reloadT=setTimeout(flushReload,3000); return; }   // don't redraw under an open dialog or while someone types; retry shortly
   const parts=[...pendingParts]; pendingParts.clear();
   const ids=(!pendingFlowsAll&&pendingFlowIds.size)?[...pendingFlowIds]:null;
   const lids=(!pendingLegacyAll&&pendingLegacyIds.size)?[...pendingLegacyIds]:null;
@@ -368,11 +368,13 @@ function catchUp(){
   catchUpT=setTimeout(async()=>{ if($('.veil')||$('#busy')){ catchUp(); return; }
     try{ await Promise.all([load(['legacy','gate','notif'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
 }
+/* v137: someone is typing in a box on the page (e.g. searching a person) — a live redraw would wipe it */
+const typingInView=()=>{ const a=document.activeElement, v=document.getElementById('view'); return !!(a&&v&&v.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.value); };
 /* redraw without any download (a live event that carried its own data) */
 function renderSoon(){
   if(document.hidden){ renderSoon._due=true; return; }
   clearTimeout(renderT);
-  renderT=setTimeout(()=>{ if(!ME) return; if($('.veil')){ renderSoon(); return; } render(); paintNav(); paintPin(); },400);
+  renderT=setTimeout(()=>{ if(!ME) return; if($('.veil')||typingInView()){ renderSoon(); return; } render(); paintNav(); paintPin(); },400);
 }
 /* live gate-pass change: the event already carries the row — apply it, no download */
 function applyPassChange(p){
@@ -478,7 +480,20 @@ const acctTeam=()=>{ const byName=(a,b)=>a.name.localeCompare(b.name);
   t=DB.users.filter(u=>u.active&&/^account/i.test(u.dept||'')); if(t.length) return t.sort(byName);
   return DB.users.filter(u=>(u.admin||u.owner)&&u.active).sort(byName); };
 // the person the raiser chose — only while they are still in the team; otherwise "not chosen"
-const acctChosen=r=>{ if(!r||!r.acctUser) return null; const u=acctTeam().find(x=>x.id===r.acctUser); return u||null; };
+const acctChosen=r=>{ if(!r||!r.acctUser||r.acctUser===r.requesterId) return null; const u=DB.users.find(x=>x.id===r.acctUser&&x.active); return u||null; };   // 108: anyone active in SETU
+/* 108: pick the accounts person — a search box over everyone in SETU (the ticked "Requisition accounts" people are offered first) */
+function acctPickHTML(id,chosenId,raiserId){
+  const u=chosenId?DB.users.find(x=>x.id===chosenId):null;
+  if(u) return '<div id="'+id+'" class="acct-pick"><div class="filerow" style="gap:8px;margin-top:4px"><div class="av sm">'+inits(u.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc([u.role,u.dept,u.empId].filter(Boolean).join(' · '))+'</div></div><button type="button" class="btn ghost sm" data-acchg>Change</button></div></div>';
+  const sug=DB.users.filter(x=>x.reqAccounts&&x.active&&x.id!==raiserId).sort((a,b)=>a.name.localeCompare(b.name));
+  return '<div id="'+id+'" class="acct-pick"><div class="acct-find"></div>'+(sug.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><span class="hint">Suggested:</span>'+sug.map(x=>'<button type="button" class="btn sm" data-acs="'+x.id+'">'+esc(x.name)+'</button>').join('')+'</div>':'')+'</div>';
+}
+function wireAcctPick(box,raiserId,onPick){
+  if(!box) return;
+  const f=$('.acct-find',box); if(f) personPicker(f,{placeholder:'Search any name, employee ID or department',exclude:()=>[raiserId],onPick});
+  $$('[data-acs]',box).forEach(b=>b.onclick=()=>onPick(b.dataset.acs));
+  const c=$('[data-acchg]',box); if(c) c.onclick=()=>{ box.outerHTML=acctPickHTML(box.id,null,raiserId); const nb=document.getElementById(box.id); wireAcctPick(nb,raiserId,onPick); const i=nb&&$('.acct-find input',nb); if(i) i.focus(); };
+}
 const acctFor=r=>{ const c=acctChosen(r); return c?[c]:[]; };   // who does the Accounts step of this requisition (107: only the chosen person)
 const acctNames=r=>{ const c=acctChosen(r); return c?c.name:'person not chosen yet'; };
 const acctNeedsChoice=r=>!!(r&&r.type==='requisition'&&r.acctPending&&r.status==='In Progress'&&!acctChosen(r));
@@ -2295,7 +2310,7 @@ function wireDetail(v){
   if($('#a-amend',v)) $('#a-amend',v).onclick=()=>amendAskDialog('legacy',r.id,null);
   if($('#d-slip',v)) $('#d-slip',v).onclick=()=>reqSlipDialog(r);
   if($('#rq-addappr',v)) $('#rq-addappr',v).onclick=()=>reqAddApproverDialog(r);
-  if($('#rq-acctp',v)) $('#rq-acctp',v).onchange=async e=>{ if(!e.target.value) return; try{ await rpc('req_set_accounts_person',{p_request:r.id,p_user:e.target.value}); await load(['legacy']); toast('Accounts person: '+(e.target.value?user(e.target.value).name:'the whole accounts team')+'.','ok'); render(); }catch(err){ fail(err); render(); } };
+  wireAcctPick($('#rq-acctp',v),r.requesterId,async uid=>{ try{ await rpc('req_set_accounts_person',{p_request:r.id,p_user:uid}); await load(['legacy'],null,[r.id]); toast('Accounts person: '+user(uid).name+'.','ok'); render(); }catch(err){ fail(err); render(); } });
   wireReqAcct(v,r);
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
@@ -6001,9 +6016,7 @@ function viewReq(){
       '<div class="sep"></div><h3 style="font-size:15px">Approving authorities, in order</h3>'+
       (fx?'<div class="banner" style="margin-top:8px"><div><b>🔒 Fixed by the super admin for “'+esc(fx.work)+'”.</b><div class="hint">This chain is set for you and cannot be changed.</div></div></div><div style="margin-top:8px">'+chainChips(fx.chain,false)+'</div>'
          :'<div id="rq-chain" style="margin-top:8px">'+chainChips(d.chain,true)+'</div><div id="rq-find" style="margin-top:8px"></div>')+
-      '<div style="margin-top:12px"><label for="rq-acct">Accounts person <span style="color:var(--stop)">*</span></label>'+(acctTeam().length
-          ?'<select id="rq-acct"><option value="">Choose who in Accounts will close this slip…</option>'+acctTeam().map(u=>'<option value="'+u.id+'" '+(d.acctUser===u.id?'selected':'')+'>'+esc(u.name)+(u.role?' · '+esc(u.role):'')+'</option>').join('')+'</select>'
-          :'<div class="banner hold"><div><b>No accounts team is set up yet.</b><div class="hint">Ask the super admin to tick “Requisition accounts” for the accounts people; until then a slip cannot be sent.</div></div></div>')+
+      '<div style="margin-top:12px"><label for="rq-acct">Accounts person <span style="color:var(--stop)">*</span></label>'+acctPickHTML('rq-acct',d.acctUser,ME.id)+
         '<div class="hint" style="margin-top:4px">After the last approver, this person fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>'+
       '<div id="rq-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
       '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="rq-clear">Clear</button><button class="btn primary" id="rq-send" style="margin-left:auto">Send requisition</button></div></div>';
@@ -6039,7 +6052,7 @@ function wireReq(v){
   const d=reqDraft;
   const amt=$('#rq-amt',v); if(amt) amt.oninput=()=>{ d.amount=amt.value; $('#rq-words',v).textContent=numToWordsIN(amt.value)||'—'; };
   const pu=$('#rq-purpose',v); if(pu) pu.oninput=()=>{ d.purpose=pu.value; };
-  const ac=$('#rq-acct',v); if(ac) ac.onchange=()=>{ d.acctUser=ac.value||''; };
+  wireAcctPick($('#rq-acct',v),ME.id,id=>{ d.acctUser=id; render(); });
   const w=$('#rq-work',v); if(w){ w.oninput=()=>{ d.work=w.value; }; w.onchange=()=>{ const was=!!fixedFor(w.dataset.prev||''), now=!!fixedFor(w.value); d.work=w.value; if(was!==now) render(); w.dataset.prev=w.value; }; w.dataset.prev=d.work; }
   uploader($('#rq-files',v),d.files,{mode:'support',label:'Bill, quotation, photo or anything the approvers should see'});
   const repaint=()=>{ const c=$('#rq-chain',v); if(!c) return; c.innerHTML=chainChips(d.chain,true); wireChainChips(c,d.chain,repaint); };
@@ -6262,8 +6275,7 @@ function reqManageHTML(r){
   if(r.status!=='In Progress'&&r.status!=='Info Requested') return '';
   const mine=r.requesterId===ME.id||ME.admin||ME.owner; if(!mine) return '<div class="hint" style="margin-top:10px">Accounts: '+esc(acctNames(r))+'</div>';
   const team=acctTeam(), ch=acctChosen(r), need=acctNeedsChoice(r);
-  return '<div class="sep"></div><label for="rq-acctp">Accounts person'+(need?' <span style="color:var(--stop)">— choose now</span>':'')+'</label><select id="rq-acctp"'+(need?' style="border-color:var(--hold);box-shadow:0 0 0 3px rgba(183,121,31,.18)"':'')+'>'+
-      (ch?'':'<option value="">Choose who in Accounts closes this slip…</option>')+team.map(u=>'<option value="'+u.id+'" '+(ch&&ch.id===u.id?'selected':'')+'>'+esc(u.name)+(u.role?' · '+esc(u.role):'')+'</option>').join('')+'</select>'+
+  return '<div class="sep"></div><label>Accounts person'+(need?' <span style="color:var(--stop)">— choose now</span>':'')+'</label><div'+(need?' style="border:1px solid var(--hold);border-radius:var(--r);padding:8px;box-shadow:0 0 0 3px rgba(183,121,31,.18)"':'')+'>'+acctPickHTML('rq-acctp',ch?ch.id:null,r.requesterId)+'</div>'+
     ((r.status==='In Progress'&&!r.amendId&&!(r.chainLocked&&!ME.owner))?'<button class="btn sm" id="rq-addappr" style="width:100%;margin-top:10px">＋ Add an approver'+(r.acctPending?' before Accounts':'')+'</button>':'');
 }
 function reqAddApproverDialog(r){
