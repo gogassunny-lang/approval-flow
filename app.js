@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v140';
+const APP_VER='v141';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -469,7 +469,11 @@ function legacyAwaitingSection(){
 const deptAt=(r,i)=>i<0?(user(r.requesterId).dept||''):(user(r.chain[i].userId).dept||'');
 const docNo=r=>r.type==='requisition'?r.ref:((r.type==='indent'?r.f.indentNo:r.f.orderNo)||'—');
 const typeLabel=r=>r.type==='requisition'?'Requisition':r.type==='indent'?'Indent':'Work order';
-const docTitle=r=>r.type==='requisition'?(reqShort(r)+(r.f.amount?' · '+money(r.f.amount):'')):r.type==='indent'
+// v141: the ERP document's Remark ("ROV & BALL VALVE REQUIRED AT SITE …") is the file's name everywhere
+const remarkClean=t=>String(t||'').replace(/\s+/g,' ').replace(/\s+,/g,',').replace(/,(?=\S)/g,', ').trim();
+const remarkShort=(t,n)=>{ t=remarkClean(t); n=n||70; if(t.length<=n) return t; const c=t.slice(0,n); const i=c.lastIndexOf(' '); return (i>n*0.6?c.slice(0,i):c).replace(/[ ,.;:-]+$/,'')+'…'; };
+const flowRemark=f=>remarkClean(f&&f.fields&&f.fields.remarks);
+const docTitle=r=>(r.type!=='requisition'&&remarkClean(r.f.remarks))?remarkShort(r.f.remarks)+' · '+docNo(r):r.type==='requisition'?(reqShort(r)+(r.f.amount?' · '+money(r.f.amount):'')):r.type==='indent'
   ? docNo(r)+(r.f.category==='Project'?(r.f.projectName?' · '+r.f.projectName:''):(r.f.siteName?' · '+r.f.siteName:''))
   : docNo(r)+(r.f.vendorName?' · '+r.f.vendorName:'');
 const pinOK=u=>!!(u&&u.pinDate===DAY());
@@ -1773,7 +1777,7 @@ function flowDashCard(){
     '<span class="hint" style="align-self:center">of '+all.length+'</span>'+(turn?'<span class="tag t-wait">'+turn+' waiting on you</span>':'')+'</div>'+
     '<div class="row" style="padding:10px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><input id="d-flowq" type="search" placeholder="Search a number — indent / PO / WO / uploaded file no." style="flex:1;min-width:200px" value="'+esc(dashQ||'')+'"><span class="hint" id="d-flowcount" style="align-self:center"></span></div><div id="d-flowres"></div>'+
     (recent.length?'<table class="cards"><tbody>'+recent.map(f=>{
-      return '<tr data-flowgo="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</span>'+
+      return '<tr data-flowgo="'+f.id+'"><td>'+(flowRemark(f)?'<b>'+esc(remarkShort(flowRemark(f)))+'</b><div class="hint">'+esc(f.ref)+' · '+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</div>':'<b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</span>')+
         '<div class="hint">'+esc(f.title||'(no number)')+' · by '+esc(user(f.requesterId).name)+'</div></td>'+
         '<td class="hint meta">'+esc(flowWhere(f))+'</td><td class="meta">'+(flowActionableByMe(f)?'<span class="tag t-prog">Your turn</span>':flowTaggedToMe(f)?'<span class="tag t-hold">Your input needed</span>':flowAwaitingMyReply(f)?'<span class="tag t-wait">Awaiting reply</span>':(flowCanEscalate(f)?'<span class="tag t-hold">Can escalate</span>':'<span class="tag t-wait">In progress</span>'))+'</td></tr>';}).join('')+'</tbody></table>'+
       (running.length>recent.length?'<div class="row" style="padding:10px 18px"><button class="btn ghost sm" id="d-flows" style="margin-left:auto">See all '+running.length+' flows</button></div>':'')
@@ -1793,7 +1797,7 @@ function wireDash(v){
     const run=()=>{ const s=fq.value.trim().toLowerCase(); dashQ=fq.value; const c=$('#d-flowcount',v);
       if(s.length<2){ fres.innerHTML=''; if(c)c.textContent=''; return; }
       const fl=SETU_FLOWS().filter(f=>_flowHay(f).includes(s)).slice(0,8)
-        .map(f=>({k:'flowdetail',id:f.id,ref:f.ref,sub:flowHeadLabelF(f)+' · '+(f.title||'(no number)')+' · '+flowWhere(f)}));
+        .map(f=>({k:'flowdetail',id:f.id,ref:flowRemark(f)?remarkShort(flowRemark(f)):f.ref,sub:(flowRemark(f)?f.ref+' · ':'')+flowHeadLabelF(f)+' · '+(f.title||'(no number)')+' · '+flowWhere(f)}));
       const lg=DB.requests.filter(r=>_legHay(r).includes(s)).slice(0,6)
         .map(r=>({k:'detail',id:r.id,ref:r.ref,sub:typeLabel(r)+' · '+docTitle(r)}));
       const hits=fl.concat(lg).slice(0,10);
@@ -2165,7 +2169,7 @@ function subBranchHTML(r,s){
 function viewDetail(id){
   const r=DB.requests.find(x=>x.id===id);
   if(!r) return '<div class="card"><div class="empty"><h3>That request is not visible to you</h3><p class="hint">It may have been raised in a chain you are not part of.</p></div></div>';
-  head(docTitle(r),'Custom chain · '+typeLabel(r)+' · '+r.ref+' · raised by '+user(r.requesterId).name+' on '+fmtD(r.createdAt));
+  head(r.type!=='requisition'&&remarkClean(r.f.remarks)?remarkClean(r.f.remarks):docTitle(r),'Custom chain · '+typeLabel(r)+' · '+(r.type!=='requisition'&&remarkClean(r.f.remarks)?docNo(r)+' · ':'')+r.ref+' · raised by '+user(r.requesterId).name+' on '+fmtD(r.createdAt));
   const mine=isMyTurn(r), info=needsMyInfo(r), f=r.f, mt=myOpenTask(r), am=amendOpen('legacy',r.id);
   const mayExtend=(r.requesterId===ME.id||ME.admin||ME.owner)&&r.status!=='Rejected'&&!(r.chainLocked&&!ME.owner);
   let banner='';
@@ -2602,8 +2606,8 @@ let usageSort='today', usageQ='', storageInfo=null;
    ============================================================ */
 const _legFiles=r=>(r.files||[]).map(fl=>fl.name).join(' ');
 const _flowFiles=f=>{ const n=[]; (f.steps||[]).forEach(s=>(s.files||[]).forEach(fl=>n.push(fl.name))); (f._files||[]).forEach(fl=>n.push(fl.name)); return n.join(' '); };
-const _legHay=r=>(r.ref+' '+docNo(r)+' '+docTitle(r)+' '+_legFiles(r)+' '+(r.type==='indent'?'ind indent':'wo work order')).toLowerCase();
-const _flowHay=(f,lbl)=>(f.ref+' '+(lbl||'')+' '+(f.title||'')+' '+f.head+' '+f.division+' '+_flowFiles(f)+' '+(f.head==='PO'?'po purchase indent':'wo work order advice')).toLowerCase();
+const _legHay=r=>(r.ref+' '+docNo(r)+' '+docTitle(r)+' '+remarkClean(r.f.remarks)+' '+_legFiles(r)+' '+(r.type==='indent'?'ind indent':'wo work order')).toLowerCase();
+const _flowHay=(f,lbl)=>(f.ref+' '+(lbl||'')+' '+(f.title||'')+' '+flowRemark(f)+' '+f.head+' '+f.division+' '+_flowFiles(f)+' '+(f.head==='PO'?'po purchase indent':'wo work order advice')).toLowerCase();
 // document type for the status/type filter: indent | po | advice | wo
 function _flowDtype(f,stage){ if(/advice/i.test(stage||'')) return 'advice'; return f.head==='PO'?(/indent/i.test(stage||'')?'indent':'po'):'wo'; }
 function assistErpList(doneWanted){
@@ -4905,7 +4909,7 @@ function flowRow(f,opts){
   opts=opts||{};
   const s=flowLive(f), act=[...new Set(flowLives(f).reduce((a,x)=>a.concat(x.actors),[]))], withWho=act.length?act.map(id=>user(id).name).slice(0,3).join(', ')+(act.length>3?' +'+(act.length-3):''):'';
   const wait=opts.nudge&&s?flowWaitDays(f):0;
-  return '<tr data-flow="'+f.id+'"'+(flowTaggedToMe(f)?' class="row-tagme"':flowAwaitingMyReply(f)?' class="row-await"':'')+'><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</span>'+
+  return '<tr data-flow="'+f.id+'"'+(flowTaggedToMe(f)?' class="row-tagme"':flowAwaitingMyReply(f)?' class="row-await"':'')+'><td>'+(flowRemark(f)?'<b>'+esc(remarkShort(flowRemark(f)))+'</b><div class="hint">'+esc(f.ref)+' · '+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</div>':'<b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</span>')+
     '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
     '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
     '<td class="meta">'+flowStatusTag(f)+(flowActionableByMe(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':flowTaggedToMe(f)?'<div class="hint tag-me">Your input needed</div>':flowAwaitingMyReply(f)?'<div class="hint" style="color:var(--steel)">Awaiting reply</div>':'')+
@@ -5121,7 +5125,7 @@ const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:
 function viewFlowDetail(id){
   const f=DB.flows.find(x=>x.id===id);
   if(!f){ head('Flow','Not found'); return '<div class="card pad">This flow could not be found.</div>'; }
-  head(f.ref,'Fixed flow · '+flowHeadLabelF(f)+' · '+f.division+(f.title?' · '+f.title:''));
+  head(flowRemark(f)||f.ref,(flowRemark(f)?f.ref+' · ':'')+'Fixed flow · '+flowHeadLabelF(f)+' · '+f.division+(f.title?' · '+f.title:''));
   let left='<div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:6px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
     (ME.gateOnly?'':'<button class="btn sm" id="fl-nudge" title="Ask someone to move this file — they get a notification with your message">👉 Nudge</button>')+
     (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del">Delete request</button>':'')+'</div>';
