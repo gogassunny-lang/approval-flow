@@ -76,7 +76,11 @@ function modal({title,body,footer,cls,onOpen,sticky}){
   if(onOpen)onOpen(v,close); return {el:v,close};
 }
 /* every failed call surfaces its reason; the database writes them to be read */
-const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.';toast(m.replace(/^.*?: /,''),'bad');console.error(e)};
+// v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
+const APP_VER='v136';
+const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
+  if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
+  toast(t,'bad');console.error(e)};
 async function rpc(fn,args){const {data,error}=await SB.rpc(fn,args||{}); if(error) throw error; return data}
 let busyTimer=null;
 function busy(on){let v=$('#busy');
@@ -5741,6 +5745,7 @@ document.addEventListener('visibilitychange',()=>{
 });
 if('serviceWorker' in navigator&&location.protocol==='https:') navigator.serviceWorker.register('sw.js').catch(()=>{});
 document.title=CONFIG.APP_NAME||'SETU';
+{ const cr=document.querySelector('.side-foot .credit'); if(cr) cr.insertAdjacentHTML('beforeend',' · <span style="opacity:.7">'+APP_VER+'</span>'); }
 
 /* ============================================================
    v126 — Amendment (98) · Requisition + fixed hierarchies (99)
