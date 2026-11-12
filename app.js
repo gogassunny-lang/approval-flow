@@ -467,12 +467,20 @@ const pinOK=u=>!!(u&&u.pinDate===DAY());
 const CAN_REQ=()=>!!(ME&&ME.canReq!==false);
 const reqAll=()=>DB.requests.filter(r=>r.type==='requisition');
 // 100: the Accounts step — the ticked team, else administrators (the server decides; this only shows it)
-const acctTeam=()=>{ const t=DB.users.filter(u=>u.reqAccounts&&u.active); return t.length?t:DB.users.filter(u=>(u.admin||u.owner)&&u.active); };
-const acctFor=r=>(r&&r.acctUser&&user(r.acctUser).id)?[user(r.acctUser)]:acctTeam();   // who does the Accounts step of this requisition
-const acctNames=r=>{ const L=acctFor(r); return L.length?L.map(u=>u.name).join(', '):'the accounts team'; };
+// 107: the requisition accounts team = the people ticked "Requisition accounts"; if nobody is ticked,
+// the Accounts department (never the administrators while that department has people)
+const acctTeam=()=>{ const byName=(a,b)=>a.name.localeCompare(b.name);
+  let t=DB.users.filter(u=>u.reqAccounts&&u.active); if(t.length) return t.sort(byName);
+  t=DB.users.filter(u=>u.active&&/^account/i.test(u.dept||'')); if(t.length) return t.sort(byName);
+  return DB.users.filter(u=>(u.admin||u.owner)&&u.active).sort(byName); };
+// the person the raiser chose — only while they are still in the team; otherwise "not chosen"
+const acctChosen=r=>{ if(!r||!r.acctUser) return null; const u=acctTeam().find(x=>x.id===r.acctUser); return u||null; };
+const acctFor=r=>{ const c=acctChosen(r); return c?[c]:[]; };   // who does the Accounts step of this requisition (107: only the chosen person)
+const acctNames=r=>{ const c=acctChosen(r); return c?c.name:'person not chosen yet'; };
+const acctNeedsChoice=r=>!!(r&&r.type==='requisition'&&r.acctPending&&r.status==='In Progress'&&!acctChosen(r));
 const CAN_ACCT=r=>!!(ME&&(ME.owner||acctFor(r).some(u=>u.id===ME.id)));
 const reqShort=r=>{ const t=String(r.f.purpose||r.f.title||'Requisition').replace(/\s+/g,' ').trim(); return t.length>60?t.slice(0,58)+'…':t; };
-const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&CAN_ACCT(r)));
+const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&acctChosen(r)&&acctChosen(r).id===ME.id)||(acctNeedsChoice(r)&&r.requesterId===ME.id));
 const reqInvolved=()=>reqAll().filter(r=>inChain(r));
 const reqPageOn=()=>CAN_REQ()||reqInvolved().length>0||myAmends().some(m=>m.engine==='legacy');
 const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
@@ -2124,7 +2132,9 @@ function viewDetail(id){
     banner='<div class="banner hold"><div><b>You asked '+esc(who)+' for more.</b><div class="hint">'+(tg.length>1?done+' of '+tg.length+' have replied. ':'')+'It comes back to you once '+(tg.length>1?'everyone has':'they have')+' responded.</div></div></div>'; }
   else if(r.status==='In Progress'&&r.chain[r.current]) banner='<div class="banner live"><div><b>With '+esc(user(r.chain[r.current].userId).name)+' at step '+(r.current+2)+'.</b><div class="hint">You can follow the whole chain, but only the holder can act.</div></div></div>';
   if(am) banner=amendBannerHTML(am);
-  if(r.type==='requisition'&&r.acctPending&&r.status==='In Progress') banner='<div class="banner live"><div><b>All approvers have signed — pending with Accounts: '+esc(acctNames(r))+'.</b><div class="hint">'+(r.acctUser?'Chosen accounts person.':'Any one of the requisition accounts team')+' fills the approved amount, cash / cheque and the voucher / cheque no.</div></div></div>';
+  if(r.type==='requisition'&&r.acctPending&&r.status==='In Progress') banner=acctNeedsChoice(r)
+    ?'<div class="banner hold"><div><b>All approvers have signed — choose who in Accounts will close this slip.</b><div class="hint" style="color:var(--hold)">'+(r.requesterId===ME.id?'Pick the accounts person below; it goes to them straight away.':esc(user(r.requesterId).name)+' (who raised it) picks the accounts person; it then goes to them.')+'</div></div></div>'
+    :'<div class="banner live"><div><b>All approvers have signed — pending with Accounts: '+esc(acctNames(r))+'.</b><div class="hint">They fill the approved amount, cash / cheque and the voucher / cheque no.; then the slip closes.</div></div></div>';
 
   let nodes='<div class="node done"><div class="dot">1</div><div class="body"><div class="row"><div><h4>'+esc(user(r.requesterId).name)+'</h4><div class="meta">'+esc(user(r.requesterId).role)+(user(r.requesterId).dept?' · '+esc(user(r.requesterId).dept):'')+' — raised this request</div></div>'+
     '<span class="tag t-ok" style="margin-left:auto">Raised</span></div><div class="meta" style="margin-top:6px">'+esc(fmtDT(r.createdAt))+'</div>'+fileListHTML(r.files)+'</div></div>';
@@ -2159,7 +2169,7 @@ function viewDetail(id){
   });
   if(r.type==='requisition'){ const ap=r.f.approval, live=r.acctPending&&r.status==='In Progress';
     nodes+='<div class="node '+(ap?'done':live?'live':'locked')+'"><div class="dot">'+(ap?'✓':'₹')+'</div><div class="body"><div class="row"><div><h4>Accounts</h4><div class="meta">'+esc(ap?(ap.by_name||''):acctNames(r))+'</div></div><span style="margin-left:auto">'+
-      (ap?'<span class="tag t-ok">Completed</span>':live?'<span class="tag t-prog">Pending with them now</span>':'<span class="tag t-wait">After the last approver</span>')+'</span></div>'+
+      (ap?'<span class="tag t-ok">Completed</span>':live?(acctNeedsChoice(r)?'<span class="tag t-hold">Raiser to choose the person</span>':'<span class="tag t-prog">Pending with them now</span>'):'<span class="tag t-wait">After the last approver</span>')+'</span></div>'+
       (ap?'<div class="meta" style="margin-top:6px">'+esc(money(ap.amount))+' · '+esc(ap.method==='cheque'?'Cheque':'Cash')+' '+esc(ap.ref||'')+(ap.at?' · '+esc(fmtDT(ap.at)):'')+'</div>':'')+'</div></div>'; }
   const notes=r.notes.length?'<div class="card pad" style="margin-top:16px"><h3>Notes</h3>'+r.notes.map(n=>'<div style="display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--line)"><div class="av sm">'+inits(user(n.userId).name)+'</div><div><div style="font-size:13.5px"><b>'+esc(user(n.userId).name)+'</b> <span class="hint">'+esc(fmtDT(n.ts))+'</span></div><div style="white-space:pre-wrap">'+esc(n.text)+'</div></div></div>').join('')+'</div>':'';
 
@@ -5907,7 +5917,7 @@ function reqFactsHTML(r){
 }
 /* the Accounts step panel (100) */
 function reqAcctPanelHTML(r){
-  if(!CAN_ACCT(r)) return '<div class="card pad"><h3>With Accounts — '+esc(acctNames(r))+'</h3><p class="hint" style="margin-top:6px">Every approver has signed. The requisition accounts team fills the approved amount and the voucher / cheque no., then it closes.</p></div>';
+  if(!CAN_ACCT(r)) return '<div class="card pad"><h3>'+(acctNeedsChoice(r)?'Accounts person not chosen yet':'With Accounts — '+esc(acctNames(r)))+'</h3><p class="hint" style="margin-top:6px">'+(acctNeedsChoice(r)?'Every approver has signed. The person who raised it chooses who in Accounts closes it.':'Every approver has signed. '+esc(acctNames(r))+' fills the approved amount and the voucher / cheque no., then it closes.')+'</p></div>';
   return '<div class="card pad" style="border-color:var(--indigo)"><h3>Accounts — complete the slip</h3><p class="hint" style="margin-top:5px">Requested '+esc(money(r.f.amount))+'. Fill the approval part and sign with your PIN; the requisition then closes as approved.</p>'+
     '<div style="margin-top:12px"><label for="ra-amt">Approved for amount (₹)</label><input id="ra-amt" type="number" min="0" step="0.01" value="'+esc(r.f.amount||'')+'"><div class="hint" id="ra-words" style="margin-top:4px">'+esc(numToWordsIN(r.f.amount))+'</div></div>'+
     '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
@@ -6246,9 +6256,9 @@ function garTrace(){
 function reqManageHTML(r){
   if(r.status!=='In Progress'&&r.status!=='Info Requested') return '';
   const mine=r.requesterId===ME.id||ME.admin||ME.owner; if(!mine) return '<div class="hint" style="margin-top:10px">Accounts: '+esc(acctNames(r))+'</div>';
-  const team=DB.users.filter(u=>u.reqAccounts&&u.active);
-  return '<div class="sep"></div><label for="rq-acctp">Accounts person</label><select id="rq-acctp">'+
-      (r.acctUser&&team.some(u=>u.id===r.acctUser)?'':'<option value="">— not chosen / no longer in the team —</option>')+team.map(u=>'<option value="'+u.id+'" '+(r.acctUser===u.id?'selected':'')+'>'+esc(u.name)+'</option>').join('')+'</select>'+
+  const team=acctTeam(), ch=acctChosen(r), need=acctNeedsChoice(r);
+  return '<div class="sep"></div><label for="rq-acctp">Accounts person'+(need?' <span style="color:var(--stop)">— choose now</span>':'')+'</label><select id="rq-acctp"'+(need?' style="border-color:var(--hold);box-shadow:0 0 0 3px rgba(183,121,31,.18)"':'')+'>'+
+      (ch?'':'<option value="">Choose who in Accounts closes this slip…</option>')+team.map(u=>'<option value="'+u.id+'" '+(ch&&ch.id===u.id?'selected':'')+'>'+esc(u.name)+(u.role?' · '+esc(u.role):'')+'</option>').join('')+'</select>'+
     ((r.status==='In Progress'&&!r.amendId&&!(r.chainLocked&&!ME.owner))?'<button class="btn sm" id="rq-addappr" style="width:100%;margin-top:10px">＋ Add an approver'+(r.acctPending?' before Accounts':'')+'</button>':'');
 }
 function reqAddApproverDialog(r){
