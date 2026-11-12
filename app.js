@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v139';
+const APP_VER='v140';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -171,12 +171,14 @@ async function loadPeople(){
     SB.from('projects').select('name').order('name'),
     SB.from('stations').select('*').order('name'),
     SB.from('units').select('name').order('name'),
-    SB.from('req_hierarchies').select('*').order('created_at')
+    SB.from('req_hierarchies').select('*').order('created_at'),
+    SB.from('req_settings').select('tat_high,tat_medium,tat_low').limit(1)
   ]);
   const bad=r.slice(0,5).find(x=>x.error); if(bad) throw bad.error;   // units is optional (table may not exist before migration 71)
   const [prof,tpl,dept,proj,st]=r.slice(0,5).map(x=>x.data||[]);
   const unit=(r[5]&&!r[5].error&&r[5].data)?r[5].data:[];
   // fixed requisition hierarchies (99): the owner sees all, a person only their own; optional before 99 runs
+  DB.reqTat=(r[7]&&!r[7].error&&r[7].data&&r[7].data[0])||{tat_high:3,tat_medium:5,tat_low:7};
   DB.reqHier=((r[6]&&!r[6].error&&r[6].data)?r[6].data:[]).map(h=>({id:h.id,userId:h.user_id,work:h.work||'',chain:h.chain||[],updatedAt:ts(h.updated_at)}));
   DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
@@ -217,11 +219,11 @@ async function loadLegacy(ids){
   const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
   const built=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,acctUsers:(Array.isArray(x.acct_users)&&x.acct_users.length)?x.acct_users:(x.acct_user?[x.acct_user]:[]),infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,amendId:x.amend_id||null,priority:x.priority||'',dueAt:x.due_at?ts(x.due_at):0,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,acctUsers:(Array.isArray(x.acct_users)&&x.acct_users.length)?x.acct_users:(x.acct_user?[x.acct_user]:[]),infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
-    const step=S[s.id]={id:s.id,userId:s.user_id,status:s.status,remark:s.remark||'',condition:s.condition||'',
+    const step=S[s.id]={id:s.id,userId:s.user_id,altUsers:Array.isArray(s.alt_users)?s.alt_users:[],kind:s.kind||'',status:s.status,remark:s.remark||'',condition:s.condition||'',
       systemApproved:!!s.system_approved,position:s.position,actedAt:ts(s.acted_at),isDetour:!!s.is_detour,
       erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),files:[],tasks:[]};
     r.chain[s.position]=step});
@@ -414,8 +416,10 @@ function holder(r){ if(r.status==='Approved'||r.status==='Rejected')return null;
     const tg=infoTargets(r), pend=tg.filter(id=>!(r.infoReplies||[]).some(e=>(e.user_id||e.userId)===id));
     return tg.length?user((pend.length?pend:tg)[0]):user(r.requesterId); }
   if(r.type==='requisition'&&r.acctPending) return {id:'',name:'Accounts — '+acctNames(r),role:'Requisition accounts',dept:'',email:''};   // 100/102: the Accounts step
-  const s=r.chain[r.current]; return s?user(s.userId):null }
-const isMyTurn=r=>r.status==='In Progress'&&!r.amendId&&r.chain[r.current]&&r.chain[r.current].userId===ME.id;   // frozen for an amendment = nobody's turn
+  const s=r.chain[r.current]; if(!s) return null;
+  if(s.altUsers&&s.altUsers.length&&s.status==='pending') return {id:s.userId,name:[s.userId].concat(s.altUsers).map(id=>user(id).name).join(' / '),role:'either one signs',dept:'',email:''};
+  return user(s.userId) }
+const isMyTurn=r=>r.status==='In Progress'&&!r.amendId&&r.chain[r.current]&&(r.chain[r.current].userId===ME.id||(r.chain[r.current].altUsers||[]).indexOf(ME.id)>-1);   // frozen for an amendment = nobody's turn
 // one reply per tagged person — did I already answer this ask?
 const iReplied=repl=>Array.isArray(repl)&&repl.some(e=>(e.user_id||e.userId)===ME.id);
 // the list of people a tag is directed at (supports old single-tag data)
@@ -504,6 +508,11 @@ const acctFor=r=>acctList(r);   // who does the Accounts step of this requisitio
 const acctNames=r=>{ const L=acctList(r); return L.length?L.map(u=>u.name).join(', '):'person not chosen yet'; };
 const acctNeedsChoice=r=>!!(r&&r.type==='requisition'&&r.acctPending&&r.status==='In Progress'&&!acctList(r).length);
 const CAN_ACCT=r=>!!(ME&&(ME.owner||acctFor(r).some(u=>u.id===ME.id)));
+// 111: HO requisitions carry a priority and a TAT; past it they are "Overdue"
+const REQ_PRI={urgent:['Urgent','t-bad'],high:['High','t-hold'],medium:['Medium','t-prog'],low:['Low','t-wait']};
+const reqOverdue=r=>!!(r&&r.dueAt&&(r.status==='In Progress'||r.status==='Info Requested')&&Date.now()>r.dueAt);
+const reqPriTags=r=>(r&&r.priority&&REQ_PRI[r.priority]?'<span class="tag '+REQ_PRI[r.priority][1]+'" style="font-size:11px">'+REQ_PRI[r.priority][0]+'</span>':'')+(reqOverdue(r)?' <span class="tag t-bad" style="font-size:11px;background:var(--stop);color:#fff;border-color:var(--stop)">Overdue</span>':'');
+const isHOReq=r=>!!(r&&r.f&&String(r.f.unit||'').toUpperCase()==='HO');
 const reqShort=r=>{ const t=String(r.f.purpose||r.f.title||'Requisition').replace(/\s+/g,' ').trim(); return t.length>60?t.slice(0,58)+'…':t; };
 const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&acctList(r).some(u=>u.id===ME.id))||(acctNeedsChoice(r)&&r.requesterId===ME.id));
 const reqInvolved=()=>reqAll().filter(r=>inChain(r));
@@ -553,7 +562,7 @@ const gpTag=g=>{const x=GP_STATUS[g.status]||['t-wait',g.status];return '<span c
 const DEPT_DIV={
   'ALDS':['O&M','Project','Retail','Transport'],
   'PCD':['Project','Operation','Purchase'],
-  'HO':['Admin','HO-CNG'],
+  'HO':['HO','Admin expense','Admin','IT'],   // 111: the HO kinds — each is a fixed flow
   'CNG':['Maintenance','Logistics','Project','IT Department','Accounts','Operation','Sales & Marketing','Store','Liaison']
 };
 const DEPTS=Object.keys(DEPT_DIV);
@@ -1764,7 +1773,7 @@ function flowDashCard(){
     '<span class="hint" style="align-self:center">of '+all.length+'</span>'+(turn?'<span class="tag t-wait">'+turn+' waiting on you</span>':'')+'</div>'+
     '<div class="row" style="padding:10px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><input id="d-flowq" type="search" placeholder="Search a number — indent / PO / WO / uploaded file no." style="flex:1;min-width:200px" value="'+esc(dashQ||'')+'"><span class="hint" id="d-flowcount" style="align-self:center"></span></div><div id="d-flowres"></div>'+
     (recent.length?'<table class="cards"><tbody>'+recent.map(f=>{
-      return '<tr data-flowgo="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
+      return '<tr data-flowgo="'+f.id+'"><td><b>'+esc(f.ref)+'</b> <span class="hint">'+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</span>'+
         '<div class="hint">'+esc(f.title||'(no number)')+' · by '+esc(user(f.requesterId).name)+'</div></td>'+
         '<td class="hint meta">'+esc(flowWhere(f))+'</td><td class="meta">'+(flowActionableByMe(f)?'<span class="tag t-prog">Your turn</span>':flowTaggedToMe(f)?'<span class="tag t-hold">Your input needed</span>':flowAwaitingMyReply(f)?'<span class="tag t-wait">Awaiting reply</span>':(flowCanEscalate(f)?'<span class="tag t-hold">Can escalate</span>':'<span class="tag t-wait">In progress</span>'))+'</td></tr>';}).join('')+'</tbody></table>'+
       (running.length>recent.length?'<div class="row" style="padding:10px 18px"><button class="btn ghost sm" id="d-flows" style="margin-left:auto">See all '+running.length+' flows</button></div>':'')
@@ -1784,7 +1793,7 @@ function wireDash(v){
     const run=()=>{ const s=fq.value.trim().toLowerCase(); dashQ=fq.value; const c=$('#d-flowcount',v);
       if(s.length<2){ fres.innerHTML=''; if(c)c.textContent=''; return; }
       const fl=SETU_FLOWS().filter(f=>_flowHay(f).includes(s)).slice(0,8)
-        .map(f=>({k:'flowdetail',id:f.id,ref:f.ref,sub:flowHeadLabel(f.head)+' · '+(f.title||'(no number)')+' · '+flowWhere(f)}));
+        .map(f=>({k:'flowdetail',id:f.id,ref:f.ref,sub:flowHeadLabelF(f)+' · '+(f.title||'(no number)')+' · '+flowWhere(f)}));
       const lg=DB.requests.filter(r=>_legHay(r).includes(s)).slice(0,6)
         .map(r=>({k:'detail',id:r.id,ref:r.ref,sub:typeLabel(r)+' · '+docTitle(r)}));
       const hits=fl.concat(lg).slice(0,10);
@@ -1804,14 +1813,15 @@ function wireDash(v){
 /* ============================================================
    Raise a request
    ============================================================ */
-let draft=null, formTab='indent';
+let draft=null, formTab='indent', hoRaisers={};
 /* ALDS fixed-flow routing: when an ALDS request's division maps to a flow division
    (O&M / Project / Retail), the request is a fixed PO/WO flow — no approver chain is
    picked; the company hierarchy is applied automatically. ALDS Transport and every
    other department stay on the free-form chain. */
 const FLOW_DIV_MAP={'ONM':'O&M','O&M':'O&M','Project':'Project','Retail':'Retail'};
 const flowDivOf=d=>FLOW_DIV_MAP[d]||null;
-const isFlowDraft=()=>!!(draft&&draft.f&&((draft.f.department==='ALDS'&&flowDivOf(draft.f.division))||draft.f.department==='CNG'));
+const HO_KINDS=['HO','Admin expense','Admin','IT'];
+const isFlowDraft=()=>!!(draft&&draft.f&&((draft.f.department==='ALDS'&&flowDivOf(draft.f.division))||draft.f.department==='CNG'||(draft.f.department==='HO'&&HO_KINDS.indexOf(draft.f.division)>-1)));
 function viewNew(){
   head('Raise a request','Attach the ERP document, check what was read from it, then set the chain. ALDS O&M / Project / Retail follow their fixed flow automatically.');
   if(!draft||draft.type!==formTab) draft={type:formTab,files:[],support:[],chain:[],f:{category:'O&M'},conf:{},meta:{}};
@@ -1830,11 +1840,11 @@ function orgFields(){
   const f=draft.f, divs=f.department?(DEPT_DIV[f.department]||[]):[];
   const req='<span style="color:var(--stop)">*</span>';
   // Division is mandatory only for ALDS (it selects the fixed flow); optional elsewhere.
-  const divReq='<span class="hint" style="font-weight:400">optional'+(f.department==='ALDS'?' — pick one for the fixed PO/WO flow':'')+'</span>';
+  const divReq=f.department==='HO'?'<span style="color:var(--stop)">*</span>':'<span class="hint" style="font-weight:400">optional'+(f.department==='ALDS'?' — pick one for the fixed PO/WO flow':'')+'</span>';
   return '<div class="grid g2">'+
     '<div><label for="o-dept">Department <span class="hint" style="font-weight:400">optional</span></label><select id="o-dept"><option value="">Choose… (optional)</option>'+
       DEPTS.map(d=>'<option '+(f.department===d?'selected':'')+'>'+esc(d)+'</option>').join('')+'</select></div>'+
-    '<div><label for="o-div">Division '+divReq+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?'Choose… (optional)':'Pick a department first')+'</option>'+
+    '<div><label for="o-div">'+(f.department==='HO'?'Kind':'Division')+' '+divReq+'</label><select id="o-div"'+(f.department?'':' disabled')+'><option value="">'+(f.department?'Choose… (optional)':'Pick a department first')+'</option>'+
       divs.map(x=>'<option '+(f.division===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select></div></div>';
 }
 const uploadCard=()=>'<div class="card pad"><h3>The ERP document</h3><p class="hint" style="margin-top:5px">The indent or work order PDF the ERP generated. The fields below fill in from it — every one of them stays editable.</p><div id="n-files" style="margin-top:14px"></div></div>'+
@@ -1853,6 +1863,17 @@ function chainCard(){
 /* the right column: the approver chain for a normal request, or — for an ALDS
    PO/WO flow — a note explaining the fixed hierarchy (no chain to build). */
 function rightCol(){
+  if(draft.f.department==='HO'){
+    const k=draft.f.division;
+    if(HO_KINDS.indexOf(k)<0) return '<div class="card pad"><h3>HO fixed flow</h3><p class="hint" style="margin-top:5px">Choose the <b>kind</b> (HO, Admin expense, Admin or IT). Each kind has its fixed people — you do not pick approvers.</p></div>';
+    const R=hoRaisers[k];
+    if(!R){ hoRaisers[k]=[]; rpc('ho_raisers',{p_kind:k}).then(x=>{ hoRaisers[k]=x||[]; if(ROUTE.name==='new') render(); }).catch(()=>{}); }
+    const can=ME.owner||(R||[]).indexOf(ME.id)>-1;
+    return '<div class="card pad"><h3>HO fixed flow · '+esc(k)+'</h3>'+
+      '<p class="hint" style="margin-top:5px">'+(formTab==='indent'?'Indent':'Work order')+' check → '+(formTab==='indent'?'PO':'WO')+' (purchase → Jatin Vora → Nishant Bhandari) → Payment Advice (→ Nishant Bhandari / Prachi Khara) → Payment Desk. You do not pick approvers here.</p>'+
+      (R&&R.length?'<div class="hint" style="margin-top:8px">Who can raise '+esc(k)+': <b>'+R.map(id=>esc(user(id).name)).join(', ')+'</b></div>':'')+
+      (R&&R.length&&!can?'<div class="banner hold" style="margin-top:10px"><div><b>You are not one of the raisers for this kind.</b><div class="hint" style="color:var(--hold)">Pick another kind, or ask one of the people above to raise it.</div></div></div>':'')+'</div>';
+  }
   if(isFlowDraft()){
     if(draft.f.department==='CNG'){
       return '<div class="card pad"><h3>Fixed approval flow</h3>'+
@@ -2043,8 +2064,8 @@ async function submit(note){
    instead of building a chain. */
 async function flowRaiseSubmit(note){
   const f=draft.f, t=draft.type; note.style.color='var(--stop)';
-  const cng=f.department==='CNG';
-  const head=cng?'CNG':(t==='indent'?'PO':'WO'), div=cng?(f.division||''):flowDivOf(f.division);
+  const cng=f.department==='CNG', ho=f.department==='HO';
+  const head=cng?'CNG':(t==='indent'?'PO':'WO'), div=cng?(f.division||''):ho?f.division:flowDivOf(f.division);
   const title=(t==='indent'?f.indentNo:f.orderNo)||'';
   if(t==='indent'){ if(!f.indentNo) return note.textContent='Indent number is needed.'; }
   else { if(!f.orderNo) return note.textContent='Work order number is needed.'; }
@@ -2060,7 +2081,7 @@ async function flowRaiseSubmit(note){
       // the person who raised it, whatever the network does.
       const id=await rpc('flow_raise',{p_head:head,p_div:div,p_title:title.trim(),p_fields:f,p_pin:flowCall._pin,p_files:files});
       await load(); draft=null; busy(false);
-      toast((cng?'CNG':'ALDS '+head)+' created and signed at step 1.','ok'); go({name:'flowdetail',id});
+      toast((cng?'CNG':(ho?'HO ':'ALDS ')+head)+' created and signed at step 1.','ok'); go({name:'flowdetail',id});
     }catch(e){ busy(false); fail(e); }
   };
   flowPinThen(run);
@@ -2169,6 +2190,7 @@ function viewDetail(id){
     const live=(r.status==='In Progress'&&i===r.current)||(r.status==='Info Requested'&&i===r.infoStep);
     // 'info' = this approver asked for more: it's with the tagged person / requester now, so
     // show this node muted ("parked") and say clearly who it's pending with
+    const altNames=(s.status==='pending'||s.status==='waiting')&&s.altUsers&&s.altUsers.length?' / '+s.altUsers.map(id=>user(id).name).join(' / '):'';
     const cls=s.status==='approved'?'done':s.status==='conditional'?'done cond':s.status==='rejected'?'stop':s.status==='info'?'parked':live?'live':s.status==='waiting'?'locked':'';
     let parkedWith='';
     if(s.status==='info'){ const h=holder(r); parkedWith='<div class="pending-with tagged" style="margin-top:7px">Pending with <b>'+esc(h?h.name:'the requester')+'</b> <span class="pw-sub">· asked by '+esc(u.name)+'</span></div>'+legacyTagChain(r)+legacyReplyThread(r); }
@@ -2186,7 +2208,7 @@ function viewDetail(id){
     if((r.status==='In Progress'||r.status==='Info Requested')&&!r.amendId&&!(r.chainLocked&&!ME.owner)&&(s.status==='pending'||s.status==='waiting')&&(r.requesterId===ME.id||ME.admin||ME.owner))
       detourLegBtn='<button class="btn ghost sm" data-ldetour="'+i+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
     const sysBtn=(ownerLegacyBtn||detourLegBtn)?'<div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">'+ownerLegacyBtn+detourLegBtn+'</div>':'';
-    nodes+='<div class="node '+cls+'" id="step-'+i+'"'+(s.isDetour?' style="margin-left:22px;border-left:3px solid var(--indigo);padding-left:12px"':'')+'><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+(s.isDetour?'<span class="tag" style="font-size:10px;background:var(--indigo);color:#fff;border-color:var(--indigo)">↪ CROSS-CHECK</span> ':'')+esc(u.name)+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
+    nodes+='<div class="node '+cls+'" id="step-'+i+'"'+(s.isDetour?' style="margin-left:22px;border-left:3px solid var(--indigo);padding-left:12px"':'')+'><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+(s.isDetour?'<span class="tag" style="font-size:10px;background:var(--indigo);color:#fff;border-color:var(--indigo)">↪ CROSS-CHECK</span> ':'')+(s.kind==='bills'?'Upload the bills — ':'')+esc(u.name)+esc(altNames)+(altNames?' <span class="hint" style="font-weight:400">(either one)</span>':'')+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
       parkedWith+(s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
       (s.status==='waiting'?'<div class="meta" style="margin-top:6px">Opens once step '+(i+1)+' is done.</div>':'')+
       (s.erpDone?'<div class="meta" style="margin-top:6px;color:var(--seal)">ERP entered'+(s.erpDoneBy?' by '+esc(user(s.erpDoneBy).name):'')+(s.erpDoneAt?' · '+esc(fmtDT(s.erpDoneAt)):'')+'</div>':'')+
@@ -2204,6 +2226,10 @@ function viewDetail(id){
       '<div class="said" style="margin:12px 0 0;border-left-color:var(--indigo)">'+esc(mt.task.task)+'</div><div style="margin-top:14px"><label for="k-note">What you did, or why you cannot</label><textarea id="k-note" placeholder="Keep it short but specific."></textarea></div>'+
       '<div style="margin-top:12px"><label>Attach anything</label><div id="k-files"></div></div><div class="sep"></div><div class="grid" style="gap:9px"><button class="btn ok" id="k-done">Mark it done</button><button class="btn bad" id="k-cant">I cannot do this</button></div>'+
       '<div class="hint" style="margin-top:11px">No PIN needed — only the approval itself is signed.</div></div>';
+  } else if(mine&&r.chain[r.current]&&r.chain[r.current].kind==='bills'){
+    panel='<div class="card pad" style="border-color:var(--indigo)"><h3>Upload the bills</h3><p class="hint" style="margin-top:5px">Your requisition was approved. Attach the bills / receipts; it then goes to the Payment Desk.</p>'+
+      '<div style="margin-top:12px"><div id="bl-files"></div></div><div id="bl-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
+      '<button class="btn primary" id="bl-go" style="width:100%;margin-top:12px">Submit the bills</button></div>';
   } else if(mine){
     const step=r.chain[r.current], blocked=stepBlocked(step), team=teamOf(ME.id), closed=tasksOf(step).filter(t=>t.status!=='open'&&t.status!=='withdrawn').length, given=tasksOf(step).filter(t=>t.status!=='withdrawn').length;
     panel='<div class="card pad"><h3>Your decision</h3><p class="hint" style="margin-top:5px">'+(r.current+1===r.chain.length?(r.type==='requisition'?'You are the last approver. Approving sends it to Accounts for the amount and voucher / cheque.':'You are the last approver. Approving closes this out.'):'Approving passes it to '+esc(user(r.chain[r.current+1].userId).name)+'.')+'</p>'+
@@ -2340,7 +2366,11 @@ function wireDetail(v){
       busy(true); try{ await rpc('close_task',{p_task:mt.task.id,p_status:st,p_note:note,p_files:filesPayload(kf)}); await after('Sent back to '+user(mt.step.userId).name+'.') }catch(e){fail(e)} finally{busy(false)} };
     $('#k-done',v).onclick=()=>close('done'); $('#k-cant',v).onclick=()=>close('cannot');
   }
-  if(isMyTurn(r)){
+  if($('#bl-go',v)){ const bf=reqBillFiles[r.id]||(reqBillFiles[r.id]=[]); uploader($('#bl-files',v),bf,{mode:'support',label:'Attach the bills'});
+      $('#bl-go',v).onclick=()=>{ if(!bf.length) return $('#bl-err',v).textContent='Attach the bills first.';
+        confirmPin('submit the bills for '+r.ref,async pin=>{ await rpc('act_on_step',{p_request:r.id,p_action:'approve',p_remark:'',p_condition:'',p_pin:pin,p_files:filesPayload(bf),p_tos:null}); delete reqBillFiles[r.id];
+          await load(['legacy','notif'],null,[r.id]); toast('Bills sent to the Payment Desk.','ok'); render(); }); }; }
+  if(isMyTurn(r)&&!(r.chain[r.current]&&r.chain[r.current].kind==='bills')){
     const files=[]; uploader($('#d-files',v),files,{mode:'support',label:'Attach photos or files behind your decision'});
     const rem=()=>$('#d-rem',v).value.trim();
     const act=(action,label,extra)=>confirmPin(label,async pin=>{
@@ -2584,7 +2614,7 @@ function assistErpList(doneWanted){
   }));
   DB.flows.forEach(f=>f.steps.forEach(s=>{
     if(s.actedBy===pid && s.status==='done' && !String(s.remark||'').startsWith('Rejected') && (s.action==='approve'||s.action==='confirm') && (!!s.erpDone===!!doneWanted))
-      out.push({engine:'flow',reqId:f.id,stepId:s.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,when:s.actedAt,erpAt:s.erpDoneAt,hay:_flowHay(f,s.label),dtype:_flowDtype(f,s.stage)});
+      out.push({engine:'flow',reqId:f.id,stepId:s.id,ref:f.ref,title:(f.title||flowHeadLabelF(f)+' · '+f.division),doc:s.label,when:s.actedAt,erpAt:s.erpDoneAt,hay:_flowHay(f,s.label),dtype:_flowDtype(f,s.stage)});
   }));
   out.sort((a,b)=>(b.when||0)-(a.when||0));
   return out;
@@ -2595,7 +2625,7 @@ function assistPending(){
   DB.requests.forEach(r=>{ if(r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===pid)
     out.push({engine:'legacy',id:r.id,ref:r.ref,title:docTitle(r),doc:docNo(r),hay:_legHay(r),dtype:r.type==='indent'?'indent':'wo'}); });
   DB.flows.forEach(f=>{ const s=flowLives(f).find(x=>x.actors.indexOf(pid)>-1); if(s)
-    out.push({engine:'flow',id:f.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,hay:_flowHay(f,s.label),dtype:_flowDtype(f,s.stage)}); });
+    out.push({engine:'flow',id:f.id,ref:f.ref,title:(f.title||flowHeadLabelF(f)+' · '+f.division),doc:s.label,hay:_flowHay(f,s.label),dtype:_flowDtype(f,s.stage)}); });
   return out;
 }
 let assistQ='', assistStatus='all', assistType='all';
@@ -4827,6 +4857,7 @@ function wireGpReport(v){
    ALDS PO / WO fixed flows (Stage 2 UI)
    ============================================================ */
 const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':h==='WO'?'ALDS WO (Work order)':h==='CNG'?'CNG (Indent)':h;
+const flowHeadLabelF=f=>f&&f.department==='HO'?(f.head==='PO'?'HO PO (Indent)':'HO WO (Work order)'):flowHeadLabel(f&&f.head);
 // 106: after Vendor Process a new PO/WO runs on two paths at once (payment + goods), so a file
 // can have two live steps. flowLives = all of them; flowLive = the one that matters to ME
 // (the one I picked on the file page, else one that is with me, else the first).
@@ -4874,7 +4905,7 @@ function flowRow(f,opts){
   opts=opts||{};
   const s=flowLive(f), act=[...new Set(flowLives(f).reduce((a,x)=>a.concat(x.actors),[]))], withWho=act.length?act.map(id=>user(id).name).slice(0,3).join(', ')+(act.length>3?' +'+(act.length-3):''):'';
   const wait=opts.nudge&&s?flowWaitDays(f):0;
-  return '<tr data-flow="'+f.id+'"'+(flowTaggedToMe(f)?' class="row-tagme"':flowAwaitingMyReply(f)?' class="row-await"':'')+'><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
+  return '<tr data-flow="'+f.id+'"'+(flowTaggedToMe(f)?' class="row-tagme"':flowAwaitingMyReply(f)?' class="row-await"':'')+'><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</span>'+
     '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
     '<div class="hint">'+esc(flowWhere(f))+(withWho?' — with '+esc(withWho):'')+'</div></td>'+
     '<td class="meta">'+flowStatusTag(f)+(flowActionableByMe(f)?'<div class="hint" style="color:var(--indigo)">Your turn</div>':flowTaggedToMe(f)?'<div class="hint tag-me">Your input needed</div>':flowAwaitingMyReply(f)?'<div class="hint" style="color:var(--steel)">Awaiting reply</div>':'')+
@@ -4916,7 +4947,7 @@ function flowSection(ctx){
   const q=((ctx==='all'?allF.q:ft.q)||'').trim().toLowerCase();
   if(q){ shown=shown.filter(f=>{
     const extra=Object.keys(f.fields||{}).map(k=>f.fields[k]).filter(v=>typeof v==='string'||typeof v==='number').join(' ');
-    return ((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+(f.division||'')+' '+flowHeadLabel(f.head)+' '+extra).toLowerCase().includes(q); }); }
+    return ((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+(f.division||'')+' '+flowHeadLabelF(f)+' '+extra).toLowerCase().includes(q); }); }
   const base=shown.slice();
   // #1 stage filter: segregate pending files by the stage their LIVE step(s) are at (running flows only)
   const stageCount={}; base.forEach(f=>{ [...new Set(flowLives(f).map(s=>s.stage).filter(Boolean))].forEach(st=>{ stageCount[st]=(stageCount[st]||0)+1; }); });
@@ -5090,7 +5121,7 @@ const flowActLabel=s=>({initiate:'Submit & sign',upload:'Upload & sign',approve:
 function viewFlowDetail(id){
   const f=DB.flows.find(x=>x.id===id);
   if(!f){ head('Flow','Not found'); return '<div class="card pad">This flow could not be found.</div>'; }
-  head(f.ref,'Fixed flow · '+flowHeadLabel(f.head)+' · '+f.division+(f.title?' · '+f.title:''));
+  head(f.ref,'Fixed flow · '+flowHeadLabelF(f)+' · '+f.division+(f.title?' · '+f.title:''));
   let left='<div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:6px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
     (ME.gateOnly?'':'<button class="btn sm" id="fl-nudge" title="Ask someone to move this file — they get a notification with your message">👉 Nudge</button>')+
     (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del">Delete request</button>':'')+'</div>';
@@ -5160,7 +5191,7 @@ function flowSidePanelOne(f){
       if((s.infoReplies||[]).length) w+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b>'+(e.at?' · '+esc(fmtDT(ts(e.at))):'')+': '+esc(e.text)+'</div></div>').join('');
       return w+'</div>'; }
     const approving=(s.action==='approve'||s.action==='confirm');
-    let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</p>';
+    let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</p>';
     if(s.infoReplies&&s.infoReplies.length) body+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b> replied: '+esc(e.text)+'</div></div>').join('');
     else if(s.infoReply) body+='<div class="banner" style="margin-top:8px"><div class="hint">Replied: '+esc(s.infoReply)+'</div></div>';
     if(s.onHold) body+='<div class="banner hold" style="margin-top:12px"><div><b>On hold</b>'+(s.holdReason?' — '+esc(s.holdReason):'')+'. Resume to continue, or approve to pass it on.</div></div>';
@@ -5547,7 +5578,7 @@ function flowCancelDialog(id){
   const f=DB.flows.find(x=>x.id===id); if(!f) return;
   const mine=f.requesterId===ME.id, approved=flowApprovedYet(f);
   modal({title:'Delete this request',
-    body:'<p style="margin-top:0">Delete <b>'+esc(f.ref)+'</b> ('+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+(f.title?' · '+esc(f.title):'')+')?</p>'+
+    body:'<p style="margin-top:0">Delete <b>'+esc(f.ref)+'</b> ('+esc(flowHeadLabelF(f))+' · '+esc(f.division)+(f.title?' · '+esc(f.title):'')+')?</p>'+
       '<p class="hint">'+(mine&&!approved?'You raised this and no one has approved it yet, so you can remove it.':'Admin delete — this request is removed for everyone.')+' Every step, document and history row on it goes, and the deletion is logged permanently.</p>'+
       '<div style="margin-top:12px"><label for="fc-why">Reason</label><input id="fc-why" type="text" placeholder="e.g. raised the wrong indent"></div><div id="fc-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>',
     footer:'<button class="btn" data-x>Keep it</button><button class="btn bad" id="fc-go">Delete</button>',
@@ -5904,7 +5935,8 @@ function wireAmendRows(v){
 
 /* ---------------- Requisition ---------------- */
 let reqDraft=null;
-const reqNewDraft=()=>({work:'',amount:'',purpose:'',chain:[],files:[],acctUsers:[]});
+const reqNewDraft=()=>({work:'',amount:'',purpose:'',chain:[],files:[],acctUsers:[],unit:'',priority:''});
+const reqIsBoss=()=>!!(ME&&/^daksh\s+sanjay\s+pipada$/i.test(String(ME.name||'').trim().replace(/\s+/g,' ')));
 const myFixed=()=>(DB.reqHier||[]).filter(h=>h.userId===ME.id);
 const fixedFor=w=>{ const k=String(w||'').trim().toLowerCase(); return k?myFixed().find(h=>h.work.toLowerCase()===k)||null:null; };
 /* rupees in words, Indian style: 1,25,000.50 → "Rupees One Lakh Twenty Five Thousand and Fifty Paise Only" */
@@ -5949,13 +5981,13 @@ function reqAcctPanelHTML(r){
   if(!CAN_ACCT(r)) return '<div class="card pad"><h3>'+(acctNeedsChoice(r)?'Accounts person not chosen yet':'With Accounts — '+esc(acctNames(r)))+'</h3><p class="hint" style="margin-top:6px">'+(acctNeedsChoice(r)?'Every approver has signed. The person who raised it chooses who in Accounts closes it.':'Every approver has signed. '+(acctList(r).length>1?'Any one of '+esc(acctNames(r))+' fills':esc(acctNames(r))+' fills')+' the approved amount and the voucher / cheque no., then it closes for everyone.')+'</p></div>';
   return '<div class="card pad" style="border-color:var(--indigo)"><h3>Accounts — complete the slip</h3><p class="hint" style="margin-top:5px">Requested '+esc(money(r.f.amount))+'. Fill the approval part and sign with your PIN; the requisition then closes as approved.</p>'+
     '<div style="margin-top:12px"><label for="ra-amt">Approved for amount (₹)</label><input id="ra-amt" type="number" min="0" step="0.01" value="'+esc(r.f.amount||'')+'"><div class="hint" id="ra-words" style="margin-top:4px">'+esc(numToWordsIN(r.f.amount))+'</div></div>'+
-    '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
+    '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="bank">Bank transfer</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
     '<div style="margin-top:12px"><label for="ra-ref" id="ra-reflbl">Voucher / Cheque No.</label><input id="ra-ref" type="text"></div>'+
     '<div style="margin-top:12px"><label>Payment proof <span class="hint" style="font-weight:400">optional — UTR screenshot, PDF or any file</span></label><div id="ra-files"></div><div class="hint" style="margin-top:4px">Everyone on this requisition can open it.</div></div>'+
     '<div id="ra-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
     '<button class="btn primary" id="ra-go" style="width:100%;margin-top:12px">Sign and close the requisition</button></div>';
 }
-const reqAcctFiles={};   // v139: files picked in the Accounts form survive a live redraw
+const reqAcctFiles={}, reqBillFiles={};   // v139: files picked in the Accounts form survive a live redraw
 function wireReqAcct(v,r){
   if(!$('#ra-go',v)) return;
   let method='';
@@ -5963,10 +5995,10 @@ function wireReqAcct(v,r){
   if($('#ra-files',v)) uploader($('#ra-files',v),pf,{mode:'support',label:'Attach the UTR / payment proof'});
   const amt=$('#ra-amt',v); amt.oninput=()=>{ $('#ra-words',v).textContent=numToWordsIN(amt.value); };
   $$('[data-ram]',v).forEach(b=>b.onclick=()=>{ method=b.dataset.ram; $$('[data-ram]',v).forEach(x=>x.classList.toggle('primary',x===b));
-    $('#ra-reflbl',v).textContent=method==='cash'?'Voucher No.':'Cheque No.'; });
+    $('#ra-reflbl',v).textContent=method==='cash'?'Voucher No.':method==='bank'?'UTR No.':'Cheque No.'; });
   $('#ra-go',v).onclick=()=>{ const err=$('#ra-err',v), a=Number(amt.value), ref=$('#ra-ref',v).value.trim();
     if(!(a>0)) return err.textContent='Enter the approved amount.'; if(!method) return err.textContent='Choose Cash or Cheque.';
-    if(!ref) return err.textContent=method==='cash'?'Enter the voucher number.':'Enter the cheque number.';
+    if(!ref) return err.textContent=method==='cash'?'Enter the voucher number.':method==='bank'?'Enter the UTR number.':'Enter the cheque number.';
     confirmPin('close '+r.ref+' for '+money(a),async pin=>{
       await rpc('req_accounts_close',{p_request:r.id,p_amount:a,p_method:method,p_ref:ref,p_pin:pin,p_files:pf.length?filesPayload(pf):null}); delete reqAcctFiles[r.id];
       await load(['legacy','notif']); toast('Requisition closed — approved for '+money(a)+'.','ok'); go({name:'detail',id:r.id}); }); };
@@ -6006,7 +6038,7 @@ function reqRows(list,empty){
   if(!list.length) return '<div class="hint" style="padding:12px 18px">'+esc(empty)+'</div>';
   return '<table class="cards"><tbody>'+list.map(r=>{ const h=holder(r);
     return '<tr data-rq="'+r.id+'" style="cursor:pointer"><td><b>'+esc(money(r.f.amount))+'</b> · '+esc(reqShort(r))+'<div class="hint">'+esc(r.ref)+(r.f.work?' · '+esc(r.f.work):'')+' · '+esc(user(r.requesterId).name)+' · '+esc(fmtD(r.createdAt))+'</div>'+
-      (r.amendId?'<div class="hint" style="color:var(--hold)">Frozen for an amendment</div>':h&&r.status==='In Progress'?'<div class="hint">With <b>'+esc(h.name)+'</b></div>':'')+'</td><td class="meta">'+tagFor(r)+'</td></tr>'; }).join('')+'</tbody></table>';
+      (r.amendId?'<div class="hint" style="color:var(--hold)">Frozen for an amendment</div>':h&&r.status==='In Progress'?'<div class="hint">With <b>'+esc(h.name)+'</b></div>':'')+'</td><td class="meta">'+tagFor(r)+(r.priority?'<div style="margin-top:4px">'+reqPriTags(r)+'</div>':'')+'</td></tr>'; }).join('')+'</tbody></table>';
 }
 function viewReq(){
   head('Requisition','Raise a requisition and follow its signatures');
@@ -6019,7 +6051,13 @@ function viewReq(){
         '<div><label>Name</label><input type="text" value="'+esc(me.name)+'" disabled></div>'+
         '<div><label>Designation</label><input type="text" value="'+esc(me.role||'')+'" disabled></div>'+
         '<div><label for="rq-amt">Rupees</label><input id="rq-amt" type="number" min="1" step="0.01" inputmode="decimal" value="'+esc(d.amount)+'" placeholder="Amount in ₹"></div>'+
-        (works.length
+        '<div><label for="rq-unit">Department <span class="hint" style="font-weight:400">optional</span></label><select id="rq-unit"><option value="">—</option>'+DEPTS.map(x=>'<option '+((d.unit||'')===x?'selected':'')+'>'+esc(x)+'</option>').join('')+'</select></div>'+
+        (d.unit==='HO'
+          ?'<div><label for="rq-pri">Priority <span style="color:var(--stop)">*</span></label>'+(reqIsBoss()
+              ?'<input type="text" value="Urgent — 2 days (always, for your requisitions)" disabled>'
+              :'<select id="rq-pri"><option value="">Choose…</option>'+[['urgent','Urgent — 2 days (max 2 a month)'],['high','High — '+DB.reqTat.tat_high+' days'],['medium','Medium — '+DB.reqTat.tat_medium+' days'],['low','Low — '+DB.reqTat.tat_low+' days']].map(o=>'<option value="'+o[0]+'" '+(d.priority===o[0]?'selected':'')+'>'+esc(o[1])+'</option>').join('')+'</select>')+'</div>'
+          :'')+
+        (d.unit==='HO'?'':works.length
           ?'<div><label for="rq-work">Type of work</label><select id="rq-work"><option value="">Choose…</option>'+works.map(w=>'<option '+(d.work.toLowerCase()===w.toLowerCase()?'selected':'')+'>'+esc(w)+'</option>').join('')+'</select><div class="hint">🔒 Your types of work are fixed by the super admin.</div></div>'
           :'<div><label for="rq-work">Type of work <span class="hint" style="font-weight:400">optional</span></label><input id="rq-work" type="text" value="'+esc(d.work)+'" placeholder="Anything — e.g. Stationery, Travel advance"></div>')+
       '</div>'+
@@ -6027,11 +6065,12 @@ function viewReq(){
       '<div style="margin-top:12px"><label for="rq-purpose">Purpose</label><textarea id="rq-purpose" rows="4" placeholder="What the money is for">'+esc(d.purpose)+'</textarea></div>'+
       '<div style="margin-top:12px"><label>Attachments <span class="hint" style="font-weight:400">optional</span></label><div id="rq-files"></div></div>'+
       '<div class="hint" style="margin-top:10px">Sign · Date — your name and the date are signed in when you send it.</div>'+
+      (d.unit==='HO'?'<div class="sep"></div><div class="banner"><div><b>HO requisition — fixed path</b><div class="hint">It goes to <b>Nishant Bhandari</b> and <b>Prachi Khara</b> (either one signs) → you upload the bills → the <b>Payment Desk</b> (Gayatri Ghonge / Nishant Soni / Kurwesh Katre) pays and closes it.</div></div></div>':
       '<div class="sep"></div><h3 style="font-size:15px">Approving authorities, in order</h3>'+
       (fx?'<div class="banner" style="margin-top:8px"><div><b>🔒 Fixed by the super admin for “'+esc(fx.work)+'”.</b><div class="hint">This chain is set for you and cannot be changed.</div></div></div><div style="margin-top:8px">'+chainChips(fx.chain,false)+'</div>'
          :'<div id="rq-chain" style="margin-top:8px">'+chainChips(d.chain,true)+'</div><div id="rq-find" style="margin-top:8px"></div>')+
       '<div style="margin-top:12px"><label for="rq-acct">Accounts people <span style="color:var(--stop)">*</span></label>'+acctPickHTML('rq-acct',d.acctUsers||[],ME.id)+
-        '<div class="hint" style="margin-top:4px">After the last approver, this person fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>'+
+        '<div class="hint" style="margin-top:4px">After the last approver, this person fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>')+
       '<div id="rq-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
       '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="rq-clear">Clear</button><button class="btn primary" id="rq-send" style="margin-left:auto">Send requisition</button></div></div>';
   } else {
@@ -6042,6 +6081,10 @@ function viewReq(){
   h+='<div class="card" style="margin-bottom:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Raised by you</h3></div>'+reqRows(mine,'You have not raised a requisition yet.')+'</div>';
   if(others.length) h+='<div class="card" style="margin-bottom:16px"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Others you can see</h3></div>'+reqRows(others,'')+'</div>';
   if(ME.owner){
+    const T=DB.reqTat||{tat_high:3,tat_medium:5,tat_low:7};
+    h+='<div class="card pad" style="margin-bottom:16px;border-color:var(--indigo)"><h3>HO requisition TAT <span class="hint" style="font-weight:400">· super admin</span></h3><p class="hint" style="margin-top:4px">Days allowed for each priority. Urgent is always 2 days. Past it, the slip shows “Overdue”.</p>'+
+      '<div class="grid g3" style="gap:10px;margin-top:10px">'+[['tat-h','High',T.tat_high],['tat-m','Medium',T.tat_medium],['tat-l','Low',T.tat_low]].map(x=>'<div><label for="'+x[0]+'">'+x[1]+' (days)</label><input id="'+x[0]+'" type="number" min="1" max="60" value="'+esc(x[2])+'"></div>').join('')+'</div>'+
+      '<div class="row" style="margin-top:10px"><span class="hint" id="tat-err" style="color:var(--stop)"></span><button class="btn primary sm" id="tat-save" style="margin-left:auto">Save TAT</button></div></div>';
     const H=(DB.reqHier||[]).slice().sort((a,b)=>user(a.userId).name.localeCompare(user(b.userId).name)||a.work.localeCompare(b.work));
     h+='<div class="card" style="margin-bottom:16px;border-color:var(--indigo)"><div class="row" style="padding:14px 18px;border-bottom:1px solid var(--line)"><h3>Fixed hierarchies <span class="hint" style="font-weight:400">· super admin</span></h3><button class="btn primary sm" id="rh-add" style="margin-left:auto">+ Add</button></div>'+
       '<p class="hint" style="padding:10px 18px 0;margin:0">Set the approver chain for one person and one kind of work. When they raise that work, this chain is used and they cannot change it.</p>'+
@@ -6055,6 +6098,7 @@ function wireReq(v){
   if(gateScopeOnly()&&(!wireReq._at||Date.now()-wireReq._at>60000)){ wireReq._at=Date.now(); load(['legacy']).then(()=>{ if(ROUTE.name==='req'&&!document.querySelector('.veil')) render(); }).catch(()=>{}); }
   $$('[data-rq]',v).forEach(tr=>tr.onclick=()=>go({name:'detail',id:tr.dataset.rq}));
   if(ME.owner){
+    if($('#tat-save',v)) $('#tat-save',v).onclick=async()=>{ const g=id=>Number($('#'+id,v).value); try{ await rpc('req_tat_save',{p_high:g('tat-h'),p_medium:g('tat-m'),p_low:g('tat-l')}); await load(['people']); toast('TAT saved.','ok'); render(); }catch(e){ $('#tat-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
     if($('#rh-add',v)) $('#rh-add',v).onclick=()=>reqHierDialog(null);
     $$('[data-rhe]',v).forEach(b=>b.onclick=()=>reqHierDialog((DB.reqHier||[]).find(x=>x.id===b.dataset.rhe)));
     $$('[data-rhd]',v).forEach(b=>b.onclick=()=>{ const x=(DB.reqHier||[]).find(y=>y.id===b.dataset.rhd); if(!x) return;
@@ -6066,16 +6110,26 @@ function wireReq(v){
   const d=reqDraft;
   const amt=$('#rq-amt',v); if(amt) amt.oninput=()=>{ d.amount=amt.value; $('#rq-words',v).textContent=numToWordsIN(amt.value)||'—'; };
   const pu=$('#rq-purpose',v); if(pu) pu.oninput=()=>{ d.purpose=pu.value; };
-  wireAcctPick($('#rq-acct',v),ME.id,d.acctUsers||[],L=>{ d.acctUsers=L; render(); });
+  if($('#rq-acct',v)) wireAcctPick($('#rq-acct',v),ME.id,d.acctUsers||[],L=>{ d.acctUsers=L; render(); });
+  const un=$('#rq-unit',v); if(un) un.onchange=()=>{ d.unit=un.value; render(); };
+  const pri=$('#rq-pri',v); if(pri) pri.onchange=()=>{ d.priority=pri.value; };
   const w=$('#rq-work',v); if(w){ w.oninput=()=>{ d.work=w.value; }; w.onchange=()=>{ const was=!!fixedFor(w.dataset.prev||''), now=!!fixedFor(w.value); d.work=w.value; if(was!==now) render(); w.dataset.prev=w.value; }; w.dataset.prev=d.work; }
   uploader($('#rq-files',v),d.files,{mode:'support',label:'Bill, quotation, photo or anything the approvers should see'});
   const repaint=()=>{ const c=$('#rq-chain',v); if(!c) return; c.innerHTML=chainChips(d.chain,true); wireChainChips(c,d.chain,repaint); };
   if($('#rq-find',v)){ personPicker($('#rq-find',v),{placeholder:'Add an approver — name, employee ID or department',exclude:()=>d.chain.concat([ME.id]),onPick:id=>{ d.chain.push(id); repaint(); }}); repaint(); }
   $('#rq-clear',v).onclick=()=>{ reqDraft=reqNewDraft(); render(); };
   $('#rq-send',v).onclick=async()=>{ const err=$('#rq-err',v); err.textContent='';
-    const fx=fixedFor(d.work), a=Number(d.amount);
+    const fx=d.unit==='HO'?null:fixedFor(d.work), a=Number(d.amount);
     if(!(a>0)) return err.textContent='Enter the amount in rupees.';
     if(d.purpose.trim().length<3) return err.textContent='Write the purpose.';
+    if(d.unit==='HO'){
+      if(!reqIsBoss()&&!d.priority) return err.textContent='Choose the priority.';
+      $('#rq-send',v).disabled=true;
+      try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim(),unit:'HO',priority:reqIsBoss()?'urgent':d.priority},p_chain:[],p_files:filesPayload(d.files)});
+        reqDraft=null; await load(['legacy']); toast('HO requisition sent to Nishant Bhandari / Prachi Khara.','ok'); go({name:'detail',id}); }
+      catch(e){ $('#rq-send',v).disabled=false; err.textContent=(e&&e.message||'Could not send.').replace(/^.*?: /,''); }
+      return;
+    }
     if(myFixed().length&&!fx) return err.textContent='Choose your type of work.';
     if(!(d.acctUsers&&d.acctUsers.length)) return err.textContent='Choose at least one accounts person who will close this slip.';
     if(!fx&&!d.chain.length) return err.textContent='Add at least one approver.';
