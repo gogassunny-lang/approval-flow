@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v137';
+const APP_VER='v138';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -217,7 +217,7 @@ async function loadLegacy(ids){
   const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
   const built=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,amendId:x.amend_id||null,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,acctUsers:(Array.isArray(x.acct_users)&&x.acct_users.length)?x.acct_users:(x.acct_user?[x.acct_user]:[]),infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
@@ -480,26 +480,32 @@ const acctTeam=()=>{ const byName=(a,b)=>a.name.localeCompare(b.name);
   t=DB.users.filter(u=>u.active&&/^account/i.test(u.dept||'')); if(t.length) return t.sort(byName);
   return DB.users.filter(u=>(u.admin||u.owner)&&u.active).sort(byName); };
 // the person the raiser chose — only while they are still in the team; otherwise "not chosen"
-const acctChosen=r=>{ if(!r||!r.acctUser||r.acctUser===r.requesterId) return null; const u=DB.users.find(x=>x.id===r.acctUser&&x.active); return u||null; };   // 108: anyone active in SETU
-/* 108: pick the accounts person — a search box over everyone in SETU (the ticked "Requisition accounts" people are offered first) */
-function acctPickHTML(id,chosenId,raiserId){
-  const u=chosenId?DB.users.find(x=>x.id===chosenId):null;
-  if(u) return '<div id="'+id+'" class="acct-pick"><div class="filerow" style="gap:8px;margin-top:4px"><div class="av sm">'+inits(u.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc([u.role,u.dept,u.empId].filter(Boolean).join(' · '))+'</div></div><button type="button" class="btn ghost sm" data-acchg>Change</button></div></div>';
-  const sug=DB.users.filter(x=>x.reqAccounts&&x.active&&x.id!==raiserId).sort((a,b)=>a.name.localeCompare(b.name));
-  return '<div id="'+id+'" class="acct-pick"><div class="acct-find"></div>'+(sug.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><span class="hint">Suggested:</span>'+sug.map(x=>'<button type="button" class="btn sm" data-acs="'+x.id+'">'+esc(x.name)+'</button>').join('')+'</div>':'')+'</div>';
+// 109: a slip names one or more accounts people (any active SETU user except the raiser); any one of them closes it
+const acctList=r=>!r?[]:(r.acctUsers&&r.acctUsers.length?r.acctUsers:(r.acctUser?[r.acctUser]:[])).filter(id=>id!==r.requesterId).map(id=>DB.users.find(x=>x.id===id&&x.active)).filter(Boolean);
+const acctChosen=r=>acctList(r)[0]||null;
+/* the accounts-people picker: chosen people as chips (× to remove) + a search box over everyone in SETU
+   (the ticked "Requisition accounts" people are offered as suggestions) */
+function acctPickHTML(id,ids,raiserId){
+  ids=(ids||[]).filter(Boolean);
+  const chips=ids.map(uid=>{ const u=DB.users.find(x=>x.id===uid)||{name:'?'}; return '<div class="filerow" style="gap:8px;margin-top:4px"><div class="av sm">'+inits(u.name)+'</div><div style="flex:1;min-width:0"><b>'+esc(u.name)+'</b><div class="hint">'+esc([u.role,u.dept,u.empId].filter(Boolean).join(' · '))+'</div></div><button type="button" class="btn ghost sm" data-acrm="'+uid+'" style="color:var(--stop)" title="Remove">✕</button></div>'; }).join('');
+  const sug=DB.users.filter(x=>x.reqAccounts&&x.active&&x.id!==raiserId&&ids.indexOf(x.id)<0).sort((a,b)=>a.name.localeCompare(b.name));
+  return '<div id="'+id+'" class="acct-pick">'+chips+'<div class="acct-find" style="margin-top:6px"></div>'+
+    (sug.length?'<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px"><span class="hint">Suggested:</span>'+sug.map(x=>'<button type="button" class="btn sm" data-acs="'+x.id+'">＋ '+esc(x.name)+'</button>').join('')+'</div>':'')+
+    '<div class="hint" style="margin-top:4px">'+(ids.length?'Add more if you like — whoever of them closes it first closes it for all.':'Search and add one or more people.')+'</div></div>';
 }
-function wireAcctPick(box,raiserId,onPick){
-  if(!box) return;
-  const f=$('.acct-find',box); if(f) personPicker(f,{placeholder:'Search any name, employee ID or department',exclude:()=>[raiserId],onPick});
-  $$('[data-acs]',box).forEach(b=>b.onclick=()=>onPick(b.dataset.acs));
-  const c=$('[data-acchg]',box); if(c) c.onclick=()=>{ box.outerHTML=acctPickHTML(box.id,null,raiserId); const nb=document.getElementById(box.id); wireAcctPick(nb,raiserId,onPick); const i=nb&&$('.acct-find input',nb); if(i) i.focus(); };
+function wireAcctPick(box,raiserId,ids,onChange){
+  if(!box) return; ids=(ids||[]).filter(Boolean);
+  const add=uid=>{ if(uid&&uid!==raiserId&&ids.indexOf(uid)<0) onChange(ids.concat([uid])); };
+  const f=$('.acct-find',box); if(f) personPicker(f,{placeholder:ids.length?'Add another person — name, employee ID or department':'Search any name, employee ID or department',exclude:()=>[raiserId].concat(ids),onPick:add});
+  $$('[data-acs]',box).forEach(b=>b.onclick=()=>add(b.dataset.acs));
+  $$('[data-acrm]',box).forEach(b=>b.onclick=()=>onChange(ids.filter(x=>x!==b.dataset.acrm)));
 }
-const acctFor=r=>{ const c=acctChosen(r); return c?[c]:[]; };   // who does the Accounts step of this requisition (107: only the chosen person)
-const acctNames=r=>{ const c=acctChosen(r); return c?c.name:'person not chosen yet'; };
-const acctNeedsChoice=r=>!!(r&&r.type==='requisition'&&r.acctPending&&r.status==='In Progress'&&!acctChosen(r));
+const acctFor=r=>acctList(r);   // who does the Accounts step of this requisition (109: the chosen people)
+const acctNames=r=>{ const L=acctList(r); return L.length?L.map(u=>u.name).join(', '):'person not chosen yet'; };
+const acctNeedsChoice=r=>!!(r&&r.type==='requisition'&&r.acctPending&&r.status==='In Progress'&&!acctList(r).length);
 const CAN_ACCT=r=>!!(ME&&(ME.owner||acctFor(r).some(u=>u.id===ME.id)));
 const reqShort=r=>{ const t=String(r.f.purpose||r.f.title||'Requisition').replace(/\s+/g,' ').trim(); return t.length>60?t.slice(0,58)+'…':t; };
-const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&acctChosen(r)&&acctChosen(r).id===ME.id)||(acctNeedsChoice(r)&&r.requesterId===ME.id));
+const reqWaiting=()=>reqAll().filter(r=>isMyTurn(r)||(r.acctPending&&r.status==='In Progress'&&acctList(r).some(u=>u.id===ME.id))||(acctNeedsChoice(r)&&r.requesterId===ME.id));
 const reqInvolved=()=>reqAll().filter(r=>inChain(r));
 const reqPageOn=()=>CAN_REQ()||reqInvolved().length>0||myAmends().some(m=>m.engine==='legacy');
 const myTemplates=()=>DB.templates.filter(t=>t.ownerId===ME.id||t.shared);
@@ -2310,7 +2316,8 @@ function wireDetail(v){
   if($('#a-amend',v)) $('#a-amend',v).onclick=()=>amendAskDialog('legacy',r.id,null);
   if($('#d-slip',v)) $('#d-slip',v).onclick=()=>reqSlipDialog(r);
   if($('#rq-addappr',v)) $('#rq-addappr',v).onclick=()=>reqAddApproverDialog(r);
-  wireAcctPick($('#rq-acctp',v),r.requesterId,async uid=>{ try{ await rpc('req_set_accounts_person',{p_request:r.id,p_user:uid}); await load(['legacy'],null,[r.id]); toast('Accounts person: '+user(uid).name+'.','ok'); render(); }catch(err){ fail(err); render(); } });
+  wireAcctPick($('#rq-acctp',v),r.requesterId,acctList(r).map(u=>u.id),async L=>{ if(!L.length) return toast('Keep at least one accounts person.','bad');
+    try{ await rpc('req_set_accounts_people',{p_request:r.id,p_users:L}); await load(['legacy'],null,[r.id]); toast('Accounts: '+L.map(id=>user(id).name).join(', ')+'.','ok'); render(); }catch(err){ fail(err); render(); } });
   wireReqAcct(v,r);
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
@@ -5896,7 +5903,7 @@ function wireAmendRows(v){
 
 /* ---------------- Requisition ---------------- */
 let reqDraft=null;
-const reqNewDraft=()=>({work:'',amount:'',purpose:'',chain:[],files:[]});
+const reqNewDraft=()=>({work:'',amount:'',purpose:'',chain:[],files:[],acctUsers:[]});
 const myFixed=()=>(DB.reqHier||[]).filter(h=>h.userId===ME.id);
 const fixedFor=w=>{ const k=String(w||'').trim().toLowerCase(); return k?myFixed().find(h=>h.work.toLowerCase()===k)||null:null; };
 /* rupees in words, Indian style: 1,25,000.50 → "Rupees One Lakh Twenty Five Thousand and Fifty Paise Only" */
@@ -5937,7 +5944,7 @@ function reqFactsHTML(r){
 }
 /* the Accounts step panel (100) */
 function reqAcctPanelHTML(r){
-  if(!CAN_ACCT(r)) return '<div class="card pad"><h3>'+(acctNeedsChoice(r)?'Accounts person not chosen yet':'With Accounts — '+esc(acctNames(r)))+'</h3><p class="hint" style="margin-top:6px">'+(acctNeedsChoice(r)?'Every approver has signed. The person who raised it chooses who in Accounts closes it.':'Every approver has signed. '+esc(acctNames(r))+' fills the approved amount and the voucher / cheque no., then it closes.')+'</p></div>';
+  if(!CAN_ACCT(r)) return '<div class="card pad"><h3>'+(acctNeedsChoice(r)?'Accounts person not chosen yet':'With Accounts — '+esc(acctNames(r)))+'</h3><p class="hint" style="margin-top:6px">'+(acctNeedsChoice(r)?'Every approver has signed. The person who raised it chooses who in Accounts closes it.':'Every approver has signed. '+(acctList(r).length>1?'Any one of '+esc(acctNames(r))+' fills':esc(acctNames(r))+' fills')+' the approved amount and the voucher / cheque no., then it closes for everyone.')+'</p></div>';
   return '<div class="card pad" style="border-color:var(--indigo)"><h3>Accounts — complete the slip</h3><p class="hint" style="margin-top:5px">Requested '+esc(money(r.f.amount))+'. Fill the approval part and sign with your PIN; the requisition then closes as approved.</p>'+
     '<div style="margin-top:12px"><label for="ra-amt">Approved for amount (₹)</label><input id="ra-amt" type="number" min="0" step="0.01" value="'+esc(r.f.amount||'')+'"><div class="hint" id="ra-words" style="margin-top:4px">'+esc(numToWordsIN(r.f.amount))+'</div></div>'+
     '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
@@ -6016,7 +6023,7 @@ function viewReq(){
       '<div class="sep"></div><h3 style="font-size:15px">Approving authorities, in order</h3>'+
       (fx?'<div class="banner" style="margin-top:8px"><div><b>🔒 Fixed by the super admin for “'+esc(fx.work)+'”.</b><div class="hint">This chain is set for you and cannot be changed.</div></div></div><div style="margin-top:8px">'+chainChips(fx.chain,false)+'</div>'
          :'<div id="rq-chain" style="margin-top:8px">'+chainChips(d.chain,true)+'</div><div id="rq-find" style="margin-top:8px"></div>')+
-      '<div style="margin-top:12px"><label for="rq-acct">Accounts person <span style="color:var(--stop)">*</span></label>'+acctPickHTML('rq-acct',d.acctUser,ME.id)+
+      '<div style="margin-top:12px"><label for="rq-acct">Accounts people <span style="color:var(--stop)">*</span></label>'+acctPickHTML('rq-acct',d.acctUsers||[],ME.id)+
         '<div class="hint" style="margin-top:4px">After the last approver, this person fills the approved amount, Cash / Cheque and the voucher / cheque no.</div></div>'+
       '<div id="rq-err" style="color:var(--stop);font-size:13px;margin-top:10px"></div>'+
       '<div class="row" style="gap:8px;margin-top:12px"><button class="btn" id="rq-clear">Clear</button><button class="btn primary" id="rq-send" style="margin-left:auto">Send requisition</button></div></div>';
@@ -6052,7 +6059,7 @@ function wireReq(v){
   const d=reqDraft;
   const amt=$('#rq-amt',v); if(amt) amt.oninput=()=>{ d.amount=amt.value; $('#rq-words',v).textContent=numToWordsIN(amt.value)||'—'; };
   const pu=$('#rq-purpose',v); if(pu) pu.oninput=()=>{ d.purpose=pu.value; };
-  wireAcctPick($('#rq-acct',v),ME.id,id=>{ d.acctUser=id; render(); });
+  wireAcctPick($('#rq-acct',v),ME.id,d.acctUsers||[],L=>{ d.acctUsers=L; render(); });
   const w=$('#rq-work',v); if(w){ w.oninput=()=>{ d.work=w.value; }; w.onchange=()=>{ const was=!!fixedFor(w.dataset.prev||''), now=!!fixedFor(w.value); d.work=w.value; if(was!==now) render(); w.dataset.prev=w.value; }; w.dataset.prev=d.work; }
   uploader($('#rq-files',v),d.files,{mode:'support',label:'Bill, quotation, photo or anything the approvers should see'});
   const repaint=()=>{ const c=$('#rq-chain',v); if(!c) return; c.innerHTML=chainChips(d.chain,true); wireChainChips(c,d.chain,repaint); };
@@ -6063,10 +6070,10 @@ function wireReq(v){
     if(!(a>0)) return err.textContent='Enter the amount in rupees.';
     if(d.purpose.trim().length<3) return err.textContent='Write the purpose.';
     if(myFixed().length&&!fx) return err.textContent='Choose your type of work.';
-    if(!d.acctUser) return err.textContent='Choose the accounts person who will close this slip.';
+    if(!(d.acctUsers&&d.acctUsers.length)) return err.textContent='Choose at least one accounts person who will close this slip.';
     if(!fx&&!d.chain.length) return err.textContent='Add at least one approver.';
     $('#rq-send',v).disabled=true;
-    try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim(),acct_user:d.acctUser},p_chain:fx?[]:d.chain,p_files:filesPayload(d.files)});
+    try{ const id=await rpc('requisition_create',{p_work:d.work.trim(),p_fields:{amount:a,purpose:d.purpose.trim(),acct_users:d.acctUsers},p_chain:fx?[]:d.chain,p_files:filesPayload(d.files)});
       reqDraft=null; await load(['legacy']); const r=DB.requests.find(x=>x.id===id);
       toast('Requisition sent'+(r&&r.chain[0]?' to '+user(r.chain[0].userId).name:'')+'.','ok'); go({name:'detail',id}); }
     catch(e){ $('#rq-send',v).disabled=false; err.textContent=(e&&e.message||'Could not send.').replace(/^.*?: /,''); }
@@ -6274,8 +6281,8 @@ function garTrace(){
 function reqManageHTML(r){
   if(r.status!=='In Progress'&&r.status!=='Info Requested') return '';
   const mine=r.requesterId===ME.id||ME.admin||ME.owner; if(!mine) return '<div class="hint" style="margin-top:10px">Accounts: '+esc(acctNames(r))+'</div>';
-  const team=acctTeam(), ch=acctChosen(r), need=acctNeedsChoice(r);
-  return '<div class="sep"></div><label>Accounts person'+(need?' <span style="color:var(--stop)">— choose now</span>':'')+'</label><div'+(need?' style="border:1px solid var(--hold);border-radius:var(--r);padding:8px;box-shadow:0 0 0 3px rgba(183,121,31,.18)"':'')+'>'+acctPickHTML('rq-acctp',ch?ch.id:null,r.requesterId)+'</div>'+
+  const need=acctNeedsChoice(r);
+  return '<div class="sep"></div><label>Accounts people'+(need?' <span style="color:var(--stop)">— choose now</span>':'')+'</label><div'+(need?' style="border:1px solid var(--hold);border-radius:var(--r);padding:8px;box-shadow:0 0 0 3px rgba(183,121,31,.18)"':'')+'>'+acctPickHTML('rq-acctp',acctList(r).map(u=>u.id),r.requesterId)+'</div>'+
     ((r.status==='In Progress'&&!r.amendId&&!(r.chainLocked&&!ME.owner))?'<button class="btn sm" id="rq-addappr" style="width:100%;margin-top:10px">＋ Add an approver'+(r.acctPending?' before Accounts':'')+'</button>':'');
 }
 function reqAddApproverDialog(r){
