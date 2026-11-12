@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v138';
+const APP_VER='v139';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -2319,6 +2319,7 @@ function wireDetail(v){
   wireAcctPick($('#rq-acctp',v),r.requesterId,acctList(r).map(u=>u.id),async L=>{ if(!L.length) return toast('Keep at least one accounts person.','bad');
     try{ await rpc('req_set_accounts_people',{p_request:r.id,p_users:L}); await load(['legacy'],null,[r.id]); toast('Accounts: '+L.map(id=>user(id).name).join(', ')+'.','ok'); render(); }catch(err){ fail(err); render(); } });
   wireReqAcct(v,r);
+  $$('[data-apf]',v).forEach(b=>b.onclick=()=>{ const x=(((r.f||{}).approval||{}).files||[])[+b.dataset.apf]; if(x) openViewer({id:'apf'+b.dataset.apf,name:x.name,path:x.path}); });
   $$('[data-sys]',v).forEach(b=>b.onclick=()=>sysApproveTo(+b.dataset.sys));
   $$('[data-rwd]',v).forEach(b=>b.onclick=()=>rewindTo(+b.dataset.rwd));
   $$('[data-ldetour]',v).forEach(b=>b.onclick=()=>legacyDetourDialog(ROUTE.id,+b.dataset.ldetour));
@@ -5934,7 +5935,8 @@ function reqFactsHTML(r){
       row('Approved for amount',ap?'<b class="num">'+esc(money(ap.amount))+'</b><div class="hint">'+esc(numToWordsIN(ap.amount))+'</div>':'<span class="hint">'+(r.acctPending?'With Accounts':'After all approvals')+'</span>')+
       row('Disbursement',ap?esc(ap.method==='cheque'?'Cheque':'Cash'):'<span class="hint">Cash / Cheque</span>')+
       row(ap&&ap.method==='cheque'?'Cheque No.':'Voucher / Cheque No.',ap?'<span class="num">'+esc(ap.ref)+'</span>':'<span class="hint">—</span>')+
-      (ap?row('By accounts',esc(ap.by_name||'')+(ap.at?' · '+esc(fmtDT(ap.at)):'')):'')+'</dl>'+
+      (ap?row('By accounts',esc(ap.by_name||'')+(ap.at?' · '+esc(fmtDT(ap.at)):'')):'')+
+      (ap&&ap.files&&ap.files.length?row('Payment proof',ap.files.map((x,i)=>'<button class="btn sm" data-apf="'+i+'" style="margin:0 6px 4px 0">📎 '+esc(x.name)+'</button>').join('')):'')+'</dl>'+
     '<table class="cards" style="margin-top:10px"><thead><tr><th>Approving authority</th><th>Designation</th><th>Date</th></tr></thead><tbody>'+
       reqApproverRows(r).map(x=>'<tr><td><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.state)+'</div></td><td class="meta">'+esc(x.role||'—')+'</td><td class="meta">'+esc(x.date||'—')+'</td></tr>').join('')+'</tbody></table>'+
     (r.chainLocked?'<div class="hint" style="margin-top:8px">🔒 Approvers fixed by the super admin</div>':'')+
@@ -5949,12 +5951,16 @@ function reqAcctPanelHTML(r){
     '<div style="margin-top:12px"><label for="ra-amt">Approved for amount (₹)</label><input id="ra-amt" type="number" min="0" step="0.01" value="'+esc(r.f.amount||'')+'"><div class="hint" id="ra-words" style="margin-top:4px">'+esc(numToWordsIN(r.f.amount))+'</div></div>'+
     '<div style="margin-top:12px"><label>Method of disbursement</label><div class="row" style="gap:8px;margin-top:4px"><button type="button" class="btn sm" data-ram="cash">Cash</button><button type="button" class="btn sm" data-ram="cheque">Cheque</button></div></div>'+
     '<div style="margin-top:12px"><label for="ra-ref" id="ra-reflbl">Voucher / Cheque No.</label><input id="ra-ref" type="text"></div>'+
+    '<div style="margin-top:12px"><label>Payment proof <span class="hint" style="font-weight:400">optional — UTR screenshot, PDF or any file</span></label><div id="ra-files"></div><div class="hint" style="margin-top:4px">Everyone on this requisition can open it.</div></div>'+
     '<div id="ra-err" style="color:var(--stop);font-size:13px;margin-top:8px"></div>'+
     '<button class="btn primary" id="ra-go" style="width:100%;margin-top:12px">Sign and close the requisition</button></div>';
 }
+const reqAcctFiles={};   // v139: files picked in the Accounts form survive a live redraw
 function wireReqAcct(v,r){
   if(!$('#ra-go',v)) return;
   let method='';
+  const pf=reqAcctFiles[r.id]||(reqAcctFiles[r.id]=[]);
+  if($('#ra-files',v)) uploader($('#ra-files',v),pf,{mode:'support',label:'Attach the UTR / payment proof'});
   const amt=$('#ra-amt',v); amt.oninput=()=>{ $('#ra-words',v).textContent=numToWordsIN(amt.value); };
   $$('[data-ram]',v).forEach(b=>b.onclick=()=>{ method=b.dataset.ram; $$('[data-ram]',v).forEach(x=>x.classList.toggle('primary',x===b));
     $('#ra-reflbl',v).textContent=method==='cash'?'Voucher No.':'Cheque No.'; });
@@ -5962,7 +5968,7 @@ function wireReqAcct(v,r){
     if(!(a>0)) return err.textContent='Enter the approved amount.'; if(!method) return err.textContent='Choose Cash or Cheque.';
     if(!ref) return err.textContent=method==='cash'?'Enter the voucher number.':'Enter the cheque number.';
     confirmPin('close '+r.ref+' for '+money(a),async pin=>{
-      await rpc('req_accounts_close',{p_request:r.id,p_amount:a,p_method:method,p_ref:ref,p_pin:pin});
+      await rpc('req_accounts_close',{p_request:r.id,p_amount:a,p_method:method,p_ref:ref,p_pin:pin,p_files:pf.length?filesPayload(pf):null}); delete reqAcctFiles[r.id];
       await load(['legacy','notif']); toast('Requisition closed — approved for '+money(a)+'.','ok'); go({name:'detail',id:r.id}); }); };
 }
 /* printable slip, laid out like the paper Requisition Slip */
@@ -5983,6 +5989,7 @@ function reqSlipHTML(r){
     '<h2>APPROVAL</h2>'+line('Approved for Amount',ap.amount?esc(money(ap.amount))+' — '+esc(numToWordsIN(ap.amount)):'')+
     line('Method of disbursement :',ap.method?(ap.method==='cheque'?'Cheque':'Cash'):'Cash / Cheque')+
     line('Details : Voucher / Cheque No.',esc(ap.ref||''))+
+    (ap.files&&ap.files.length?line('Payment proof attached :',esc(ap.files.map(x=>x.name).join(', '))):'')+
     '<table><thead><tr><th>Approving authority</th><th>Designation</th><th>Date</th></tr></thead><tbody>'+
       rows.map(x=>'<tr><td>'+esc(x.name)+(x.date?'':' <i style="color:#777">('+esc(x.state)+')</i>')+'</td><td>'+esc(x.role)+'</td><td>'+esc(x.date)+'</td></tr>').join('')+
       (ap.by_name?'<tr><td>'+esc(ap.by_name)+' <i style="color:#777">(Accounts)</i></td><td>'+esc(ap.by_role||'')+'</td><td>'+esc(fmtDT(ap.at))+'</td></tr>':'')+
