@@ -148,7 +148,7 @@ async function load(parts,flowIds,legacyIds){
   if(gateScopeOnly()){ P.delete('flows'); DB.flows=[]; }
   const jobs=[];
   if(P.has('legacy')) jobs.push(loadLegacy(legacyIds));
-  if(P.has('flows'))  jobs.push((flowIds&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):(flowIds==='changed'&&DB.flows.length?loadFlowsChanged():loadFlows()));
+  if(P.has('flows'))  jobs.push((Array.isArray(flowIds)&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):(flowIds==='changed'&&DB.flows.length?loadFlowsChanged():loadFlows()));
   if(P.has('gate'))   jobs.push(loadGate());
   if(P.has('notif'))  jobs.push(loadNotifs());
   if(P.has('legacy')||P.has('flows')) jobs.push(loadAmends());
@@ -260,7 +260,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
     f.steps[s.pos]=FS[s.id]={id:s.id,pos:s.pos,stage:s.stage,substep:s.substep,label:s.label,actorKind:s.actor_kind,
       teamKey:s.team_key,action:s.action,needsFile:s.needs_file,needsDatetime:s.needs_datetime,fieldsSpec:s.fields_spec||[],
-      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,cmdDual:!!s.cmd_dual,cmdTarget:!!s.cmd_target,isDetour:!!s.is_detour,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
+      canReject:s.can_reject,rejectTo:s.reject_to,escalatable:s.escalatable,cmdDual:!!s.cmd_dual,cmdTarget:!!s.cmd_target,isDetour:!!s.is_detour,branch:s.branch||null,status:s.status,systemApproved:!!s.system_approved,actedBy:s.acted_by,actedAt:ts(s.acted_at),
       canHold:!!s.can_hold,onHold:!!s.on_hold,holdReason:s.hold_reason||'',holdBy:s.hold_by,
       erpDone:!!s.erp_done,erpDoneBy:s.erp_done_by,erpDoneAt:ts(s.erp_done_at),
       remark:s.remark||'',datetimeVal:ts(s.datetime_val),dataVal:s.data_val,
@@ -2557,7 +2557,7 @@ function assistPending(){
   const pid=ME.assistsId, out=[]; if(!pid) return out;
   DB.requests.forEach(r=>{ if(r.status==='In Progress'&&r.chain[r.current]&&r.chain[r.current].userId===pid)
     out.push({engine:'legacy',id:r.id,ref:r.ref,title:docTitle(r),doc:docNo(r),hay:_legHay(r),dtype:r.type==='indent'?'indent':'wo'}); });
-  DB.flows.forEach(f=>{ const s=flowLive(f); if(s&&s.actors.indexOf(pid)>-1)
+  DB.flows.forEach(f=>{ const s=flowLives(f).find(x=>x.actors.indexOf(pid)>-1); if(s)
     out.push({engine:'flow',id:f.id,ref:f.ref,title:(f.title||flowHeadLabel(f.head)+' · '+f.division),doc:s.label,hay:_flowHay(f,s.label),dtype:_flowDtype(f,s.stage)}); });
   return out;
 }
@@ -3519,15 +3519,15 @@ function garProcessed(){
   if(!lots.length) return '<div class="card pad"><p class="hint" style="margin:0">No GRNs processed yet. When a CNG GRN passes final HO approval, its items and QR codes appear here.</p></div>';
   const q=garudaProcQ.trim().toLowerCase();
   const byItem={};
-  // 131: oldest first; "QR made / total ordered" — the total comes from the PO lines (cng_po_list), else the GRN's own order qty
+  // 135: newest first (was oldest first in 131); "QR made / total ordered" — the total comes from the PO lines (cng_po_list), else the GRN's own order qty
   if(!garDock.at&&!garDock.loading) loadDock();
   const ordered={}, seenLine=new Set();
   (garDock.pos||[]).forEach(r=>{ const k=r.item_code+'|'+r.po_no+'|'+r.request_id; if(seenLine.has(k)) return; seenLine.add(k); ordered[r.item_code]=(ordered[r.item_code]||0)+(Number(r.ordered)||0); });
-  lots.slice().sort((a,b)=>String(a.created_at||'').localeCompare(String(b.created_at||''))).forEach(l=>{ const g=byItem[l.item_code]=byItem[l.item_code]||{code:l.item_code,name:l.item_name||'',grns:[],pos:[],first:l.created_at||'',lotOrd:0};
+  lots.slice().sort((a,b)=>String(a.created_at||'').localeCompare(String(b.created_at||''))).forEach(l=>{ const g=byItem[l.item_code]=byItem[l.item_code]||{code:l.item_code,name:l.item_name||'',grns:[],pos:[],first:l.created_at||'',lotOrd:0}; g.last=l.created_at||g.last||'';
     if(l.grn_no&&g.grns.indexOf(l.grn_no)<0)g.grns.push(l.grn_no); if(l.po_no&&g.pos.indexOf(l.po_no)<0)g.pos.push(l.po_no); if(!l.po_line_id) g.lotOrd+=Number(l.order_qty)||0; });
-  let items=Object.values(byItem).map(g=>({code:g.code,name:g.name,grns:g.grns,pos:g.pos,first:g.first,qrs:garCount(g.code).received,total:(ordered[g.code]||0)+g.lotOrd,mt:garMachineType(g.code)}));
+  let items=Object.values(byItem).map(g=>({code:g.code,name:g.name,grns:g.grns,pos:g.pos,first:g.first,last:g.last||g.first,qrs:garCount(g.code).received,total:(ordered[g.code]||0)+g.lotOrd,mt:garMachineType(g.code)}));
   if(q) items=items.filter(g=>(g.code+' '+g.name+' '+g.grns.join(' ')+' '+g.pos.join(' ')).toLowerCase().includes(q)||tags.some(t=>t.item_code===g.code&&t.id.toLowerCase().includes(q)));
-  items.sort((a,b)=>String(a.first).localeCompare(String(b.first))||a.code.localeCompare(b.code));   // ascending: first processed first
+  items.sort((a,b)=>String(b.last).localeCompare(String(a.last))||a.code.localeCompare(b.code));   // v135: newest GRN on top, the first-ever entry at the bottom
   const head='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap"><input id="g-procsearch" type="text" placeholder="Search item, ERP, PO, GRN or QR" value="'+esc(garudaProcQ)+'" style="flex:1;min-width:220px"><span class="tag t-prog" style="align-self:center">'+items.length+' item'+(items.length===1?'':'s')+'</span></div>';
   const cell=(arr,n)=>esc(arr.slice(0,n).join(', ')||'—')+(arr.length>n?' +'+(arr.length-n):'');
   const anyMt=items.some(g=>g.mt);
@@ -4790,7 +4790,15 @@ function wireGpReport(v){
    ALDS PO / WO fixed flows (Stage 2 UI)
    ============================================================ */
 const flowHeadLabel=h=>h==='PO'?'ALDS PO (Indent)':h==='WO'?'ALDS WO (Work order)':h==='CNG'?'CNG (Indent)':h;
-const flowLive=f=>f.steps.find(s=>s.status==='pending');
+// 106: after Vendor Process a new PO/WO runs on two paths at once (payment + goods), so a file
+// can have two live steps. flowLives = all of them; flowLive = the one that matters to ME
+// (the one I picked on the file page, else one that is with me, else the first).
+const flowLives=f=>f.steps.filter(s=>s.status==='pending');
+const flowPick={};
+const flowLive=f=>{ const L=f.steps.filter(s=>s.status==='pending'); if(L.length<2) return L[0];
+  const p=flowPick[f.id]&&L.find(s=>s.id===flowPick[f.id]); if(p) return p;
+  return L.find(s=>s.actors.indexOf(ME.id)>-1&&!s.infoRequested)||L.find(s=>s.actors.indexOf(ME.id)>-1)||L.find(s=>s.infoRequested)||L[0]; };
+const FLOW_PATH={pay:'Payment path',goods:'Goods path'};
 const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
 // a flow's first approval group = the division's Indent / Work Order approvers
 // the raiser's HOD = the person the raiser reports to. Only they may escalate past CMD,
@@ -4809,25 +4817,25 @@ const flowActiveTag=s=>{ if(!s||!s.infoRequested) return null; const tg=infoTarg
 //   awaitingMine: I asked / own the step but it's parked on someone else right now
 const flowActionableByMe=f=>{const s=flowLive(f); return !!(!f.amendId&&s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
 // an ask stays open on its step even when a cross-check was put in front of it (98)
-const flowAskStep=f=>{const s=flowLive(f); if(s&&s.infoRequested) return s; return f.steps.find(x=>x.status==='waiting'&&x.infoRequested)||null};
+const flowAskStep=f=>{const s=flowLives(f).find(x=>x.infoRequested); if(s) return s; return f.steps.find(x=>x.status==='waiting'&&x.infoRequested)||null};
 const flowTaggedToMe=f=>{const s=flowAskStep(f); if(!s||!s.infoRequested) return false; const tg=infoTargets(s);
   return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
-const flowAwaitingMyReply=f=>{const s=flowLive(f); if(!s||!s.infoRequested) return false;
+const flowAwaitingMyReply=f=>{const s=flowLives(f).find(x=>x.infoRequested); if(!s) return false;
   return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
 const flowMyTurn=()=>SETU_FLOWS().filter(f=>f.status==='running'&&(flowActionableByMe(f)||flowCanEscalate(f)));
 const flowTagged=()=>SETU_FLOWS().filter(f=>f.status==='running'&&flowTaggedToMe(f));
 const flowAwaitingReply=()=>SETU_FLOWS().filter(f=>f.status==='running'&&flowAwaitingMyReply(f));
 const flowMine=()=>SETU_FLOWS().filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
-const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const s=flowLive(f); return s?(s.stage+' · '+s.label):'—'; };
+const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const L=flowLives(f); return L.length?L.map(s=>s.stage+' · '+s.label).join('  +  '):'—'; };
 const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed</span>':f.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">In progress</span>';
 
 let flowWhoAll=false;   // "Pending by person" table: show all people or the top 8
 /* days the live step has been waiting: since the previous step was signed, else since the file was raised */
-const flowWaitDays=f=>{ const s=flowLive(f); if(!s) return 0; let t=0; f.steps.forEach(x=>{ if(x&&x.status==='done'&&x.actedAt&&x.actedAt>t) t=x.actedAt; }); return daysBetween(t||f.createdAt,Date.now()); };
+const flowWaitDays=f=>{ const s=flowLives(f)[0]; if(!s) return 0; let t=0; f.steps.forEach(x=>{ if(x&&x.status==='done'&&x.actedAt&&x.actedAt>t) t=x.actedAt; }); return daysBetween(t||f.createdAt,Date.now()); };
 function flowRow(f,opts){
   opts=opts||{};
-  const s=flowLive(f), withWho=s?s.actors.map(id=>user(id).name).slice(0,3).join(', ')+(s.actors.length>3?' +'+(s.actors.length-3):''):'';
+  const s=flowLive(f), act=[...new Set(flowLives(f).reduce((a,x)=>a.concat(x.actors),[]))], withWho=act.length?act.map(id=>user(id).name).slice(0,3).join(', ')+(act.length>3?' +'+(act.length-3):''):'';
   const wait=opts.nudge&&s?flowWaitDays(f):0;
   return '<tr data-flow="'+f.id+'"'+(flowTaggedToMe(f)?' class="row-tagme"':flowAwaitingMyReply(f)?' class="row-await"':'')+'><td><b>'+esc(f.ref)+'</b> <span class="tag t-ok" style="font-size:10.5px">Fixed flow</span> <span class="hint">'+esc(flowHeadLabel(f.head))+' · '+esc(f.division)+'</span>'+
     '<div class="hint">'+esc(f.title||'(no title)')+' · by '+esc(user(f.requesterId).name)+' · '+esc(fmtD(f.createdAt))+'</div>'+
@@ -4867,53 +4875,59 @@ function flowSection(ctx){
     shown=shown.filter(f=>dateMatch(f.createdAt));   // #2: the top bar's month / date cover both engines
   }
   if(ft.req) shown=shown.filter(f=>f.requesterId===ft.req);
-  // #1 stage filter: segregate pending files by the stage their LIVE step is at (running flows only)
-  const stageCount={}; list.forEach(f=>{const s=flowLive(f); if(s&&s.stage) stageCount[s.stage]=(stageCount[s.stage]||0)+1;});
-  const stageOpts=Object.keys(stageCount).sort((a,b)=>{const ia=STAGE_ORDER.indexOf(a),ib=STAGE_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
-  if(ft.stage&&!stageCount[ft.stage]) ft.stage='';
-  if(ft.stage) shown=shown.filter(f=>{const s=flowLive(f);return !!(s&&s.stage===ft.stage);});
-  // "Pending with": who holds how many files, at which stages, and for how long (running files)
-  const who={}; if(ctx==='running') list.forEach(f=>{ const s=flowLive(f); if(!s) return; const d=flowWaitDays(f);
-    s.actors.forEach(id=>{ const w=who[id]||(who[id]={n:0,stages:{},oldest:0}); w.n++; w.stages[s.stage]=(w.stages[s.stage]||0)+1; if(d>w.oldest) w.oldest=d; }); });
-  const whoIds=Object.keys(who).sort((a,b)=>who[b].n-who[a].n||user(a).name.localeCompare(user(b).name));
-  if(ft.who&&!who[ft.who]) ft.who='';
-  if(ft.who) shown=shown.filter(f=>{const s=flowLive(f);return !!(s&&s.actors.indexOf(ft.who)>-1);});
-  // text search: on the All requests page the page's own search box drives it (so one
-  // box covers both engines); elsewhere this section's own box does. It matches the
-  // FLOW reference AND the real PO / WO / indent number (stored in the title and fields),
-  // so searching "1052" or the document number "W326O08-001" / just "001" all work.
+  // text search first (v135), so the stage / person counts below follow every filter that is set
   const q=((ctx==='all'?allF.q:ft.q)||'').trim().toLowerCase();
   if(q){ shown=shown.filter(f=>{
     const extra=Object.keys(f.fields||{}).map(k=>f.fields[k]).filter(v=>typeof v==='string'||typeof v==='number').join(' ');
     return ((f.ref||'')+' '+(f.title||'')+' '+user(f.requesterId).name+' '+(f.division||'')+' '+flowHeadLabel(f.head)+' '+extra).toLowerCase().includes(q); }); }
+  const base=shown.slice();
+  // #1 stage filter: segregate pending files by the stage their LIVE step(s) are at (running flows only)
+  const stageCount={}; base.forEach(f=>{ [...new Set(flowLives(f).map(s=>s.stage).filter(Boolean))].forEach(st=>{ stageCount[st]=(stageCount[st]||0)+1; }); });
+  // the choices come from every file (so a pick never silently disappears); the counts follow the other filters
+  const stageAll={}; list.forEach(f=>flowLives(f).forEach(s=>{ if(s.stage) stageAll[s.stage]=1; }));
+  const stageOpts=Object.keys(stageAll).sort((a,b)=>{const ia=STAGE_ORDER.indexOf(a),ib=STAGE_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);});
+  if(ft.stage&&!stageAll[ft.stage]) ft.stage='';
+  if(ft.stage) shown=shown.filter(f=>flowLives(f).some(s=>s.stage===ft.stage));
+  // "Pending with": who holds how many files, at which stages, and for how long (running files)
+  const who={}; if(ctx==='running') base.forEach(f=>{ const L=flowLives(f); if(!L.length) return; const d=flowWaitDays(f), seen={};
+    L.forEach(s=>s.actors.forEach(id=>{ const w=who[id]||(who[id]={n:0,stages:{},oldest:0}); if(!seen[id]){ seen[id]=1; w.n++; } w.stages[s.stage]=(w.stages[s.stage]||0)+1; if(d>w.oldest) w.oldest=d; })); });
+  const whoAll=new Set(); list.forEach(f=>flowLives(f).forEach(s=>s.actors.forEach(id=>whoAll.add(id))));
+  if(ft.who&&!whoAll.has(ft.who)) ft.who='';
+  if(ft.who&&!who[ft.who]&&ctx==='running') who[ft.who]={n:0,stages:{},oldest:0};   // keep a pick visible at 0
+  const whoIds=Object.keys(who).sort((a,b)=>who[b].n-who[a].n||user(a).name.localeCompare(user(b).name));
+  if(ft.who) shown=shown.filter(f=>flowLives(f).some(s=>s.actors.indexOf(ft.who)>-1&&(!ft.stage||s.stage===ft.stage)));
+  // text search: on the All requests page the page's own search box drives it (so one
+  // box covers both engines); elsewhere this section's own box does. It matches the
+  // FLOW reference AND the real PO / WO / indent number (stored in the title and fields),
+  // so searching "1052" or the document number "W326O08-001" / just "001" all work.
   shown.sort((a,b)=>b.createdAt-a.createdAt);
   const label=ctx==='turn'?'ALDS flows waiting on me':ctx==='tagged'?'Tagged to you — your input needed':ctx==='awaiting'?'Awaiting reply — you asked someone':ctx==='mine'?'My ALDS flows':ctx==='running'?'In progress':ctx==='completed'?'Completed':'ALDS PO / WO flows';
   const onAll=ctx==='all';
   const filtered=ft.req||ft.q||ft.stage||ft.who||(onAll&&(allF.type||allF.status||allF.q||allF.month||allF.date));
   const whoSel=whoIds.length
     ? '<select class="fl-who" data-ctx="'+ctx+'" title="Show only files pending with one person" style="width:auto"><option value="">Pending with — anyone ('+whoIds.length+' people)</option>'+
-        whoIds.map(id=>'<option value="'+esc(id)+'" '+(ft.who===id?'selected':'')+'>'+esc(user(id).name)+' ('+who[id].n+')</option>').join('')+'</select>'
+        whoIds.map(id=>'<option value="'+esc(id)+'" '+(ft.who===id?'selected':'')+'>Pending with: '+esc(user(id).name)+' ('+who[id].n+')</option>').join('')+'</select>'
     : '';
   // the summary table: tap a person to see just their files
   const whoMax=flowWhoAll?whoIds.length:8;
   const whoTable=whoIds.length
-    ? '<div style="padding:10px 16px;border-bottom:1px solid var(--line)"><div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap"><b style="font-size:13.5px">Pending by person</b><span class="hint">tap a name to see only their files</span></div>'+
-      whoIds.slice(0,whoMax).map(id=>{ const w=who[id]; const st=Object.keys(w.stages).sort((a,b)=>{const ia=STAGE_ORDER.indexOf(a),ib=STAGE_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);}).map(x=>esc(x)+' <b>'+w.stages[x]+'</b>').join(' · ');
+    ? '<div style="padding:10px 16px;border-bottom:1px solid var(--line)"><div class="row" style="gap:8px;align-items:baseline;flex-wrap:wrap"><b style="font-size:13.5px">Pending by person</b><span class="hint">tap a name to see all their files, or a stage to see just those</span></div>'+
+      whoIds.slice(0,whoMax).map(id=>{ const w=who[id]; const st=Object.keys(w.stages).sort((a,b)=>{const ia=STAGE_ORDER.indexOf(a),ib=STAGE_ORDER.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib)||a.localeCompare(b);}).map(x=>'<button type="button" class="fl-whostage'+(ft.who===id&&ft.stage===x?' on':'')+'" data-ctx="'+ctx+'" data-who="'+esc(id)+'" data-stage="'+esc(x)+'">'+esc(x)+' <b>'+w.stages[x]+'</b></button>').join('');
         return '<div class="row fl-whorow" data-ctx="'+ctx+'" data-who="'+esc(id)+'" style="gap:10px;align-items:center;flex-wrap:wrap;padding:7px 8px;margin-top:4px;border:1px solid var(--line);border-radius:8px;cursor:pointer'+(ft.who===id?';background:var(--indigo-soft);border-color:var(--indigo)':'')+'">'+
           '<div style="flex:1;min-width:150px"><b>'+esc(user(id).name)+'</b>'+(user(id).dept?' <span class="hint">'+esc(user(id).dept)+'</span>':'')+'</div>'+
           '<span class="tag '+(ft.who===id?'t-prog':'t-wait')+'">'+w.n+' file'+(w.n===1?'':'s')+'</span>'+
-          '<span class="hint" style="flex:1;min-width:120px">'+st+'</span>'+
+          '<span class="fl-whostages" style="flex:1;min-width:120px">'+st+'</span>'+
           '<span class="hint">oldest '+(w.oldest?w.oldest+' d':'today')+'</span></div>'; }).join('')+
       (whoIds.length>8?'<button class="btn ghost sm fl-whoall" type="button" style="margin-top:6px">'+(flowWhoAll?'Show fewer':'Show all '+whoIds.length+' people')+'</button>':'')+'</div>'
     : '';
   const stageSel=stageOpts.length>1
     ? '<select class="fl-stage" data-ctx="'+ctx+'" title="Show only files pending at a stage" style="width:auto"><option value="">All stages ('+stageOpts.length+')</option>'+
-        stageOpts.map(st=>'<option value="'+esc(st)+'" '+(ft.stage===st?'selected':'')+'>'+esc(st)+' ('+stageCount[st]+')</option>').join('')+'</select>'
+        stageOpts.map(st=>'<option value="'+esc(st)+'" '+(ft.stage===st?'selected':'')+'>Stage: '+esc(st)+' ('+(stageCount[st]||0)+')</option>').join('')+'</select>'
     : '';
   const bar=reqIds.length>1||list.length>1||stageSel
     ? '<div class="row filters-row" style="gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap">'+
-        (reqIds.length>1||list.length>1?'<select class="fl-req" data-ctx="'+ctx+'" style="width:auto"><option value="">All requesters ('+reqIds.length+')</option>'+
-          reqIds.map(id=>'<option value="'+id+'" '+(ft.req===id?'selected':'')+'>'+esc(user(id).name)+'</option>').join('')+'</select>':'')+
+        (reqIds.length>1||list.length>1?'<select class="fl-req" data-ctx="'+ctx+'" title="Show only files raised by one person" style="width:auto"><option value="">Raised by — anyone ('+reqIds.length+')</option>'+
+          reqIds.map(id=>'<option value="'+id+'" '+(ft.req===id?'selected':'')+'>Raised by: '+esc(user(id).name)+'</option>').join('')+'</select>':'')+
         stageSel+whoSel+
         // the All page already has the top search box, so don't show a duplicate here
         (onAll?'<div class="hint" style="flex:1;min-width:140px;align-self:center">Use the search box at the top to find a number, title or division.</div>'
@@ -4926,11 +4940,15 @@ function flowSection(ctx){
       '<span class="tag t-prog" style="margin-left:auto">'+shown.length+(filtered?' of '+list.length:'')+'</span></div>'+
     bar+(ctx==='running'?whoTable:'')+
     (shown.length?'<table class="cards"><tbody>'+shown.map(f=>flowRow(f,rowOpts)).join('')+'</tbody></table>'
-      :'<div class="empty" style="padding:22px 16px"><h3>Nothing matches</h3><p class="hint">No flow matches the current filter.</p></div>')+
+      :'<div class="empty" style="padding:22px 16px"><h3>Nothing matches</h3><p class="hint">'+(filtered?'No file matches all of these together: '+
+          [ft.req?'raised by '+esc(user(ft.req).name):'',ft.stage?'stage '+esc(ft.stage):'',ft.who?'pending with '+esc(user(ft.who).name):'',ft.q?'search “'+esc(ft.q)+'”':''].filter(Boolean).join(' · ')+'. Tap Clear to start again.':'No flow matches the current filter.')+'</p></div>')+
     '</div>';
 }
 function wireFlowRows(v){
   $$('[data-flow]',v).forEach(tr=>tr.onclick=()=>go({name:'flowdetail',id:tr.dataset.flow}));
+  // v135: a stage inside a "Pending by person" row → that person's files at that stage
+  $$('.fl-whostage',v).forEach(b=>b.onclick=e=>{ e.stopPropagation(); const c=b.dataset.ctx, ft=flowFilter[c]||(flowFilter[c]={req:'',q:'',stage:''});
+    const same=ft.who===b.dataset.who&&ft.stage===b.dataset.stage; ft.who=same?'':b.dataset.who; ft.stage=same?'':b.dataset.stage; render(); });
   $$('.fl-req',v).forEach(sel=>sel.onchange=()=>{const c=sel.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:'',stage:''})).req=sel.value;render()});
   $$('.fl-stage',v).forEach(sel=>sel.onchange=()=>{const c=sel.dataset.ctx;(flowFilter[c]||(flowFilter[c]={req:'',q:'',stage:''})).stage=sel.value;render()});
   $$('.fl-clear',v).forEach(b=>b.onclick=()=>{const c=b.dataset.ctx;flowFilter[c]={req:'',q:'',stage:'',who:''};render()});
@@ -5043,7 +5061,9 @@ function viewFlowDetail(id){
     const steps=f.steps.filter(s=>s.stage===stage);
     const anyLive=steps.some(s=>s.status==='pending');
     const anyParked=steps.some(s=>s.status==='pending'&&s.infoRequested);   // with tagged people, not the approver
-    left+='<div class="card" style="margin-bottom:12px'+(anyParked?';border-color:var(--hold)':anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>'+esc(stage)+'</h3></div>'+
+    const paths=[...new Set(steps.map(s=>s.branch).filter(Boolean))];
+    left+='<div class="card" style="margin-bottom:12px'+(anyParked?';border-color:var(--hold)':anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><h3>'+esc(stage)+'</h3>'+
+      paths.map(b=>'<span class="tag '+(b==='pay'?'t-prog':'t-ok')+'" style="font-size:11px">'+esc(FLOW_PATH[b]||b)+'</span>').join('')+'</div>'+
       '<div style="padding:10px 16px">'+steps.map(s=>flowStepRow(f,s)).join('')+'</div></div>';
   });
   if(f.audit.length) left+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
@@ -5053,8 +5073,16 @@ function viewFlowDetail(id){
   if(amh&&left.indexOf(amh)<0) left+=amh;
   return '<div class="detail-grid"><div>'+(f.amendId&&f.status==='running'?amendBannerHTML(amendOpen('flow',f.id)||{}):'')+left+'</div><div>'+flowSidePanel(f)+'</div></div>';
 }
-/* the right-hand options panel for whoever is viewing */
+/* the right-hand options panel for whoever is viewing; with two live steps (payment + goods
+   paths) a switcher on top picks which one the panel is about */
 function flowSidePanel(f){
+  const L=flowLives(f);
+  if(L.length<2||(f.amendId&&f.status==='running')) return flowSidePanelOne(f);
+  const cur=flowLive(f);
+  return '<div class="card pad" style="margin-bottom:10px"><div class="hint">This file is moving on two paths at once — pick one:</div>'+
+    '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">'+L.map(s=>'<button class="btn sm'+(s===cur?' primary':'')+'" data-flpick="'+s.id+'">'+esc(FLOW_PATH[s.branch]||s.stage)+(s.actors.indexOf(ME.id)>-1?' · with you':'')+'</button>').join('')+'</div></div>'+flowSidePanelOne(f);
+}
+function flowSidePanelOne(f){
   const am=amendOpen('flow',f.id); if(am&&f.status==='running') return amendPanelHTML(am);
   let s=flowLive(f);
   { const a=flowAskStep(f); if(a&&a!==s&&flowTaggedToMe(f)) s=a; }   // tagged on an ask that a cross-check went in front of
@@ -5131,6 +5159,7 @@ function flowSidePanel(f){
 }
 function wireFlowDetail(v){
   if($('#fl-back',v)) $('#fl-back',v).onclick=()=>history.back();
+  $$('[data-flpick]',v).forEach(b=>b.onclick=()=>{ flowPick[ROUTE.id]=b.dataset.flpick; render(); });
   if($('#fl-del',v)) $('#fl-del',v).onclick=()=>flowCancelDialog(ROUTE.id);
   if($('#fl-nudge',v)) $('#fl-nudge',v).onclick=()=>nudgeDialog('flow',ROUTE.id);
   wireAmend(v,'flow',ROUTE.id);
@@ -5288,12 +5317,13 @@ async function flowAskCall(stepId,remark,toIds){ busy(true);
 /* Super-admin override: system-approve every step up to and including this one */
 function flowSysApprove(stepId){
   const x=flowFindStep(stepId); if(!x||!ME.owner) return; const f=x.f, s=x.s;
-  const span=f.steps.filter(st=>st.pos>=f.currentPos&&st.pos<=s.pos&&(st.status==='pending'||st.status==='waiting')).length;
-  const next=f.steps.find(st=>st.pos===s.pos+1);
+  const span=f.steps.filter(st=>st.pos<=s.pos&&(st.status==='pending'||st.status==='waiting')&&(!st.branch||st.branch===s.branch)).length;
+  const next=s.branch?f.steps.find(st=>st.pos>s.pos&&st.branch===s.branch):f.steps.find(st=>st.pos===s.pos+1);
+  const otherOpen=!!s.branch&&f.steps.some(st=>st.branch&&st.branch!==s.branch&&st.status!=='done'&&st.status!=='skipped');
   modal({title:'System-approve as super admin',
     body:'<p style="margin-top:0">Approve every step up to and including <b>'+esc(s.label)+'</b> in one go.</p>'+
       '<div class="banner" style="margin-top:8px"><div class="hint"><b>'+span+' step'+(span===1?'':'s')+'</b> will be marked <b style="color:var(--indigo)">System Approved — by super admin</b> and locked. '+
-      (next?('It then sits live with <b>'+esc(next.actors.map(id=>user(id).name).join(', ')||'—')+'</b> at “'+esc(next.label)+'”, whose action buttons go active.'):'This <b>completes</b> the request.')+'</div></div>'+
+      (next?('It then sits live with <b>'+esc(next.actors.map(id=>user(id).name).join(', ')||'—')+'</b> at “'+esc(next.label)+'”, whose action buttons go active.'):otherOpen?'This finishes the <b>'+esc(FLOW_PATH[s.branch]||'')+'</b>; the other path carries on.':'This <b>completes</b> the request.')+'</div></div>'+
       '<p class="hint" style="margin-top:8px">The full hierarchy stays visible to everyone. Signed with your PIN.</p>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fsa-go">System-approve</button>',
     onOpen:(mv,cl)=>{ $('#fsa-go',mv).onclick=()=>{ cl(); flowPinThen(()=>flowSysCall(stepId)); }; }});
@@ -5327,7 +5357,7 @@ async function flowRewindCall(stepId){ busy(true);
 function nudgeDialog(engine,id){
   const isFlow=engine==='flow';
   const f=isFlow?DB.flows.find(x=>x.id===id):DB.requests.find(x=>x.id===id); if(!f) return toast('That file is not loaded — open it and try again.','bad');
-  let dflt=[]; if(isFlow){ const s=flowLive(f); if(s) dflt=s.actors.slice(); } else { const h=holder(f); if(h&&h.id) dflt=[h.id]; }
+  let dflt=[]; if(isFlow){ dflt=[...new Set(flowLives(f).reduce((a,x)=>a.concat(x.actors),[]))]; } else { const h=holder(f); if(h&&h.id) dflt=[h.id]; }
   const sel=dflt.filter(u=>u&&u!==ME.id);
   const people=DB.users.filter(u=>u.active&&u.id!==ME.id&&!u.gateOnly).slice().sort((a,b)=>a.name.localeCompare(b.name));
   const where=isFlow?flowWhere(f):(holder(f)?'with '+holder(f).name:f.status);
