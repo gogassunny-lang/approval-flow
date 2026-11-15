@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v147';
+const APP_VER='v148';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -3541,14 +3541,25 @@ async function askSend(text){
   askDraw(); const i=$('#ask-in'); if(i&&window.innerWidth>640) i.focus();
 }
 /* ---- owner: who gets Ask SETU, the limit, the model, usage ---- */
-let aiUse=null, aiUseBusy=false;
+let aiUse=null, aiUseBusy=false, aiTest=null;
+// v148: what the owner's connection test found, in plain words (a screenshot of this tells where a fault is)
+function aiTestHTML(t){
+  if(t.busy) return '<p class="hint" style="margin:0"><span class="spin"></span> Asking Google… this can take up to two minutes.</p>';
+  if(t.fail) return '<div style="padding:10px 12px;border:1px solid var(--stop);border-radius:var(--r)"><b>The test could not run</b><div class="hint">'+esc(t.fail)+'</div></div>';
+  const line=(l,x)=>'<div style="margin-top:6px"><b>'+l+':</b> '+(x.ok?'<span class="tag t-ok">Answered</span> in '+(x.ms/1000).toFixed(1)+' seconds'+(x.answer?' <span class="hint">— “'+esc(x.answer)+'”</span>':'')
+      :'<span class="tag t-bad">Failed</span>'+(x.ms?' after '+(x.ms/1000).toFixed(1)+' seconds':'')+(x.status?' · code '+esc(x.status):'')+'<div class="hint" style="word-break:break-word">'+esc(x.error||'')+'</div>')+'</div>';
+  const good=t.plain.ok&&t.tools.ok, slow=good&&(t.plain.ms>15000||t.tools.ms>15000);
+  return '<div style="padding:10px 12px;border:1px solid '+(good&&!slow?'var(--seal)':'var(--hold)')+';border-radius:var(--r)"><b>'+(good?(slow?'It works, but slowly':'The AI connection works'):'The AI connection has a problem')+'</b> <span class="hint">model '+esc(t.model)+'</span>'+
+    line('A plain question',t.plain)+line('A SETU question (with the tools)',t.tools)+'</div>';
+}
 function viewOrgAI(){
   const o=DB.org||{}, on=DB.users.filter(u=>u.active&&u.aiOn).sort((a,b)=>a.name.localeCompare(b.name));
   let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Ask SETU settings</h3><p class="hint" style="margin:0 0 10px">The AI answers from SETU only, as the person asking. Each question uses a little of your Google Gemini account, so it is given to the people you tick, with a daily limit.</p>'+
     '<div class="grid g2" style="gap:12px"><div><label for="ai-on">Ask SETU</label><select id="ai-on"><option value="1" '+(o.ai_enabled?'selected':'')+'>On</option><option value="0" '+(o.ai_enabled?'':'selected')+'>Off for everyone</option></select></div>'+
     '<div><label for="ai-limit">Questions per person a day</label><input id="ai-limit" type="number" min="1" max="1000" value="'+esc(o.ai_daily_limit||50)+'"></div></div>'+
     '<div style="margin-top:12px"><label for="ai-model">Gemini model</label><input id="ai-model" type="text" value="'+esc(o.ai_model||'')+'" autocomplete="off"><div class="hint">Change only if Google retires this model or you want a stronger one (for example gemini-3.6-flash).</div></div>'+
-    '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="ai-save">Save</button><span id="ai-err" class="hint" style="color:var(--stop)"></span></div></div>';
+    '<div class="row" style="margin-top:12px;gap:10px;align-items:center;flex-wrap:wrap"><button class="btn primary" id="ai-save">Save</button><button class="btn" id="ai-test">Test the AI connection</button><span id="ai-err" class="hint" style="color:var(--stop)"></span></div>'+
+    '<div id="ai-testout" style="margin-top:10px">'+(aiTest?aiTestHTML(aiTest):'')+'</div></div>';
   html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;gap:10px"><div style="flex:1"><b>Who has Ask SETU</b><div class="hint">You always have it. Add or remove people here.</div></div><span class="tag t-prog">'+on.length+'</span></div>'+
     '<div style="padding:0 16px 12px"><div id="ai-add"></div></div>'+
     (on.length?on.map(u=>'<div class="filerow" style="border-top:1px solid var(--line);border-radius:0;padding:10px 16px"><div style="min-width:0;flex:1"><b data-person="'+u.id+'" style="cursor:pointer">'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div><button class="btn sm ghost" data-aioff="'+u.id+'">Remove</button></div>').join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody else yet.</p>')+'</div>';
@@ -3562,6 +3573,11 @@ function wireOrgAI(v){
   $('#ai-save',v).onclick=async()=>{ $('#ai-err',v).textContent='';
     try{ await rpc('ai_settings_set',{p_enabled:$('#ai-on',v).value==='1',p_limit:parseInt($('#ai-limit',v).value,10)||0,p_model:$('#ai-model',v).value}); await load(['people']); render(); paintNav(); toast('Saved.','ok'); }
     catch(e){ $('#ai-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
+  $('#ai-test',v).onclick=async()=>{ aiTest={busy:true}; $('#ai-testout',v).innerHTML=aiTestHTML(aiTest);
+    try{ const r=await SB.functions.invoke('ask-setu',{body:{test:true}}); if(r.error) throw r.error; let d=r.data; if(typeof d==='string'){ try{ d=JSON.parse(d); }catch(_){ d=null; } }
+      aiTest=(d&&d.ok&&d.test)?d.test:{fail:(d&&d.message)||'The function answered, but not with a test result. Deploy the latest ask-setu function.'}; }
+    catch(e){ aiTest={fail:'The ask-setu function could not be reached ('+String((e&&e.message)||e).slice(0,200)+').'}; }
+    const o=$('#ai-testout'); if(o) o.innerHTML=aiTestHTML(aiTest); };
   const set=async(id,on)=>{ try{ await rpc('ai_set_user',{p_user:id,p_on:on}); await load(['people']); render(); toast(user(id).name+(on?' now has Ask SETU.':' no longer has Ask SETU.'),'ok'); }catch(e){ fail(e); } };
   personPicker($('#ai-add',v),{placeholder:'Search a name or employee ID to add',exclude:()=>DB.users.filter(u=>u.aiOn||u.owner).map(u=>u.id),onPick:id=>set(id,true)});
   $$('[data-aioff]',v).forEach(b=>b.onclick=()=>set(b.dataset.aioff,false));
