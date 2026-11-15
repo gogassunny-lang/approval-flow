@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v145';
+const APP_VER='v146';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -139,7 +139,7 @@ async function pageAll(table,orderCol,ascending){
    A full load happens at sign-in and after your own edits. A live change touches
    only its slice, and gate passes / notifications are applied straight from the
    live event with no download at all. */
-const LOAD_PARTS=['people','legacy','flows','gate','notif'];
+const LOAD_PARTS=['people','legacy','flows','gate','notif','wtasks'];
 const DATA_PARTS=['legacy','flows','gate','notif'];
 let lastLoadAt=0;
 const gateScopeOnly=()=>!!(ME&&ME.name&&(GATE_ONLY()||HR_HEAD()));   // sees only the gate pages
@@ -155,6 +155,7 @@ async function load(parts,flowIds,legacyIds){
   if(P.has('flows'))  jobs.push((Array.isArray(flowIds)&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):(flowIds==='changed'&&DB.flows.length?loadFlowsChanged():loadFlows()));
   if(P.has('gate'))   jobs.push(loadGate());
   if(P.has('notif'))  jobs.push(loadNotifs());
+  if(P.has('wtasks')) jobs.push(loadWTasks());
   if(P.has('legacy')||P.has('flows')) jobs.push(loadAmends());
   await Promise.all(jobs);
   lastLoadAt=Date.now();
@@ -377,7 +378,7 @@ function catchUp(){
   if(!ME||document.hidden) return;
   clearTimeout(catchUpT);
   catchUpT=setTimeout(async()=>{ if($('.veil')||$('#busy')){ catchUp(); return; }
-    try{ await Promise.all([load(['legacy','gate','notif'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
+    try{ await Promise.all([load(['legacy','gate','notif','wtasks'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
 }
 /* v137: someone is typing in a box on the page (e.g. searching a person) — a live redraw would wipe it */
 const typingInView=()=>{ const a=document.activeElement, v=document.getElementById('view'); return !!(a&&v&&v.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.value); };
@@ -1061,7 +1062,7 @@ async function enter(session){
     await load(['people']);
     if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); hideSplash(); busy(false); return }
     if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); hideSplash(); busy(false); return }
-    await Promise.all([load(gateScopeOnly()?['gate','notif','legacy']:['legacy','flows','notif']), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
+    await Promise.all([load(gateScopeOnly()?['gate','notif','legacy','wtasks']:['legacy','flows','notif','wtasks']), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
@@ -1440,6 +1441,7 @@ function subscribe(){
       const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok');
       if(x.id){ DB.notifs=[mapNotif(x)].concat(DB.notifs.filter(n=>n.id!==x.id)).slice(0,60); renderSoon(); }
       else reloadSoon(['notif']);
+      if(/^#tasks?(\/|$)/.test(x.route||'')) reloadSoon(['wtasks']);      // 116: a task moved — refresh the task lists only
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
         try{ const nn=new Notification(x.title||'SETU',{body:(x.body||'').split('\n')[0],icon:'icon-192.png',tag:'setu-'+x.id});
           nn.onclick=()=>{window.focus(); gotoNotif(x); nn.close()} }catch(e){}
@@ -1555,6 +1557,7 @@ const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
   if(k==='me'||k==='find'||k==='person') return true;
+  if((k==='tasks'||k==='task')&&DB.wtReady) return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
   if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda'||k==='req'||k==='detail';   // manage users (+ gate pass as an employee)
   return k==='gate'||k==='gpreport'||k==='req'||k==='detail'||k==='me'; };
@@ -1569,7 +1572,7 @@ const PAGES=[
   {k:'req',label:'Requisition',grp:'Overview',when:()=>reqPageOn(),badge:()=>reqWaiting().length},
   {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length+flowMyTurn().length},
-  {k:'tasks',label:'Tasks given to me',grp:'My work',badge:()=>myTasks().length},
+  {k:'tasks',label:'My tasks',grp:'My work',badge:()=>myTasks().length+wtBadge()},
   {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length+flowTagged().length+myAmends().length},
   {k:'mine',label:'My requests',grp:'My work'},
   {k:'tpl',label:'Saved hierarchies',grp:'My work',badge:()=>myTemplates().length},
@@ -1701,7 +1704,8 @@ function renderRoute(v){
     case 'inbox': v.innerHTML=viewInbox(); wireInbox(v); break;
     case 'new': v.innerHTML=viewNew(); wireNew(v); break;
     case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.',(flowMyTurn().length+legacyAwaiting().length+flowAwaitingReply().length)>0)+flowSection('turn')+legacyAwaitingSection()+flowSection('awaiting'); wireList(v); wireFlowRows(v); break;
-    case 'tasks': v.innerHTML=viewTasks(); wireList(v); break;
+    case 'tasks': v.innerHTML=viewTasks(); wireList(v); wireTasks(v); break;
+    case 'task': if(typingInView()&&$('#task-root',v)&&$('#task-root',v).dataset.id===ROUTE.id) break; v.innerHTML=viewTask(ROUTE.id); wireTask(v); break;
     case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.',flowTagged().length>0||myAmends().length>0)+amendMineSection()+flowSection('tagged'); wireList(v); wireFlowRows(v); wireAmendRows(v); break;
     case 'req': v.innerHTML=viewReq(); wireReq(v); break;
     case 'fun': if(!ME.owner){ROUTE={name:'dash'};return render();} if($('#fun-root',v)) break; /* a live event must not wipe what the owner is typing */ v.innerHTML=viewFun(); wireFun(v); break;
@@ -1766,7 +1770,7 @@ function viewDash(){
     .concat(flowFeed).sort((a,b)=>b.ts-a.ts).slice(0,16);
   return warn+'<div class="grid g4">'+
     stat('Waiting on me',q.length+flowTurn,(q.length+flowTurn)?'Act to unblock the chain':'You are all clear','var(--indigo)','queue')+
-    stat('Tasks given to me',tk.length,tk.length?'Close these to unblock a manager':'No task assigned to you','var(--cyan)','tasks')+
+    stat(DB.wtReady?'My tasks':'Tasks given to me',tk.length+wtBadge(),(tk.length+wtBadge())?(DB.wtReady?'To do, or waiting for your rating':'Close these to unblock a manager'):'No task assigned to you','var(--cyan)','tasks')+
     stat('Needs my input',st.length+flowTagged().length,(st.length+flowTagged().length)?'Someone asked or tagged you':'Nothing sent back to you','var(--hold)','stuck')+
     stat('Open beyond 7 days',aged,'Out of '+open.length+' open requests',aged?'var(--stop)':'var(--seal)','all')+'</div>'+
   flowDashCard()+
@@ -2133,9 +2137,13 @@ function viewList(list,t,s,et,es,hideEmpty){ head(t,s);
   return '<div class="card">'+rowsHTML(list.slice().sort((a,b)=>b.createdAt-a.createdAt))+'</div>'; }
 const wireList=v=>$$('tr[data-r]',v).forEach(t=>t.onclick=()=>go({name:'detail',id:t.dataset.r}));
 function viewTasks(){
-  head('Tasks given to me','Work a manager has assigned you inside a request');
+  if(DB.wtReady) return viewWTasks();
+  return viewLegacyTasks();
+}
+function viewLegacyTasks(inner){
+  if(!inner) head('Tasks given to me','Work a manager has assigned you inside a request');
   const l=myTasks();
-  if(!l.length) return '<div class="card"><div class="empty"><h3>No tasks assigned to you</h3><p class="hint">When a manager breaks their step into pieces, your piece lands here.</p></div></div>';
+  if(!l.length) return inner?'': '<div class="card"><div class="empty"><h3>No tasks assigned to you</h3><p class="hint">When a manager breaks their step into pieces, your piece lands here.</p></div></div>';
   return '<div class="card"><table class="cards"><thead><tr><th>Request</th><th>Given by</th><th>Given</th><th>The task</th></tr></thead><tbody>'+
     l.map(r=>{const m=myOpenTask(r);return '<tr data-r="'+r.id+'"><td><b>'+esc(docTitle(r))+'</b><div class="hint">'+esc(typeLabel(r))+' · '+esc(r.ref)+'</div></td><td class="hint meta">from '+esc(user(m.step.userId).name)+'</td><td class="hint num meta">'+esc(fmtD(m.task.assignedAt))+'</td><td class="pos">'+esc(m.task.task)+'</td></tr>'}).join('')+'</tbody></table></div>';
 }
@@ -3208,6 +3216,8 @@ function viewPerson(id){
   html+='<div class="card" style="margin-bottom:14px" id="pp-up"><div style="padding:12px 16px"><b>Reports to</b></div>'+(u.noSenior?'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody — a top person.</p>'
     :up.length?up.map((c,i)=>personRow(c.u,'<div class="hint">Level '+(i+1)+(c.confirmed?'':' · not confirmed yet')+'</div>')).join('')
     :'<p class="hint" style="padding:0 16px 14px;margin:0">Not filled yet.</p>')+'</div>';
+  if(DB.wtReady&&u.id!==ME.id){ const tw=wtWith(u.id);
+    html+='<div class="card" style="margin-bottom:14px" id="pp-tasks"><div class="row" style="padding:12px 16px;gap:8px"><b style="flex:1">Tasks with '+esc(u.name.split(' ')[0])+'</b>'+(u.active?'<button class="btn sm primary" id="pp-give">＋ Give a task</button>':'')+'</div>'+(tw.length?tw.slice(0,6).map(wtRow).join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">No open task between you.</p>')+'</div>'; }
   html+='<div class="card" id="pp-team"><div class="row" style="padding:12px 16px"><b style="flex:1">Team</b><span class="tag t-prog">'+team.length+'</span></div>'+(team.length?team.map(x=>personRow(x)).join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody reports to '+esc(u.name.split(' ')[0])+' in SETU yet.</p>')+'</div>';
   return html+'</div>';
 }
@@ -3216,6 +3226,216 @@ function wirePerson(v){
   if($('#pp-back',v)) $('#pp-back',v).onclick=()=>go({name:'find'});
   if($('#pp-me',v)) $('#pp-me',v).onclick=()=>go({name:'me'});
   if($('#pp-edit',v)) $('#pp-edit',v).onclick=()=>orgEditDialog(user(ROUTE.id));
+  if($('#pp-give',v)) $('#pp-give',v).onclick=()=>wtNewDialog({kind:'single',people:[ROUTE.id]});
+  wireWtRows(v);
+}
+/* ============================================================
+   v146 (116): Tasks, reminders and ratings (Phase 2 of SETU AI)
+   personal (private) · single · shared (anyone closes, one rating for all)
+   · split (each part submitted and rated separately). The assigner accepts
+   and rates 1-5 or sends it back. The server decides everything; this is
+   the list (#tasks), the task page (#task/<id>) and the New task dialog.
+   ============================================================ */
+/* close a dialog, then move to another page — only after the dialog's own history rewind has landed
+   (going at once can race the rewind, and the app then follows the old address back) */
+function closeThen(close,fn){ close(); if(!skipPop){ setTimeout(fn,0); return; } let done=false; const run=()=>{ if(done) return; done=true; setTimeout(fn,0); };
+  window.addEventListener('popstate',run,{once:true}); setTimeout(run,600); }
+let wtTab='todo', wtDetail={id:null,events:[],files:[],loading:false}, wtDoneFiles=[], wtComFiles=[];
+async function loadWTasks(){
+  const r=await SB.rpc('wt_list');
+  if(r.error){ DB.wtReady=false; DB.wtasks=[]; return; }              // before migration 116 the page stays as it was
+  DB.wtReady=true;
+  DB.wtasks=(r.data||[]).map(t=>({id:t.id,ref:t.ref,kind:t.kind,title:t.title,details:t.details||'',priority:t.priority,dueOn:t.due_on||'',createdBy:t.created_by,status:t.status,
+    rating:t.rating,ratingNote:t.rating_note||'',cancelWhy:t.cancel_why||'',createdAt:ts(t.created_at),closedAt:ts(t.closed_at),
+    people:(t.people||[]).map(p=>({userId:p.user_id,part:p.part||'',dueOn:p.due_on||'',status:p.status,declineWhy:p.decline_why||'',submitNote:p.submit_note||'',submittedAt:ts(p.submitted_at),
+      rating:p.rating,ratingNote:p.rating_note||'',returned:p.returned||0,extDue:p.ext_due||'',extWhy:p.ext_why||''}))}));
+}
+const WT_KIND={personal:'Personal',single:'One person',shared:'Shared',split:'Split'};
+const WT_PRI={high:['t-bad','High'],medium:['t-hold','Medium'],low:['t-wait','Low']};
+const dOn=d=>d?fmtD(new Date(d+'T00:00:00').getTime()):'';
+const wtMe=t=>t.people.find(p=>p.userId===ME.id);
+const wtDue=(t,p)=>(p&&p.dueOn)||t.dueOn;
+const wtLate=(t,p)=>{ const d=wtDue(t,p); return !!d&&d<DAY(); };
+const wtTodo=()=>(DB.wtasks||[]).filter(t=>t.status==='open'&&((t.kind==='personal'&&t.createdBy===ME.id)||(wtMe(t)&&wtMe(t).status==='open'))).sort((a,b)=>(wtDue(a,wtMe(a))||'9999').localeCompare(wtDue(b,wtMe(b))||'9999'));
+const wtWaiting=()=>(DB.wtasks||[]).filter(t=>t.status==='open'&&wtMe(t)&&wtMe(t).status==='submitted');
+const wtGiven=()=>(DB.wtasks||[]).filter(t=>t.status==='open'&&t.kind!=='personal'&&t.createdBy===ME.id);
+const wtNeedsMe=()=>wtGiven().filter(t=>t.people.some(p=>p.status==='submitted'||(p.status==='open'&&p.extDue)));
+const wtOthers=()=>(DB.wtasks||[]).filter(t=>t.status==='open'&&t.kind!=='personal'&&t.createdBy!==ME.id&&!wtMe(t));
+const wtClosed=()=>(DB.wtasks||[]).filter(t=>(t.status!=='open'&&(t.createdBy===ME.id||wtMe(t)))||(t.status==='open'&&wtMe(t)&&wtMe(t).status==='accepted')).sort((a,b)=>(b.closedAt||b.createdAt)-(a.closedAt||a.createdAt));
+const wtBadge=()=>DB.wtReady?wtTodo().length+wtNeedsMe().length:0;
+const wtWith=id=>(DB.wtasks||[]).filter(t=>t.status==='open'&&t.kind!=='personal'&&((t.createdBy===ME.id&&t.people.some(p=>p.userId===id))||(t.createdBy===id&&!!wtMe(t))||(t.createdBy!==ME.id&&!wtMe(t)&&(t.createdBy===id||t.people.some(p=>p.userId===id)))));
+const stars=n=>n?'<span style="color:#D9930D;letter-spacing:1px" title="'+n+' of 5">'+'★'.repeat(n)+'<span style="color:var(--line-2)">'+'★'.repeat(5-n)+'</span></span>':'';
+const wtStateTag=t=>{ const me=wtMe(t);
+  if(t.status==='cancelled') return '<span class="tag t-bad">Cancelled</span>';
+  if(t.status==='done') return '<span class="tag t-ok">Done</span>';
+  if(me&&me.status==='submitted') return '<span class="tag t-prog">With the assigner</span>';
+  if(me&&me.status==='accepted') return '<span class="tag t-ok">My part accepted</span>';
+  if(me&&me.status==='declined') return '<span class="tag t-bad">I declined</span>';
+  if(me&&me.status==='open'&&me.returned) return '<span class="tag t-hold">Sent back</span>';
+  if(t.createdBy===ME.id&&t.people.some(p=>p.status==='submitted')) return '<span class="tag t-hold">Rate it</span>';
+  if(t.createdBy===ME.id&&t.people.some(p=>p.status==='open'&&p.extDue)) return '<span class="tag t-hold">Asks for time</span>';
+  return ''; };
+function wtRow(t){ const me=wtMe(t), due=wtDue(t,me), late=t.status==='open'&&(me?me.status==='open'&&wtLate(t,me):t.people.some(p=>p.status==='open'&&wtLate(t,p))||(t.kind==='personal'&&wtLate(t)));
+  const who=t.kind==='personal'?'Personal':t.createdBy===ME.id?'To '+t.people.filter(p=>p.status!=='declined').map(p=>user(p.userId).name).slice(0,3).join(', ')+(t.people.length>3?' +'+(t.people.length-3):''):'From '+user(t.createdBy).name;
+  return '<button type="button" class="filerow" data-wt="'+t.id+'" style="width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--line);border-radius:0;cursor:pointer;padding:11px 16px">'+
+    '<div style="min-width:0;flex:1"><b>'+esc(t.title)+'</b>'+(me&&me.part?'<div class="hint">My part: '+esc(me.part)+'</div>':'')+
+    '<div class="hint">'+esc(who)+' · '+esc(t.ref)+(t.kind==='shared'||t.kind==='split'?' · '+WT_KIND[t.kind]:'')+'</div>'+
+    '<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+(due?'<span class="tag '+(late?'t-bad':'t-wait')+'">'+(late?'Overdue · ':'Due ')+esc(dOn(due))+'</span>':'')+'<span class="tag '+WT_PRI[t.priority][0]+'">'+WT_PRI[t.priority][1]+'</span>'+wtStateTag(t)+
+      (me&&me.rating?stars(me.rating):(t.rating&&t.createdBy===ME.id?stars(t.rating):''))+'</div></div><span class="hint" style="font-size:18px">›</span></button>'; }
+const wireWtRows=v=>$$('[data-wt]',v).forEach(b=>b.onclick=()=>go({name:'task',id:b.dataset.wt}));
+function viewWTasks(){
+  head('My tasks','What you have to do, what you gave to others, and what is waiting for your rating');
+  const todo=wtTodo(), wait=wtWaiting(), given=wtGiven(), needs=wtNeedsMe(), closed=wtClosed(), others=wtOthers(), leg=myTasks().length;
+  if(wtTab==='others'&&!others.length) wtTab='todo';
+  const tab=(k,l,n)=>'<button data-wttab="'+k+'" class="'+(wtTab===k?'on':'')+'">'+l+(n?' <span class="pill" style="position:static;display:inline-block;margin-left:4px">'+n+'</span>':'')+'</button>';
+  const empty=(h,p)=>'<div class="empty" style="padding:22px 16px"><h3>'+h+'</h3><p class="hint">'+p+'</p></div>';
+  let body='';
+  if(wtTab==='todo') body=(todo.length?'<div class="card">'+todo.map(wtRow).join('')+'</div>':(leg||wait.length?'':'<div class="card">'+empty('Nothing to do right now','Tasks given to you, and your own to-dos, come here.')+'</div>'))+
+      (wait.length?'<div style="margin:16px 0 6px"><b>Marked done — with the assigner</b></div><div class="card">'+wait.map(wtRow).join('')+'</div>':'')+
+      (leg?'<div style="margin:16px 0 6px"><b>From approval files</b><div class="hint">Work a manager handed you inside a request</div></div>'+viewLegacyTasks(true):'');
+  else if(wtTab==='given') body='<div class="card">'+(given.length?given.map(wtRow).join(''):empty('You have not given anyone a task','Press “New task” and choose who should do it.'))+'</div>';
+  else if(wtTab==='rate') body='<div class="card">'+(needs.length?needs.map(wtRow).join(''):empty('Nothing is waiting for you','When someone marks your task done, or asks for more time, it comes here.'))+'</div>';
+  else if(wtTab==='others') body='<p class="hint" style="margin:0 0 8px">Open tasks of the people below you'+(ME.admin||ME.owner?' and, as an admin, everyone':'')+'. You can read and comment.</p><div class="card">'+others.slice(0,150).map(wtRow).join('')+'</div>';
+  else body='<div class="card">'+(closed.length?closed.slice(0,100).map(wtRow).join(''):empty('Nothing closed yet','Accepted and cancelled tasks of the last 45 days are listed here, with the rating.'))+'</div>';
+  return '<div id="wt-root"><div class="row" style="gap:10px;margin-bottom:12px;flex-wrap:wrap"><button class="btn primary" id="wt-new">＋ New task</button></div>'+
+    '<div class="seg" style="margin-bottom:12px;flex-wrap:wrap">'+tab('todo','To do',todo.length+leg)+tab('given','Given by me',given.length)+tab('rate','Needs me',needs.length)+tab('done','Done',0)+(others.length?tab('others','Team',others.length):'')+'</div>'+body+'</div>';
+}
+function wireTasks(v){
+  if(!$('#wt-root',v)) return;
+  $('#wt-new',v).onclick=()=>wtNewDialog();
+  $$('[data-wttab]',v).forEach(b=>b.onclick=()=>{ wtTab=b.dataset.wttab; render(); });
+  wireWtRows(v);
+}
+/* ---- New task ---- */
+function wtNewDialog(pre){
+  const d={kind:(pre&&pre.kind)||'single',people:((pre&&pre.people)||[]).map(id=>({id,part:'',due:''})),files:[]};
+  const KINDS=[['personal','For me'],['single','One person'],['shared','Shared'],['split','Split']];
+  const HELP={personal:'A to-do for yourself. Only you see it.',single:'One person does it and presses Done. You accept and rate.',shared:'Given to several people together. Anyone of them presses Done and it is done for all. You give one rating, for all of them.',split:'One task with parts. Each person does and submits their own part, and you rate each person separately.'};
+  modal({title:'New task',
+    body:'<div class="seg" id="nt-kind" style="margin-bottom:6px"></div><p class="hint" id="nt-help" style="margin:0 0 12px"></p>'+
+      '<label for="nt-title">Task</label><input id="nt-title" type="text" maxlength="200" placeholder="What has to be done" autocomplete="off">'+
+      '<label for="nt-det" style="margin-top:10px">Details (optional)</label><textarea id="nt-det" rows="2" maxlength="4000"></textarea>'+
+      '<div class="grid g2" style="gap:12px;margin-top:10px"><div><label for="nt-due" id="nt-duel">Due date</label><input id="nt-due" type="date" min="'+esc(DAY())+'"></div><div><label for="nt-pri">Priority</label><select id="nt-pri"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></div></div>'+
+      '<div id="nt-people" style="margin-top:12px"></div><div id="nt-files" style="margin-top:12px"></div><div id="nt-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="nt-go">Create task</button>',
+    onOpen:(m,close)=>{
+      uploader($('#nt-files',m),d.files,{mode:'support',label:'Attach files or photos (optional)'});
+      const paint=()=>{
+        $('#nt-kind',m).innerHTML=KINDS.map(k=>'<button type="button" data-k="'+k[0]+'" class="'+(d.kind===k[0]?'on':'')+'">'+k[1]+'</button>').join('');
+        $$('#nt-kind button',m).forEach(b=>b.onclick=()=>{ $$('.nt-part',m).forEach(i=>{ d.people[+i.dataset.i].part=i.value; }); $$('.nt-pdue',m).forEach(i=>{ d.people[+i.dataset.i].due=i.value; }); d.kind=b.dataset.k; if(d.kind==='single'&&d.people.length>1) d.people=d.people.slice(0,1); paint(); });
+        $('#nt-help',m).textContent=HELP[d.kind]; $('#nt-duel',m).textContent=d.kind==='personal'?'Due date (optional)':'Due date';
+        const pm=$('#nt-people',m);
+        if(d.kind==='personal'){ pm.innerHTML=''; return; }
+        const full=d.kind==='single'&&d.people.length>=1;
+        pm.innerHTML='<label>'+(d.kind==='single'?'Who does it':d.kind==='shared'?'Who does it (two or more)':'Parts — who does what')+'</label>'+
+          d.people.map((x,i)=>'<div class="filerow" style="flex-wrap:wrap"><div style="min-width:140px;flex:1"><b>'+esc(user(x.id).name)+'</b><div class="hint">'+esc(user(x.id).role||'')+'</div></div>'+
+            (d.kind==='split'?'<input class="nt-part" data-i="'+i+'" type="text" maxlength="300" placeholder="Their part of the work" value="'+esc(x.part)+'" style="flex:2;min-width:160px"><input class="nt-pdue" data-i="'+i+'" type="date" min="'+esc(DAY())+'" value="'+esc(x.due)+'" title="Own due date (optional)" style="width:150px">':'')+
+            '<button type="button" class="btn sm ghost" data-prm="'+i+'">Remove</button></div>').join('')+
+          (full?'':'<div id="nt-pick" style="margin-top:6px"></div>');
+        $$('[data-prm]',pm).forEach(b=>b.onclick=()=>{ $$('.nt-part',m).forEach(i=>{ d.people[+i.dataset.i].part=i.value; }); $$('.nt-pdue',m).forEach(i=>{ d.people[+i.dataset.i].due=i.value; }); d.people.splice(+b.dataset.prm,1); paint(); });
+        if(!full) personPicker($('#nt-pick',pm),{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(d.people.map(x=>x.id)),onPick:id=>{ $$('.nt-part',m).forEach(i=>{ d.people[+i.dataset.i].part=i.value; }); $$('.nt-pdue',m).forEach(i=>{ d.people[+i.dataset.i].due=i.value; }); d.people.push({id,part:'',due:''}); paint(); }});
+      };
+      paint();
+      $('#nt-go',m).onclick=async()=>{ const err=$('#nt-err',m); err.textContent='';
+        $$('.nt-part',m).forEach(i=>{ d.people[+i.dataset.i].part=i.value; }); $$('.nt-pdue',m).forEach(i=>{ d.people[+i.dataset.i].due=i.value; });
+        const people=d.kind==='personal'?null:d.people.map(x=>({user_id:x.id,part:x.part,due_on:x.due||''}));
+        try{ $('#nt-go',m).disabled=true; const id=await rpc('wt_create',{p_kind:d.kind,p_title:$('#nt-title',m).value,p_details:$('#nt-det',m).value,p_priority:$('#nt-pri',m).value,p_due:$('#nt-due',m).value||null,p_people:people,p_files:filesPayload(d.files)});
+          await loadWTasks(); toast('Task created.','ok'); wtTab=d.kind==='personal'?'todo':'given'; closeThen(close,()=>go({name:'task',id})); }
+        catch(e){ $('#nt-go',m).disabled=false; err.textContent=(e.message||'').replace(/^.*?: /,''); } };
+    }});
+}
+/* ---- one task ---- */
+async function wtLoadDetail(id){
+  wtDetail={id,events:[],files:[],loading:true};
+  const r=await Promise.all([SB.from('work_task_events').select('*').eq('task_id',id).order('id'),SB.from('work_task_files').select('*').eq('task_id',id).order('at')]);
+  if(wtDetail.id!==id) return;
+  wtDetail={id,loading:false,events:(r[0].data||[]).map(e=>({id:e.id,userId:e.user_id,by:e.by_name,action:e.action,detail:e.detail||'',at:ts(e.at)})),files:(r[1].data||[]).map(f=>({id:f.id,userId:f.user_id,name:f.name,path:f.path,size:f.size,at:ts(f.at)}))};
+  if(ROUTE.name==='task'&&ROUTE.id===id&&!typingInView()) render();
+}
+const WT_ACT={created:'created the task',submitted:'marked it done',accepted:'accepted',closed:'Task closed','sent back':'sent it back',declined:'declined','asked for time':'asked for more time','more time given':'gave more time','more time refused':'did not give more time',changed:'changed',cancelled:'cancelled the task','person added':'added'};
+function viewTask(id){
+  const t=(DB.wtasks||[]).find(x=>x.id===id);
+  if(!t){ head('Task',''); return '<div class="card pad" id="task-root" data-id="'+esc(id||'')+'"><h3 style="margin:0">This task could not be found</h3><p class="hint" style="margin-top:6px">It may have been deleted, or you may not be on it.</p><button class="btn sm" id="tk-back" style="margin-top:10px">← My tasks</button></div>'; }
+  const mine=t.createdBy===ME.id, me=wtMe(t), open=t.status==='open', by=user(t.createdBy);
+  head(t.title,t.ref+' · '+WT_KIND[t.kind]+(t.kind==='personal'?'':' · from '+by.name));
+  if(wtDetail.id!==id) wtLoadDetail(id);
+  let html='<div id="task-root" data-id="'+esc(id)+'"><div class="row" style="margin-bottom:10px"><button class="btn sm ghost" id="tk-back">← My tasks</button></div>';
+  html+='<div class="card pad" style="margin-bottom:14px"><div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'+(t.status==='done'?'<span class="tag t-ok">Done</span>':t.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">Open</span>')+
+      '<span class="tag '+WT_PRI[t.priority][0]+'">'+WT_PRI[t.priority][1]+' priority</span>'+(t.dueOn?'<span class="tag '+(open&&wtLate(t)?'t-bad':'t-wait')+'">'+(open&&wtLate(t)?'Overdue · ':'Due ')+esc(dOn(t.dueOn))+'</span>':'')+(t.rating?stars(t.rating):'')+'</div>'+
+    (t.details?'<p style="margin:0 0 8px;white-space:pre-wrap">'+esc(t.details)+'</p>':'')+
+    (t.kind!=='personal'?'<div class="hint">Given by <b data-person="'+by.id+'" style="cursor:pointer;color:var(--ink)">'+esc(by.name)+'</b> on '+esc(fmtD(t.createdAt))+'</div>':'')+
+    (t.status==='cancelled'&&t.cancelWhy?'<div class="hint" style="margin-top:6px">Cancelled: '+esc(t.cancelWhy)+'</div>':'')+(t.ratingNote?'<div class="hint" style="margin-top:6px">Remark: '+esc(t.ratingNote)+'</div>':'')+
+    (wtDetail.id===id&&wtDetail.files.length?'<div style="margin-top:10px;display:flex;gap:6px;flex-wrap:wrap">'+wtDetail.files.map(f=>'<button class="btn sm" data-wtf="'+f.id+'">📎 '+esc(f.name)+'</button>').join('')+'</div>':'')+
+    (mine&&open?'<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap">'+(t.kind==='personal'?'<button class="btn primary" id="tk-pdone">Mark done</button><button class="btn" id="tk-edit">Edit</button><button class="btn ghost" id="tk-pdel">Delete</button>':'<button class="btn sm" id="tk-edit">Edit</button><button class="btn sm" id="tk-addp">Add a person</button><button class="btn sm ghost" id="tk-cancel">Cancel the task</button>')+'</div>':'')+
+    (mine&&t.kind==='personal'&&t.status==='done'?'<div class="row" style="gap:8px;margin-top:12px"><button class="btn sm" id="tk-preopen">Reopen</button><button class="btn sm ghost" id="tk-pdel">Delete</button></div>':'')+'</div>';
+  // the people on it
+  if(t.kind!=='personal'){
+    html+='<div class="card" style="margin-bottom:14px" id="tk-people"><div style="padding:12px 16px"><b>'+(t.kind==='split'?'Parts':'Who does it')+'</b>'+(t.kind==='shared'?'<div class="hint">Anyone of them marks it done; the rating is for all of them.</div>':t.kind==='split'?'<div class="hint">Each person submits their own part and is rated separately.</div>':'')+'</div>'+
+      t.people.map(p=>{ const u=user(p.userId), late=open&&p.status==='open'&&wtLate(t,p);
+        const st=p.status==='declined'?'<span class="tag t-bad">Declined</span>':p.status==='submitted'?'<span class="tag t-hold">Marked done</span>':p.status==='accepted'?'<span class="tag t-ok">Accepted</span>':(p.returned?'<span class="tag t-hold">Sent back</span>':'<span class="tag t-wait">Working</span>');
+        return '<div style="padding:11px 16px;border-top:1px solid var(--line)" data-prow="'+u.id+'"><div class="row" style="gap:10px;align-items:flex-start;flex-wrap:wrap">'+avHTML(u,'sm')+'<div style="min-width:0;flex:1"><b data-person="'+u.id+'" style="cursor:pointer">'+esc(u.name)+'</b> '+st+(p.rating?' '+stars(p.rating):'')+
+          (p.part?'<div style="margin-top:2px">'+esc(p.part)+'</div>':'')+(p.dueOn?'<div class="hint">'+(late?'<span style="color:var(--stop)">Overdue · </span>':'Due ')+esc(dOn(p.dueOn))+'</div>':'')+
+          (p.status==='declined'&&p.declineWhy?'<div class="hint">“'+esc(p.declineWhy)+'”</div>':'')+(p.submitNote&&p.status!=='open'?'<div class="hint">Note: '+esc(p.submitNote)+'</div>':'')+(p.ratingNote?'<div class="hint">Remark: '+esc(p.ratingNote)+'</div>':'')+
+          (p.extDue&&p.status==='open'?'<div class="hint" style="color:var(--hold)">Asks for time until '+esc(dOn(p.extDue))+' — '+esc(p.extWhy)+'</div>':'')+'</div>'+
+          (mine&&open&&p.status==='submitted'?'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm ok" data-acc="'+u.id+'">Accept &amp; rate</button><button class="btn sm" data-ret="'+u.id+'">Send back</button></div>':'')+
+          (mine&&open&&p.status==='open'&&p.extDue?'<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn sm ok" data-extok="'+u.id+'">Give time</button><button class="btn sm" data-extno="'+u.id+'">Refuse</button></div>':'')+'</div></div>'; }).join('')+'</div>';
+  }
+  // what I have to do
+  if(open&&me&&me.status==='open'){
+    const shut=t.kind==='shared'&&t.people.some(p=>p.status==='submitted');
+    html+='<div class="card pad" style="margin-bottom:14px;border-color:var(--indigo)" id="tk-mine"><h3 style="margin:0 0 4px">'+(me.part?'Your part: '+esc(me.part):'Your turn')+'</h3>'+(me.returned?'<p class="hint" style="margin:0 0 8px;color:var(--hold)">It was sent back to you — see the remark in the history below.</p>':'')+
+      (shut?'<p class="hint" style="margin:0">Someone has already marked this task done. It is with '+esc(by.name)+' now.</p>'
+        :'<label for="tk-note">Note for '+esc(by.name.split(' ')[0])+' (optional)</label><textarea id="tk-note" rows="2" maxlength="1000" placeholder="What was done"></textarea><div id="tk-dfiles" style="margin-top:8px"></div>'+
+         '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn primary" id="tk-done">Mark done</button><button class="btn" id="tk-ext">'+(me.extDue?'Change my request for time':'Ask for more time')+'</button><button class="btn ghost" id="tk-decline">Decline</button></div>')+'</div>';
+  }
+  // comments + history
+  html+='<div class="card pad" id="tk-thread"><h3 style="margin:0 0 8px">Comments and history</h3>'+
+    (wtDetail.id!==id||wtDetail.loading?'<p class="hint" style="margin:0 0 10px">Loading…</p>':wtDetail.events.map(e=>e.action==='comment'
+      ?'<div style="margin:0 0 10px;padding:9px 12px;background:var(--surface-2);border-radius:12px"><b style="font-size:13px">'+esc(e.by)+'</b> <span class="hint">'+esc(fmtDT(e.at))+'</span><div style="white-space:pre-wrap;margin-top:2px">'+esc(e.detail)+'</div></div>'
+      :'<div class="hint" style="margin:0 0 8px">'+(e.action==='closed'?'<b style="color:var(--ink)">Task closed</b>':'<b style="color:var(--ink)">'+esc(e.by)+'</b> '+esc(WT_ACT[e.action]||e.action))+(e.detail&&e.action!=='created'?' — '+esc(e.detail):'')+' · '+esc(fmtDT(e.at))+'</div>').join(''))+
+    '<textarea id="tk-com" rows="2" maxlength="1000" placeholder="Write a comment"></textarea><div id="tk-cfiles" style="margin-top:8px"></div><div class="row" style="margin-top:8px"><button class="btn" id="tk-comgo">Add comment</button></div></div>';
+  return html+'</div>';
+}
+function wireTask(v){
+  const id=ROUTE.id, t=(DB.wtasks||[]).find(x=>x.id===id);
+  if($('#tk-back',v)) $('#tk-back',v).onclick=()=>go({name:'tasks'});
+  if(!t) return;
+  avLoad(v); wirePersonLinks(v);
+  if(wireTask._id!==id){ wireTask._id=id; wtDoneFiles=[]; wtComFiles=[]; }
+  const after=async msg=>{ await loadWTasks(); await wtLoadDetail(id); render(); paintNav(); if(msg) toast(msg,'ok'); };
+  const run=async(fn,args,msg)=>{ try{ busy(true); await rpc(fn,args); busy(false); await after(msg); }catch(e){ busy(false); fail(e); } };
+  const ask=(o)=>modal({title:o.title,body:(o.intro?'<p class="hint" style="margin:0 0 10px">'+o.intro+'</p>':'')+(o.fields||'')+'<div id="ak-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="ak-go">'+o.go+'</button>',
+    onOpen:(m,close)=>{ if(o.open) o.open(m); $('#ak-go',m).onclick=async()=>{ try{ $('#ak-go',m).disabled=true; await o.run(m); close(); await after(o.done); }catch(e){ $('#ak-go',m).disabled=false; $('#ak-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
+  $$('[data-wtf]',v).forEach(b=>b.onclick=()=>{ const f=wtDetail.files.find(x=>x.id===b.dataset.wtf); if(f) openViewer({id:f.id,name:f.name,path:f.path}); });
+  // the person
+  if($('#tk-dfiles',v)) uploader($('#tk-dfiles',v),wtDoneFiles,{mode:'support',label:'Attach proof — photos or files (optional)'});
+  if($('#tk-done',v)) $('#tk-done',v).onclick=async()=>{ try{ busy(true); await rpc('wt_submit',{p_task:id,p_note:$('#tk-note',v).value,p_files:filesPayload(wtDoneFiles)}); wtDoneFiles=[]; busy(false); await after('Marked done. '+user(t.createdBy).name+' will accept and rate it.'); }catch(e){ busy(false); fail(e); } };
+  if($('#tk-decline',v)) $('#tk-decline',v).onclick=()=>ask({title:'Decline this task',fields:'<label for="ak-why">Why can you not take it?</label><input id="ak-why" type="text" maxlength="300">',go:'Decline',done:'Declined. '+user(t.createdBy).name+' is told.',run:m=>rpc('wt_decline',{p_task:id,p_why:$('#ak-why',m).value})});
+  if($('#tk-ext',v)) $('#tk-ext',v).onclick=()=>ask({title:'Ask for more time',intro:'The due date changes only if '+esc(user(t.createdBy).name)+' agrees.',fields:'<label for="ak-date">New date</label><input id="ak-date" type="date" min="'+esc(DAY())+'"><label for="ak-why" style="margin-top:10px">Why is more time needed?</label><input id="ak-why" type="text" maxlength="300">',go:'Send request',done:'Request sent.',run:m=>rpc('wt_extension_request',{p_task:id,p_new_due:$('#ak-date',m).value||null,p_why:$('#ak-why',m).value})});
+  // the assigner
+  $$('[data-acc]',v).forEach(b=>b.onclick=()=>{ let n=0; const who=t.kind==='shared'?'everyone on this task':user(b.dataset.acc).name;
+    ask({title:'Accept and rate',intro:'The rating is for '+esc(who)+'.',fields:'<div id="ak-stars" style="font-size:34px;letter-spacing:6px;cursor:pointer;user-select:none;text-align:center"></div><div class="hint" id="ak-lbl" style="text-align:center;min-height:18px"></div><label for="ak-rem" style="margin-top:10px">Remark (optional)</label><input id="ak-rem" type="text" maxlength="500">',go:'Accept',done:'Accepted and rated.',
+      open:m=>{ const L=['','Poor','Below expectation','Good','Very good','Excellent'], paint=()=>{ $('#ak-stars',m).innerHTML=[1,2,3,4,5].map(i=>'<span data-s="'+i+'" style="color:'+(i<=n?'#D9930D':'var(--line-2)')+'">★</span>').join(''); $('#ak-lbl',m).textContent=n?n+' of 5 — '+L[n]:'Tap a star'; $$('[data-s]',m).forEach(x=>x.onclick=()=>{ n=+x.dataset.s; $('#ak-err',m).textContent=''; paint(); }); }; paint(); },
+      run:m=>rpc('wt_review',{p_task:id,p_user:t.kind==='split'?b.dataset.acc:null,p_accept:true,p_rating:n||null,p_remark:$('#ak-rem',m).value})}); });
+  $$('[data-ret]',v).forEach(b=>b.onclick=()=>ask({title:'Send it back',fields:'<label for="ak-rem">What has to be redone?</label><input id="ak-rem" type="text" maxlength="500">',go:'Send back',done:'Sent back.',run:m=>rpc('wt_review',{p_task:id,p_user:t.kind==='split'?b.dataset.ret:null,p_accept:false,p_rating:null,p_remark:$('#ak-rem',m).value})}));
+  $$('[data-extok]',v).forEach(b=>b.onclick=()=>run('wt_extension_decide',{p_task:id,p_user:b.dataset.extok,p_ok:true},'More time given.'));
+  $$('[data-extno]',v).forEach(b=>b.onclick=()=>run('wt_extension_decide',{p_task:id,p_user:b.dataset.extno,p_ok:false},'Refused. The due date stays.'));
+  if($('#tk-edit',v)) $('#tk-edit',v).onclick=()=>ask({title:'Edit the task',fields:'<label for="ak-title">Task</label><input id="ak-title" type="text" maxlength="200" value="'+esc(t.title)+'"><label for="ak-det" style="margin-top:10px">Details</label><textarea id="ak-det" rows="2" maxlength="4000">'+esc(t.details)+'</textarea>'+
+      '<div class="grid g2" style="gap:12px;margin-top:10px"><div><label for="ak-due">Due date</label><input id="ak-due" type="date" value="'+esc(t.dueOn)+'"></div><div><label for="ak-pri">Priority</label><select id="ak-pri">'+['high','medium','low'].map(k=>'<option value="'+k+'" '+(t.priority===k?'selected':'')+'>'+WT_PRI[k][1]+'</option>').join('')+'</select></div></div>',go:'Save',done:'Saved.',
+    run:m=>rpc('wt_update',{p_task:id,p_title:$('#ak-title',m).value,p_details:$('#ak-det',m).value,p_priority:$('#ak-pri',m).value,p_due:$('#ak-due',m).value||null})});
+  if($('#tk-addp',v)) $('#tk-addp',v).onclick=()=>{ let pid=null; ask({title:'Add a person',intro:t.kind==='single'?'With two people it becomes a shared task: anyone of them marks it done, one rating for both.':'',fields:'<label>Person</label><div id="ak-pick"></div><div id="ak-sel" style="margin-top:6px"></div>'+(t.kind==='split'?'<label for="ak-part" style="margin-top:10px">Their part</label><input id="ak-part" type="text" maxlength="300"><label for="ak-pdue" style="margin-top:10px">Own due date (optional)</label><input id="ak-pdue" type="date" min="'+esc(DAY())+'">':''),go:'Add',done:'Added.',
+    open:m=>personPicker($('#ak-pick',m),{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(t.people.filter(p=>p.status!=='declined').map(p=>p.userId)),onPick:x=>{ pid=x; $('#ak-sel',m).innerHTML='<span class="tag t-prog">'+esc(user(x).name)+'</span>'; }}),
+    run:m=>{ if(!pid) throw new Error('Choose a person'); return rpc('wt_add_people',{p_task:id,p_people:[{user_id:pid,part:t.kind==='split'?$('#ak-part',m).value:'',due_on:t.kind==='split'?($('#ak-pdue',m).value||''):''}]}); }}); };
+  if($('#tk-cancel',v)) $('#tk-cancel',v).onclick=()=>ask({title:'Cancel the task',intro:'The task stays on record as cancelled. The people on it are told.',fields:'<label for="ak-why">Why is it cancelled?</label><input id="ak-why" type="text" maxlength="300">',go:'Cancel the task',done:'Cancelled.',run:m=>rpc('wt_cancel',{p_task:id,p_why:$('#ak-why',m).value})});
+  // personal
+  if($('#tk-pdone',v)) $('#tk-pdone',v).onclick=()=>run('wt_personal_done',{p_task:id,p_done:true},'Done.');
+  if($('#tk-preopen',v)) $('#tk-preopen',v).onclick=()=>run('wt_personal_done',{p_task:id,p_done:false},'Reopened.');
+  if($('#tk-pdel',v)) $('#tk-pdel',v).onclick=()=>modal({title:'Delete this personal task?',body:'<p style="margin:0">It is removed for good.</p>',footer:'<button class="btn" data-x>Keep it</button><button class="btn primary" id="pd-yes">Delete</button>',
+    onOpen:(m,close)=>{ $('#pd-yes',m).onclick=async()=>{ try{ const r=await rpc('wt_personal_delete',{p_task:id}); const paths=(r&&r.paths)||[]; if(paths.length){ try{ await SB.storage.from('documents').remove(paths); }catch(_){} } await loadWTasks(); toast('Deleted.','ok'); closeThen(close,()=>go({name:'tasks'})); }catch(e){ close(); fail(e); } }; }});
+  // comments
+  if($('#tk-cfiles',v)) uploader($('#tk-cfiles',v),wtComFiles,{mode:'support',label:'Attach a file to the comment (optional)'});
+  if($('#tk-comgo',v)) $('#tk-comgo',v).onclick=async()=>{ try{ busy(true); await rpc('wt_comment',{p_task:id,p_text:$('#tk-com',v).value,p_files:filesPayload(wtComFiles)}); wtComFiles=[]; $('#tk-com',v).value=''; busy(false); await after('Comment added.'); }catch(e){ busy(false); fail(e); } };
 }
 /* ============================================================
    People & masters
