@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v142';
+const APP_VER='v143';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -172,7 +172,10 @@ async function loadPeople(){
     SB.from('stations').select('*').order('name'),
     SB.from('units').select('name').order('name'),
     SB.from('req_hierarchies').select('*').order('created_at'),
-    SB.from('req_settings').select('tat_high,tat_medium,tat_low').limit(1)
+    SB.from('req_settings').select('tat_high,tat_medium,tat_low').limit(1),
+    SB.from('profile_change_requests').select('*').order('created_at',{ascending:false}).limit(300),
+    SB.from('hier_suggestions').select('*').in('status',['open','conflict']),
+    SB.from('org_settings').select('*').limit(1)
   ]);
   const bad=r.slice(0,5).find(x=>x.error); if(bad) throw bad.error;   // units is optional (table may not exist before migration 71)
   const [prof,tpl,dept,proj,st]=r.slice(0,5).map(x=>x.data||[]);
@@ -180,7 +183,12 @@ async function loadPeople(){
   // fixed requisition hierarchies (99): the owner sees all, a person only their own; optional before 99 runs
   DB.reqTat=(r[7]&&!r[7].error&&r[7].data&&r[7].data[0])||{tat_high:3,tat_medium:5,tat_low:7};
   DB.reqHier=((r[6]&&!r[6].error&&r[6].data)?r[6].data:[]).map(h=>({id:h.id,userId:h.user_id,work:h.work||'',chain:h.chain||[],updatedAt:ts(h.updated_at)}));
-  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',dept:p.dept||'',assistsId:p.assists_id||null,
+  // 114: change requests / suggestions / org settings — optional until the migration is run
+  const opt=i=>(r[i]&&!r[i].error&&r[i].data)?r[i].data:[];
+  DB.profReqs=opt(8).map(q=>({id:q.id,userId:q.user_id,field:q.field,oldValue:q.old_value||'',newValue:q.new_value||'',reason:q.reason||'',status:q.status,decidedName:q.decided_name||'',note:q.note||'',createdAt:ts(q.created_at)}));
+  DB.hierSug=opt(9).map(g=>({id:g.id,personId:g.person_id,seniorId:g.senior_id,byUser:g.by_user,status:g.status,createdAt:ts(g.created_at)}));
+  DB.org=opt(10)[0]||{hier_compulsory:false}; DB.orgReady=!!(r[10]&&!r[10].error);
+  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,garudaPages:Array.isArray(p.garuda_pages)?p.garuda_pages:null,reqAccounts:!!p.req_accounts,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
@@ -1545,13 +1553,15 @@ const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
+  if(k==='me') return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
   if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda'||k==='req'||k==='detail';   // manage users (+ gate pass as an employee)
-  return k==='gate'||k==='gpreport'||k==='req'||k==='detail'; };
+  return k==='gate'||k==='gpreport'||k==='req'||k==='detail'||k==='me'; };
 const PAGES=[
   {k:'dash',label:'Dashboard',grp:'Overview'},
   {k:'assist',label:'Assisting',grp:'Overview',when:()=>ASSISTANT(),badge:()=>assistErpTodo().length},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
+  {k:'me',label:'My profile',grp:'Overview',when:()=>DB.orgReady,badge:()=>meBadge()},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
   {k:'req',label:'Requisition',grp:'Overview',when:()=>reqPageOn(),badge:()=>reqWaiting().length},
@@ -1566,6 +1576,7 @@ const PAGES=[
   {k:'report',label:'Reports',grp:'Records'},
   {k:'overview',label:'System overview',grp:'Records',when:()=>ME.owner},
   {k:'people',label:'People & masters',grp:'Records'},
+  {k:'org',label:'Org & profiles',grp:'Records',when:()=>DB.orgReady&&(ME.admin||ME.owner),badge:()=>orgBadge()},
   {k:'garuda',label:'Garuda (CNG stock)',grp:'Records',when:()=>canUseGaruda()},
   {k:'usage',label:'Usage',grp:'Records',when:()=>ME.admin||ME.seeAll},
   {k:'fun',label:'Celebrations & Fun',grp:'Records',when:()=>ME.owner}
@@ -1632,13 +1643,13 @@ function moreSheet(){
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
       ((restrictedAcct()&&!reqPageOn())?'':'<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>')+
-      '<button data-act="me">My directory entry</button><button data-act="pw">Change password</button>'+
+      '<button data-act="me">'+(DB.orgReady?'My profile':'My directory entry')+'</button><button data-act="pw">Change password</button>'+
       '<button data-act="out" style="color:var(--stop)">Sign out</button></div>'+
       '<div class="hint" style="margin-top:12px;text-align:center">'+esc(ME.name)+' · '+esc(ME.role||'')+'<br>Built by Sunny Gupta</div>',
     onOpen:(v,close)=>{
       $$('[data-go]',v).forEach(b=>b.onclick=()=>{const k=b.dataset.go;close();setTimeout(()=>go({name:k}),0)});
       $$('[data-act]',v).forEach(b=>b.onclick=()=>{close();const a=b.dataset.act;
-        if(a==='pin')pinDialog(); else if(a==='me')profileDialog(); else if(a==='pw')newPasswordDialog({title:'Change your password',cancellable:true}); else if(a==='out')doSignOut()});
+        if(a==='pin')pinDialog(); else if(a==='me'){ if(DB.orgReady) go({name:'me'}); else profileDialog(); } else if(a==='pw')newPasswordDialog({title:'Change your password',cancellable:true}); else if(a==='out')doSignOut()});
     }});
 }
 /* every screen is a history entry, so the Android back button (and the browser's)
@@ -1671,11 +1682,14 @@ function render(){
   if(ROUTE.name==='gpreport'&&!canSeeReports()) ROUTE={name:GATE_ONLY()||HR_HEAD()?'gate':'dash'};
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
+  if(ROUTE.name==='org'&&!(ME.admin||ME.owner)) ROUTE={name:'dash'};
+  if((ROUTE.name==='me'||ROUTE.name==='org')&&!DB.orgReady) ROUTE={name:GATE_ONLY()?'gate':'dash'};
+  if(hierMust()&&ROUTE.name!=='me') ROUTE={name:'me'};          // 114: the owner made the reporting line compulsory
   // Garuda takes over the screen (its own top bar + column dropdown); SETU nav hides
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
   if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
   const v=$('#view');
-  try{ renderRoute(v); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
+  try{ renderRoute(v); hierNudge(v); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
   catch(e){ console.error(e); v.innerHTML='<div class="card pad"><h3>This page could not be drawn</h3><p class="hint" style="margin-top:6px">Something on this page is unexpected. Go back and try again; if it keeps happening, tell the super admin which page.</p><div class="hint" style="margin-top:8px;font-size:11px">'+esc(String((e&&e.message)||e))+'</div><button class="btn sm" style="margin-top:10px" onclick="go({name:\'dash\'})">Back to dashboard</button></div>'; }
 }
 function renderRoute(v){
@@ -1695,6 +1709,8 @@ function renderRoute(v){
       head('Completed','Every file that reached the end of its flow'); break;
     case 'tpl': v.innerHTML=viewTpl(); wireTpl(v); break;
     case 'team': v.innerHTML=viewTeam(); wireTeam(v); break;
+    case 'me': if(typingInView(v)&&$('#me-root',v)) break; v.innerHTML=viewMe(); wireMe(v); break;
+    case 'org': v.innerHTML=viewOrg(); wireOrg(v); break;
     case 'all': v.innerHTML=viewAll()+flowSection('all'); wireList(v); wireFlowRows(v);
       head(ME.admin||ME.seeAll?'All requests':'Requests I can see',ME.admin||ME.seeAll?'You can see every chain in the system':'Only chains you raised, approve, or were given a task in'); break;
     case 'report': v.innerHTML=viewReport(); wireReport(v); head('Reports','Filter the record and download it'); break;
@@ -2856,6 +2872,182 @@ function wireUsage(v){
 }
 
 /* ============================================================
+   v143 (114): My profile + reporting hierarchy + Org & profiles (admins)
+   The person edits phone / photo / location / what-I-handle; email,
+   designation and department go through a change request (the flag).
+   The reporting line is filled by the people themselves, level by level;
+   the senior confirms; "This is final" locks it. The server decides it all.
+   ============================================================ */
+let hierDraft=[], orgF='todo', orgQ='', meBusy=false;
+const hierDone=u=>!!(u&&(u.hierFinal||u.noSenior));
+const hierMust=()=>!!(ME&&DB.orgReady&&DB.org&&DB.org.hier_compulsory&&!ME.owner&&!hierDone(ME));
+const hierUp=id=>{ const out=[]; let u=user(id), n=0; const seen=new Set([id]);
+  while(u&&u.managerId&&n<60){ const m=user(u.managerId); if(!m||!m.id||seen.has(m.id)) break; seen.add(m.id); out.push({u:m,confirmed:!!u.managerConfirmed}); u=m; n++; } return out; };
+const hierTop=id=>{ const c=hierUp(id); return c.length?c[c.length-1].u:user(id); };
+const mySugOpen=()=>(DB.hierSug||[]).filter(g=>g.personId===ME.id&&g.status==='open');
+const meBadge=()=>ME?pendingTeam(ME.id).length+mySugOpen().length:0;
+const orgBadge=()=>(DB.profReqs||[]).filter(q=>q.status==='pending').length+(DB.hierSug||[]).filter(g=>g.status==='conflict').length;
+const hierState=u=>u.noSenior?'top':!u.managerId?'none':!u.managerConfirmed?'wait':u.hierFinal?'final':'open';
+const HIER_TAG={top:['t-ok','Top person'],none:['t-bad','Not filled'],wait:['t-hold','Waiting for a yes'],final:['t-ok','Final'],open:['t-prog','Confirmed, not final']};
+const hierTag=u=>{ const t=HIER_TAG[hierState(u)]; return '<span class="tag '+t[0]+'">'+t[1]+'</span>'; };
+const avHTML=(u,cls)=>'<div class="av '+(cls||'')+'"'+(u.photo?' data-avph="'+esc(u.photo)+'"':'')+'>'+inits(u.name)+'</div>';
+function avLoad(scope){ $$('[data-avph]',scope).forEach(async el=>{ if(el.dataset.done) return; el.dataset.done='1';
+  try{ const url=await imgURL(el.dataset.avph); el.style.backgroundImage='url("'+url+'")'; el.style.backgroundSize='cover'; el.style.backgroundPosition='center'; el.textContent=''; }catch(e){} }); }
+function hierNudge(v){
+  if(!ME||!DB.orgReady||ROUTE.name==='me'||ROUTE.name==='garuda'||hierDone(ME)) return;
+  if(['dash','gate','queue','mine','inbox'].indexOf(ROUTE.name)<0) return;
+  v.insertAdjacentHTML('afterbegin','<div class="card pad" id="hier-nudge" style="margin-bottom:14px;border-color:var(--hold);display:flex;gap:12px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:200px"><b>Fill your reporting line</b><div class="hint">'+(ME.managerId?'Check who you report to and press “This is final”.':'Tell SETU who you report to. It takes a minute.')+'</div></div><button class="btn sm primary" id="hier-nudge-go">Open my profile</button></div>');
+  $('#hier-nudge-go',v).onclick=()=>go({name:'me'});
+}
+const ME_FIELD={email:'Email',designation:'Designation',department:'Department'};
+function viewMe(){
+  head('My profile','Your details and who you report to');
+  const u=ME, reqs=(DB.profReqs||[]).filter(q=>q.userId===u.id), pendOf=f=>reqs.find(q=>q.field===f&&q.status==='pending');
+  const locked=(f,val)=>{ const q=pendOf(f); return '<div class="me-row"><div class="hint">'+ME_FIELD[f]+'</div><div style="min-width:0;flex:1"><b style="word-break:break-word">'+esc(val||'—')+'</b>'+(q?'<div class="hint" style="color:var(--hold)">Change to “'+esc(q.newValue)+'” is waiting for an admin</div>':'')+'</div><button class="btn sm ghost" data-flag="'+f+'" title="Ask an admin to change this">⚑ '+(q?'Edit request':'Request change')+'</button></div>'; };
+  const plain=(l,val)=>val?'<div class="me-row"><div class="hint">'+esc(l)+'</div><div style="flex:1"><b>'+esc(val)+'</b></div></div>':'';
+  let html='<div id="me-root">';
+  if(hierMust()) html+='<div class="card pad" style="margin-bottom:14px;border-color:var(--stop)"><b>Your reporting line is needed before you can use SETU</b><div class="hint" style="margin-top:4px">Add who you report to below and press “This is final”. The rest of SETU opens straight after.</div></div>';
+  html+='<div class="card pad" style="margin-bottom:14px"><div class="row" style="gap:14px;align-items:center;flex-wrap:wrap"><div class="av" id="me-photo" style="width:76px;height:76px;font-size:24px"'+(u.photo?' data-avph="'+esc(u.photo)+'"':'')+'>'+inits(u.name)+'</div>'+
+    '<div style="flex:1;min-width:180px"><h3 style="margin:0">'+esc(u.name)+'</h3><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div>'+
+    '<div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn sm" id="me-pic">'+(u.photo?'Change photo':'Add a photo')+'</button>'+(u.photo?'<button class="btn sm ghost" id="me-picrm">Remove</button>':'')+'<input type="file" id="me-picfile" accept="image/*" class="hide"></div></div></div>'+
+    '<div style="margin-top:14px">'+plain('Employee ID',u.empId)+locked('designation',u.role)+locked('department',u.dept)+locked('email',u.email)+plain('Division',u.division)+'</div>'+
+    '<p class="hint" style="margin:10px 0 0">Designation, department and email are changed by an admin. Tap ⚑ to send the correct detail.</p></div>';
+  html+='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 10px">Details you can change</h3><div class="grid g2" style="gap:12px">'+
+    '<div><label for="me-phone">Mobile number</label><input id="me-phone" type="tel" inputmode="tel" maxlength="16" value="'+esc(u.phone)+'" placeholder="10-digit mobile" autocomplete="off"></div>'+
+    '<div><label for="me-loc">Location</label><input id="me-loc" type="text" maxlength="80" value="'+esc(u.location)+'" placeholder="Office, city or site"></div></div>'+
+    '<div style="margin-top:12px"><label for="me-handles">What I handle</label><textarea id="me-handles" rows="2" maxlength="300" placeholder="Stations, regions or the kind of work you look after">'+esc(u.handles)+'</textarea></div>'+
+    '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="me-save">Save</button><span id="me-err" class="hint" style="color:var(--stop)"></span></div></div>';
+  if(reqs.length) html+='<div class="card" style="margin-bottom:14px"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>My change requests</b></div><table class="cards"><thead><tr><th>Detail</th><th>Asked</th><th>Status</th></tr></thead><tbody>'+
+    reqs.slice(0,12).map(q=>'<tr><td><b>'+esc(ME_FIELD[q.field]||q.field)+'</b><div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td>'+esc(q.newValue)+'<div class="hint">was '+esc(q.oldValue||'—')+'</div></td><td>'+(q.status==='pending'?'<span class="tag t-hold">Waiting</span>':q.status==='accepted'?'<span class="tag t-ok">Accepted</span>':'<span class="tag t-bad">Declined</span>')+(q.note?'<div class="hint">'+esc(q.note)+'</div>':'')+(q.decidedName?'<div class="hint">by '+esc(q.decidedName)+'</div>':'')+'</td></tr>').join('')+'</tbody></table></div>';
+  // ---- reporting line
+  const chain=hierUp(u.id), sug=mySugOpen(), top=hierTop(u.id), mine=(DB.hierSug||[]).filter(g=>g.byUser===u.id);
+  html+='<div class="card pad" style="margin-bottom:14px" id="me-hier"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><h3 style="margin:0;flex:1">Who I report to</h3>'+hierTag(u)+'</div>';
+  if(u.noSenior) html+='<p class="hint" style="margin:8px 0 0">You are marked as a top person — nobody is above you.</p>';
+  else{
+    html+=chain.length?'<div style="margin-top:10px">'+chain.map((c,i)=>'<div class="filerow"><span class="tag t-wait" style="min-width:64px;text-align:center">Level '+(i+1)+'</span>'+avHTML(c.u,'sm')+'<div style="min-width:0;flex:1"><b>'+esc(c.u.name)+'</b><div class="hint">'+esc(c.u.role||'')+(c.u.dept?' · '+esc(c.u.dept):'')+'</div></div>'+(c.confirmed?'<span class="tag t-ok">Confirmed</span>':'<span class="tag t-hold">'+(i===0?'Waiting for their yes':'Not confirmed yet')+'</span>')+'</div>').join('')+'</div>'
+      :'<p class="hint" style="margin:8px 0 0">Nobody yet. Add the person you report to directly as Level 1, then the levels above if you know them.</p>';
+    if(chain.length>1) html+='<p class="hint" style="margin:8px 0 0">Levels above the first come from what your seniors filled in — the line joins up by itself.</p>';
+    if(sug.length) html+='<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--hold);border-radius:var(--r)"><b>Suggested for you</b>'+sug.map(g=>'<div class="filerow"><div style="min-width:0;flex:1">'+esc(user(g.byUser).name)+' added <b>'+esc(user(g.seniorId).name)+'</b> as the person above you.</div><button class="btn sm ok" data-sugyes="'+g.id+'">Yes, I report to them</button><button class="btn sm" data-sugno="'+g.id+'">Dismiss</button></div>').join('')+'<div class="hint">You can leave these open and add your own.</div></div>';
+    const base=chain.length;
+    html+='<div style="margin-top:14px"><b>'+(base?'Add a level above '+esc(top.name):'Add your reporting line')+'</b>'+
+      (hierDraft.length?'<div style="margin-top:8px">'+hierDraft.map((id,i)=>'<div class="filerow"><span class="tag t-prog" style="min-width:64px;text-align:center">Level '+(base+i+1)+'</span><div style="min-width:0;flex:1"><b>'+esc(user(id).name)+'</b><div class="hint">'+esc(user(id).role||'')+'</div></div><button class="btn sm ghost" data-drm="'+i+'">Remove</button></div>').join('')+'</div>':'')+
+      '<div id="me-pick" style="margin-top:8px"></div><div class="hint" style="margin-top:4px">Search and pick Level '+(base+hierDraft.length+1)+'. Add as many levels as you want.</div></div>'+
+      '<div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap;align-items:center">'+
+        (hierDraft.length?'<button class="btn" id="me-hsave">Save'+(u.hierFinal?' the added level'+(hierDraft.length>1?'s':''):'')+'</button>':'')+
+        (!u.hierFinal?'<button class="btn primary" id="me-hfinal">This is final</button>':'')+
+        (!u.hierFinal&&u.managerId?'<button class="btn ghost" id="me-hclear">Start again</button>':'')+
+        '<span id="me-herr" class="hint" style="color:var(--stop)"></span></div>'+
+      '<p class="hint" style="margin:8px 0 0">'+(u.hierFinal?'Your line is final. You can still add levels above; to correct a level, ask an admin.':'After “This is final” only an admin can correct it. You can still add more levels above later.')+'</p>';
+    if(mine.length) html+='<div class="hint" style="margin-top:8px">Waiting on others: '+mine.map(g=>esc(user(g.personId).name)+' → '+esc(user(g.seniorId).name)+(g.status==='conflict'?' (with the admins)':'')).join(' · ')+'</div>';
+  }
+  html+='</div>';
+  // ---- people who report to me
+  const pend=pendingTeam(u.id), team=teamOf(u.id);
+  if(pend.length||team.length||isManager(u)){
+    html+='<div class="card pad" id="me-team"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><h3 style="margin:0;flex:1">People who report to me</h3><span class="tag t-prog">'+team.length+'</span></div>'+
+      (pend.length?'<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--hold);border-radius:var(--r)"><b>Waiting for your yes</b>'+pend.map(x=>'<div class="filerow">'+avHTML(x,'sm')+'<div style="min-width:0;flex:1"><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.role||'')+(x.dept?' · '+esc(x.dept):'')+'</div></div><button class="btn sm ok" data-tyes="'+x.id+'">Reports to me</button><button class="btn sm" data-tno="'+x.id+'">Not my team</button></div>').join('')+'</div>':'')+
+      (team.length?'<div style="margin-top:10px">'+team.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>'<div class="filerow">'+avHTML(x,'sm')+'<div style="min-width:0;flex:1"><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.role||'')+(x.dept?' · '+esc(x.dept):'')+'</div></div></div>').join('')+'</div>':(!pend.length?'<p class="hint" style="margin:8px 0 0">Nobody yet.</p>':''))+
+      (isManager(u)?'<div style="margin-top:12px"><b>Add someone to my team</b><div id="me-addteam" style="margin-top:6px"></div><div class="hint" style="margin-top:4px">They are mapped to you straight away and are told about it.</div></div>':'')+'</div>';
+  }
+  return html+'</div>';
+}
+async function mePhoto(file){
+  let bmp; try{ bmp=await createImageBitmap(file,{imageOrientation:'from-image'}); }catch(e1){ try{ bmp=await createImageBitmap(file); }catch(e){ throw new Error('That file could not be read as a photo.'); } }
+  const side=Math.min(bmp.width,bmp.height), c=document.createElement('canvas'); c.width=c.height=400;
+  c.getContext('2d').drawImage(bmp,(bmp.width-side)/2,(bmp.height-side)/2,side,side,0,0,400,400); bmp.close&&bmp.close();
+  const blob=await new Promise(res=>c.toBlob(res,'image/jpeg',0.85)); if(!blob) throw new Error('That photo could not be prepared.');
+  const path=ME.id+'/profile-'+uid()+'.jpg';
+  const {error}=await SB.storage.from('documents').upload(path,blob,{contentType:'image/jpeg',upsert:false}); if(error) throw error;
+  return path;
+}
+function wireMe(v){
+  avLoad(v);
+  const refresh=async msg=>{ await load(['people']); render(); paintNav(); if(msg) toast(msg,'ok'); };
+  const saveDetails=async photo=>{ await rpc('my_profile_save',{p_phone:$('#me-phone',v).value,p_location:$('#me-loc',v).value,p_handles:$('#me-handles',v).value,p_photo:photo===undefined?ME.photo:photo}); };
+  $('#me-save',v).onclick=async()=>{ $('#me-err',v).textContent=''; try{ busy(true); await saveDetails(); busy(false); await refresh('Saved.'); }catch(e){ busy(false); $('#me-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
+  $('#me-pic',v).onclick=()=>$('#me-picfile',v).click();
+  $('#me-picfile',v).onchange=async e=>{ const f=e.target.files&&e.target.files[0]; if(!f) return; const old=ME.photo;
+    try{ busy(true); const path=await mePhoto(f); await saveDetails(path); if(old){ try{ await SB.storage.from('documents').remove([old]); }catch(_){} } busy(false); await refresh('Photo updated.'); }catch(err){ busy(false); fail(err); } };
+  if($('#me-picrm',v)) $('#me-picrm',v).onclick=async()=>{ const old=ME.photo; try{ busy(true); await saveDetails(''); if(old){ try{ await SB.storage.from('documents').remove([old]); }catch(_){} } busy(false); await refresh('Photo removed.'); }catch(err){ busy(false); fail(err); } };
+  $$('[data-flag]',v).forEach(b=>b.onclick=()=>meFlagDialog(b.dataset.flag));
+  // reporting line
+  const pick=$('#me-pick',v);
+  if(pick) personPicker(pick,{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(hierUp(ME.id).map(c=>c.u.id),hierDraft),onPick:id=>{ hierDraft.push(id); render(); }});
+  $$('[data-drm]',v).forEach(b=>b.onclick=()=>{ hierDraft.splice(Number(b.dataset.drm),1); render(); });
+  const send=async final=>{ const err=$('#me-herr',v); err.textContent='';
+    try{ busy(true); const r=await rpc('hier_set',{p_levels:hierDraft.length?hierDraft:null,p_final:final}); hierDraft=[]; busy(false);
+      const bits=[]; if(r&&r.set) bits.push('Level 1 is waiting for their yes'); if(r&&r.suggested) bits.push(r.suggested+' level'+(r.suggested===1?'':'s')+' suggested to your senior'+(r.suggested===1?'':'s')); if(r&&r.conflicts) bits.push(r.conflicts+' sent to the admins to settle');
+      await refresh((final?'Your reporting line is final. ':'Saved. ')+bits.join(' · ')); }
+    catch(e){ busy(false); err.textContent=(e.message||'').replace(/^.*?: /,''); } };
+  if($('#me-hsave',v)) $('#me-hsave',v).onclick=()=>send(false);
+  if($('#me-hfinal',v)) $('#me-hfinal',v).onclick=()=>{ if(!ME.managerId&&!hierDraft.length){ $('#me-herr',v).textContent='Add your first reporting person before you make it final.'; return; }
+    modal({title:'Make it final?',body:'<p style="margin:0">After this, only an admin can correct your reporting line. You can still add more levels above.</p>',footer:'<button class="btn" data-x>Not yet</button><button class="btn primary" id="hf-yes">Yes, this is final</button>',onOpen:(m,close)=>{ $('#hf-yes',m).onclick=()=>{ close(); send(true); }; }}); };
+  if($('#me-hclear',v)) $('#me-hclear',v).onclick=async()=>{ try{ await rpc('hier_clear'); hierDraft=[]; await refresh('Cleared. Add your reporting line again.'); }catch(e){ fail(e); } };
+  const act=async(fn,args,msg)=>{ try{ await rpc(fn,args); await refresh(msg); }catch(e){ fail(e); } };
+  $$('[data-sugyes]',v).forEach(b=>b.onclick=()=>act('hier_suggestion_decide',{p_id:b.dataset.sugyes,p_accept:true},'Added. Waiting for their yes.'));
+  $$('[data-sugno]',v).forEach(b=>b.onclick=()=>act('hier_suggestion_decide',{p_id:b.dataset.sugno,p_accept:false},'Dismissed.'));
+  $$('[data-tyes]',v).forEach(b=>b.onclick=()=>act('confirm_team',{p_user:b.dataset.tyes,p_accept:true},user(b.dataset.tyes).name+' reports to you.'));
+  $$('[data-tno]',v).forEach(b=>b.onclick=()=>act('confirm_team',{p_user:b.dataset.tno,p_accept:false},'Removed. They will be asked to choose again.'));
+  const at=$('#me-addteam',v);
+  if(at) personPicker(at,{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(teamOf(ME.id).map(x=>x.id),hierUp(ME.id).map(c=>c.u.id)),onPick:id=>act('add_team_member',{p_user:id},user(id).name+' added to your team.')});
+}
+function meFlagDialog(f){
+  const cur=f==='email'?ME.email:f==='designation'?ME.role:ME.dept, q=(DB.profReqs||[]).find(x=>x.userId===ME.id&&x.field===f&&x.status==='pending');
+  modal({title:'Ask to change your '+ME_FIELD[f].toLowerCase(),
+    body:'<p class="hint" style="margin:0 0 10px">Now: <b>'+esc(cur||'—')+'</b>. An admin will accept or decline; you are told either way.</p>'+
+      '<label for="fl-val">Correct '+ME_FIELD[f].toLowerCase()+'</label>'+(f==='department'?'<select id="fl-val">'+deptOptions(q?q.newValue:'')+'</select>':'<input id="fl-val" type="'+(f==='email'?'email':'text')+'" value="'+esc(q?q.newValue:'')+'" autocomplete="off">')+
+      '<label for="fl-why" style="margin-top:10px">Reason (optional)</label><input id="fl-why" type="text" maxlength="200" value="'+esc(q?q.reason:'')+'">'+
+      (f==='email'?'<p class="hint" style="margin:8px 0 0">This changes the email shown on your profile. You keep signing in the same way as today.</p>':'')+
+      '<div id="fl-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fl-go">Send to admin</button>',
+    onOpen:(m,close)=>{ $('#fl-go',m).onclick=async()=>{ try{ await rpc('profile_change_request',{p_field:f,p_value:$('#fl-val',m).value,p_reason:$('#fl-why',m).value}); close(); await load(['people']); render(); toast('Sent to the admins.','ok'); }
+      catch(e){ $('#fl-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
+}
+/* ---- Org & profiles: admins decide change requests, watch the hierarchy fill up ---- */
+function viewOrg(){
+  head('Org & profiles','Change requests and the reporting hierarchy');
+  const reqs=(DB.profReqs||[]).filter(q=>q.status==='pending'), conf=(DB.hierSug||[]).filter(g=>g.status==='conflict');
+  const act=DB.users.filter(u=>u.active), cnt=k=>act.filter(u=>hierState(u)===k).length;
+  const todo=u=>{ const k=hierState(u); return k==='none'||k==='wait'||k==='open'; };
+  let html='<div id="org-root">';
+  html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><b style="flex:1">Change requests</b><span class="tag '+(reqs.length?'t-hold':'t-ok')+'">'+reqs.length+' waiting</span></div>'+
+    (reqs.length?'<table class="cards"><thead><tr><th>Person</th><th>Detail</th><th>From → to</th><th></th></tr></thead><tbody>'+reqs.map(q=>{ const u=user(q.userId); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.empId||'')+(u.dept?' · '+esc(u.dept):'')+'</div></td><td>'+esc(ME_FIELD[q.field]||q.field)+'<div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td><span class="hint">'+esc(q.oldValue||'—')+'</span> → <b>'+esc(q.newValue)+'</b>'+(q.reason?'<div class="hint">“'+esc(q.reason)+'”</div>':'')+'</td><td style="text-align:right;white-space:nowrap"><button class="btn sm ok" data-rqyes="'+q.id+'">Accept</button> <button class="btn sm" data-rqno="'+q.id+'">Decline</button></td></tr>'; }).join('')+'</tbody></table>'
+      :'<p class="hint" style="padding:14px 16px;margin:0">No request is waiting.</p>')+'</div>';
+  if(conf.length) html+='<div class="card" style="margin-bottom:14px;border-color:var(--hold)"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>Hierarchy conflicts to settle</b><div class="hint">Two people said different things about who someone reports to.</div></div>'+conf.map(g=>{ const p=user(g.personId), cur=p.managerId?user(p.managerId).name:(p.noSenior?'nobody (top person)':'nobody'); return '<div class="filerow" style="padding:10px 16px"><div style="min-width:0;flex:1"><b>'+esc(p.name)+'</b> — '+esc(user(g.byUser).name)+' says they report to <b>'+esc(user(g.seniorId).name)+'</b>. In SETU now: '+esc(cur)+'.</div><button class="btn sm" data-cfyes="'+g.id+'">Change to '+esc(user(g.seniorId).name.split(' ')[0])+'</button><button class="btn sm ghost" data-cfno="'+g.id+'">Keep as it is</button></div>'; }).join('')+'</div>';
+  const tile=(k,l,n,c)=>'<button class="card stat tap" data-orgf="'+k+'" style="--acc:'+c+';text-align:left;'+(orgF===k?'outline:2px solid var(--indigo)':'')+'"><div class="k">'+l+'</div><div class="v num">'+n+'</div></button>';
+  html+='<div class="grid g4" style="gap:10px;margin-bottom:12px">'+tile('none','Not filled',cnt('none'),'var(--stop)')+tile('wait','Waiting for a yes',cnt('wait'),'var(--hold)')+tile('open','Confirmed, not final',cnt('open'),'var(--indigo)')+tile('done','Final / top',cnt('final')+cnt('top'),'var(--seal)')+'</div>';
+  html+='<div class="card pad" style="margin-bottom:12px"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><div style="flex:1;min-width:220px"><b>Reporting hierarchy is '+(DB.org.hier_compulsory?'compulsory':'optional (reminders only)')+'</b><div class="hint">'+(DB.org.hier_compulsory?'Nobody can use SETU until their line is final.':'People see a reminder on their home page until their line is final.')+'</div></div>'+
+    '<button class="btn sm" id="org-remind">Send a reminder now</button>'+(ME.owner?'<button class="btn sm '+(DB.org.hier_compulsory?'':'primary')+'" id="org-must">'+(DB.org.hier_compulsory?'Make it optional again':'Make hierarchy compulsory')+'</button>':'')+'</div></div>';
+  const q=orgQ.trim().toLowerCase();
+  let L=act.filter(u=>orgF==='todo'?todo(u):orgF==='done'?(hierState(u)==='final'||hierState(u)==='top'):orgF==='all'?true:hierState(u)===orgF);
+  if(q) L=L.filter(u=>(u.name+' '+(u.empId||'')+' '+(u.dept||'')+' '+(u.role||'')+' '+(u.managerId?user(u.managerId).name:'')).toLowerCase().includes(q));
+  L.sort((a,b)=>a.name.localeCompare(b.name));
+  const chip=(k,l)=>'<button class="btn sm '+(orgF===k?'primary':'ghost')+'" data-orgf="'+k+'">'+l+'</button>';
+  html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap">'+chip('todo','To do')+chip('all','Everyone')+chip('done','Final')+'<input id="org-q" type="text" placeholder="Search name, employee ID, department or senior" value="'+esc(orgQ)+'" style="flex:1;min-width:200px"><span class="tag t-prog" style="align-self:center">'+L.length+'</span></div>'+
+    '<table class="cards"><thead><tr><th>Person</th><th>Reports to</th><th>Status</th><th></th></tr></thead><tbody>'+
+    (L.length?L.slice(0,200).map(u=>{ const up=hierUp(u.id); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div></td><td class="hint meta">'+(up.length?up.map(c=>esc(c.u.name)).join(' → '):'—')+'</td><td>'+hierTag(u)+'</td><td style="text-align:right;white-space:nowrap">'+
+        (u.hierFinal&&!u.noSenior?'<button class="btn sm" data-unlock="'+u.id+'">Reopen</button> ':'')+(ME.owner?'<button class="btn sm ghost" data-top="'+u.id+'" data-on="'+(u.noSenior?'0':'1')+'">'+(u.noSenior?'Not a top person':'Mark as top person')+'</button>':'')+'</td></tr>'; }).join('')
+      :'<tr><td colspan="4"><div class="empty" style="padding:18px"><p class="hint">Nobody in this list.</p></div></td></tr>')+'</tbody></table>'+(L.length>200?'<p class="hint" style="padding:10px 16px;margin:0">Showing the first 200. Search to narrow it down.</p>':'')+'</div>';
+  return html+'</div>';
+}
+function wireOrg(v){
+  const act=async(fn,args,msg)=>{ try{ busy(true); const r=await rpc(fn,args); await load(['people']); busy(false); render(); paintNav(); toast(typeof msg==='function'?msg(r):msg,'ok'); }catch(e){ busy(false); fail(e); } };
+  $$('[data-rqyes]',v).forEach(b=>b.onclick=()=>act('profile_change_decide',{p_id:b.dataset.rqyes,p_accept:true,p_note:''},'Accepted — the detail is updated.'));
+  $$('[data-rqno]',v).forEach(b=>b.onclick=()=>modal({title:'Decline this request',body:'<label for="dc-why">Why is it declined? (the person sees this)</label><input id="dc-why" type="text" maxlength="200"><div id="dc-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="dc-go">Decline</button>',
+    onOpen:(m,close)=>{ $('#dc-go',m).onclick=async()=>{ try{ await rpc('profile_change_decide',{p_id:b.dataset.rqno,p_accept:false,p_note:$('#dc-why',m).value}); close(); await load(['people']); render(); paintNav(); toast('Declined.','ok'); }catch(e){ $('#dc-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }}));
+  $$('[data-cfyes]',v).forEach(b=>b.onclick=()=>act('hier_conflict_settle',{p_id:b.dataset.cfyes,p_apply:true},'Changed.'));
+  $$('[data-cfno]',v).forEach(b=>b.onclick=()=>act('hier_conflict_settle',{p_id:b.dataset.cfno,p_apply:false},'Kept as it is.'));
+  $$('[data-orgf]',v).forEach(b=>b.onclick=()=>{ orgF=b.dataset.orgf; render(); });
+  const qi=$('#org-q',v); if(qi) qi.oninput=()=>{ orgQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#org-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
+  $$('[data-unlock]',v).forEach(b=>b.onclick=()=>act('hier_unlock',{p_user:b.dataset.unlock},user(b.dataset.unlock).name+' can correct their line now.'));
+  $$('[data-top]',v).forEach(b=>b.onclick=()=>act('hier_mark_top',{p_user:b.dataset.top,p_on:b.dataset.on==='1'},b.dataset.on==='1'?'Marked as a top person.':'No longer a top person.'));
+  if($('#org-remind',v)) $('#org-remind',v).onclick=()=>act('hier_remind',{},n=>'Reminder sent to '+n+' people.');
+  if($('#org-must',v)) $('#org-must',v).onclick=()=>{ const on=!DB.org.hier_compulsory;
+    modal({title:on?'Make the hierarchy compulsory?':'Make it optional again?',body:'<p style="margin:0">'+(on?'From now, nobody (except you) can use SETU until their reporting line is final. They are taken straight to their profile.':'People will only see a reminder again.')+'</p>',
+      footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="om-yes">'+(on?'Yes, make it compulsory':'Yes, make it optional')+'</button>',onOpen:(m,close)=>{ $('#om-yes',m).onclick=()=>{ close(); act('hier_compulsory_set',{p_on:on},on?'The hierarchy is now compulsory.':'The hierarchy is optional again.'); }; }}); };
+}
+/* ============================================================
    People & masters
    ============================================================ */
 function profileDialog(){
@@ -2965,7 +3157,7 @@ function exportUsersXlsx(){
   toast(rows.length+' users downloaded.','ok');
 }
 function wirePeople(v){
-  $('#p-me',v).onclick=profileDialog;
+  $('#p-me',v).onclick=()=>{ if(DB.orgReady) go({name:'me'}); else profileDialog(); };
   if($('#p-search',v)) $('#p-search',v).oninput=()=>{peopleQ=$('#p-search',v).value; const p=$('#p-search',v).selectionStart; render();
     const n=$('#p-search'); if(n){n.focus();n.setSelectionRange(p,p)}};
   if($('#p-search-clear',v)) $('#p-search-clear',v).onclick=()=>{peopleQ='';render()};
