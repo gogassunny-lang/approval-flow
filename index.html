@@ -1,258 +1,613 @@
-// SETU — "ask-setu" edge function (Phase 3: the AI chat)
-//
-// The app sends the signed-in person's question here. This function:
-//   1. asks the database "may this person ask?" (ai_gate: switched on, ticked, daily limit);
-//   2. sends the question to Google Gemini together with a list of READ tools;
-//   3. when Gemini wants a fact, calls the matching database function AS THAT PERSON
-//      (their own token), so the AI only ever sees what that person may see;
-//   4. returns the answer and "cards" the app turns into buttons (open a person, a task, a file).
-// It has no tool that approves, signs, rates or creates anything. A task is only PROPOSED;
-// the person presses Confirm in the app, which creates it through the normal rules.
-//
-// Secret needed (Supabase → Edge Functions → Secrets):  GEMINI_API_KEY
-// The model name comes from the SETU settings (owner → Org & profiles → Ask SETU).
-// Deploy in the Supabase dashboard only — never put this file in the GitHub repo.
-// Written without TypeScript-only syntax on purpose, so the same text is tested under Node.
-
-import { createClient } from "npm:@supabase/supabase-js@2";
-
-// ---- core ----  (no network or database of its own: both are passed in, so it can be tested)
-
-const PAGES = {
-  tasks: "My tasks", find: "Find people", me: "My profile", gate: "Gate Pass", req: "Requisition",
-  queue: "Waiting on me", inbox: "Notifications", dash: "Dashboard", new: "Raise a request", mine: "My requests",
-};
-
-const TOOLS = [
-  { name: "find_people", description: "Search SETU's people by name, employee ID, department, designation, location or what they handle. Returns up to 8 people with designation, department, mobile, email, who they report to and team size.",
-    parameters: { type: "object", properties: { query: { type: "string", description: "Name or other words to search" } }, required: ["query"] } },
-  { name: "who_has_number", description: "Look up a company mobile number or email in the number register: who holds it today and who held it before. Use for 'whose number is ...'.",
-    parameters: { type: "object", properties: { query: { type: "string", description: "The mobile number (digits) or email" } }, required: ["query"] } },
-  { name: "person_details", description: "Full details of one person by id: contact, the chain of seniors they report to (level by level) and the team that reports to them.",
-    parameters: { type: "object", properties: { person_id: { type: "string" } }, required: ["person_id"] } },
-  { name: "my_tasks", description: "The user's own tasks. filter: 'todo' (open, for me to do), 'overdue', 'given' (I gave to others, still open), 'needs_me' (waiting for my rating or my answer on more time), 'done' (closed, with ratings).",
-    parameters: { type: "object", properties: { filter: { type: "string", enum: ["todo", "overdue", "given", "needs_me", "done"] } }, required: ["filter"] } },
-  { name: "waiting_for_me", description: "Everything waiting for the user to act: approval files (PO, WO, indent, requisition) on their desk, number of tasks to do, tasks waiting for their rating, people waiting for their yes.",
-    parameters: { type: "object", properties: {} } },
-  { name: "find_files", description: "Find approval files the user may see (PO, WO, indent, requisition) by name, remark, number or vendor. Returns status and who it is waiting with. No amounts.",
-    parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-  { name: "file_details", description: "One approval file in detail: every step, who signed, who it waits with, and its value. Use the kind and id returned by find_files or waiting_for_me.",
-    parameters: { type: "object", properties: { kind: { type: "string", enum: ["flow", "request"] }, id: { type: "string" } }, required: ["kind", "id"] } },
-  { name: "propose_task", description: "Prepare a task for the user to confirm. It is NOT created: the app shows it with a Confirm button. kind: 'personal' (for the user, no people), 'single' (one person), 'shared' (several people, anyone finishes it), 'split' (each person has their own part). A due date is needed unless personal.",
-    parameters: { type: "object", properties: {
-        kind: { type: "string", enum: ["personal", "single", "shared", "split"] },
-        title: { type: "string", description: "Short task title in the user's words" },
-        details: { type: "string" },
-        due_on: { type: "string", description: "YYYY-MM-DD" },
-        priority: { type: "string", enum: ["high", "medium", "low"] },
-        people: { type: "array", items: { type: "object", properties: {
-            name: { type: "string", description: "The person's name as the user said it" },
-            person_id: { type: "string", description: "Their id, if already known from find_people" },
-            part: { type: "string", description: "split tasks only: this person's part" },
-            due_on: { type: "string", description: "split tasks only: own due date, YYYY-MM-DD" } }, required: ["name"] } } },
-      required: ["kind", "title"] } },
-  { name: "open_page", description: "Offer a button that opens a SETU page.",
-    parameters: { type: "object", properties: { page: { type: "string", enum: Object.keys(PAGES) } }, required: ["page"] } },
-];
-
-function systemPrompt(me) {
-  return [
-    "You are Ask SETU, the assistant inside SETU, the internal work app of Confidence Petroleum India Ltd.",
-    "You are talking to " + me.name + (me.designation ? ", " + me.designation : "") + (me.department ? ", " + me.department : "") + ".",
-    "Today is " + me.weekday + ", " + me.today + " (India time).",
-    "",
-    "Rules:",
-    "- Answer only about SETU: its people, the user's tasks, approval files and pages. For anything else, say in one line that you only help with SETU.",
-    "- Get every fact from the tools. Never invent a name, number, date, status or amount. If a tool returns nothing, say you could not find it.",
-    "- The tools already return only what this user is allowed to see. If something is not found, do not guess that it exists.",
-    "- Reply in the language the user wrote in: English, Hindi or Marathi (keep to the script they used; Hinglish stays Hinglish).",
-    "- Be short and plain: a sentence or two, or a short list. The app shows buttons for the people, tasks and files you looked up, so do not repeat every detail.",
-    "- You cannot approve, reject, sign, rate or change anything. If asked, say it must be done on the page and offer the page with open_page.",
-    "- To create a task, call propose_task. Work out dates from today (for example 'Friday' = the coming Friday). If the due date or the person is missing for a work task, ask one short question first.",
-    "  After propose_task succeeds, tell the user to check it and press Confirm. Never say the task was created.",
-    "  If propose_task says a name matches several people, ask the user which one, listing designation and department.",
-    "- Mention rupee amounts only when the user asked about that particular file.",
-  ].join("\n");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0159BB" />
+<title>SETU — indent &amp; work order approvals</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="favicon.png" type="image/png" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<script src="./pdf.min.js"></script>
+<script src="./xlsx.full.min.js"></script>
+<script src="./mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<style>
+:root{
+  --paper:#F4F2EE; --surface:#FFFFFF; --surface-2:#F7F9F9;
+  --ink:#0F1419; --ink-soft:#3C4349; --steel:#536471; --line:#E1E3E6; --line-2:#CFD3D7;
+  --indigo:#0159BB; --indigo-soft:#E6EFFA; --indigo-deep:#003F8A;
+  --sky:#1D9BF0;
+  --seal:#016B47; --seal-soft:#DFF3EA;
+  --hold:#8A5A0B; --hold-soft:#FBF1DC;
+  --stop:#B02A17; --stop-soft:#FBE9E5;
+  --cyan:#0F6E7A; --cyan-soft:#E0F1F3;
+  --r:8px; --r-lg:10px;
+  --sh:0 0 0 1px rgba(15,20,25,.04), 0 2px 6px -2px rgba(15,20,25,.12);
+  --grad:#0A66C2;
 }
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{font-family:inherit;font-weight:700;line-height:1.25;margin:0;letter-spacing:-.01em}
+h1{font-size:24px} h2{font-size:19px} h3{font-size:16px}
+a{color:var(--indigo)}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--indigo);outline-offset:2px;border-radius:4px}
+.num{font-variant-numeric:tabular-nums}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 
-function addCard(cards, c) {
-  const key = c.type + "|" + (c.id || c.page || c.title || "");
-  if (cards.length < 8 && !cards.some((x) => x._k === key)) { c._k = key; cards.push(c); }
+#signin{min-height:100vh;background:linear-gradient(160deg,#0159BB 0%,#003F8A 62%,#00305F 100%);display:flex;align-items:center;justify-content:center;
+  padding:calc(28px + env(safe-area-inset-top,0px)) 20px calc(28px + env(safe-area-inset-bottom,0px));position:relative;overflow:hidden}
+#signin:after{content:"";position:absolute;width:560px;height:560px;right:-200px;top:-200px;border-radius:50%;background:radial-gradient(circle,rgba(120,190,255,.28),transparent 68%);pointer-events:none}
+.si-wrap{position:relative;z-index:1;width:100%;max-width:1040px;display:grid;grid-template-columns:1.1fr 420px;gap:56px;align-items:center}
+.si-copy{color:#DCEBFA}
+.si-copy h1{color:#fff;font-size:40px;line-height:1.12;margin:0 0 16px;letter-spacing:-.02em}
+.si-lead{color:#B9D5F0;font-size:16px;max-width:46ch;margin:0}
+.si-logo{width:150px;height:auto;display:block;margin-bottom:34px}
+.si-foot{color:#8FB8E4;font-size:12.5px;line-height:1.6;margin-top:26px}
+.si-foot b{color:#fff}
+.rail-demo{margin:32px 0 0;display:flex;flex-direction:column}
+.rail-demo div{display:flex;align-items:center;gap:14px;padding:8px 0;color:#9FC4E8;font-size:14px}
+.rail-demo i{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-style:normal;font-size:12px;font-weight:600;border:1px solid rgba(255,255,255,.28);background:rgba(255,255,255,.1);color:#CFE4F7;flex:none}
+.rail-demo div.on i{background:#fff;color:var(--indigo-deep);border-color:#fff}
+.rail-demo div.on{color:#fff}
+.si-card{background:var(--surface);border-radius:18px;padding:34px 32px 28px;box-shadow:0 30px 80px -30px rgba(0,20,60,.7)}
+.si-card-logo{display:none;width:84px;height:auto;margin:0 auto 18px}
+@media(max-width:860px){
+  #signin{align-items:flex-start;padding:calc(16px + env(safe-area-inset-top,0px)) 14px calc(24px + env(safe-area-inset-bottom,0px))}
+  .si-wrap{grid-template-columns:1fr;gap:18px}
+  .si-copy{text-align:center} .si-copy h1{font-size:22px;margin:0 0 6px} .si-logo{width:110px;margin:6px auto 18px}
+  .si-lead{font-size:14px;margin:0 auto} .rail-demo,.si-foot{display:none}
+  .si-card{padding:24px 20px 20px;border-radius:16px}
 }
-
-async function runTool(name, a, rpc, cards) {
-  a = a || {};
-  if (name === "find_people") {
-    const L = (await rpc("ai_find_people", { p_q: String(a.query || "") })) || [];
-    L.slice(0, 5).forEach((p) => addCard(cards, { type: "person", id: p.id, title: p.name, sub: [p.designation, p.department].filter(Boolean).join(" · ") }));
-    return { people: L };
-  }
-  if (name === "who_has_number") {
-    const L = (await rpc("number_lookup", { p_q: String(a.query || "") })) || [];
-    const out = L.map((r) => ({ kind: r.kind, value: r.value, holder: r.holder_name, holder_id: r.holder_id, designation: r.holder_role, department: r.holder_dept,
-      holds_it_today: !r.to_at, from: r.from_at, until: r.to_at, has_left_the_company: !r.holder_active }));
-    out.filter((r) => r.holds_it_today).slice(0, 3).forEach((r) => addCard(cards, { type: "person", id: r.holder_id, title: r.holder, sub: [r.designation, r.department].filter(Boolean).join(" · ") }));
-    return { register: out };
-  }
-  if (name === "person_details") {
-    const p = await rpc("ai_person", { p_id: a.person_id });
-    if (!p) return { error: "No such person" };
-    addCard(cards, { type: "person", id: p.id, title: p.name, sub: [p.designation, p.department].filter(Boolean).join(" · ") });
-    return { person: p };
-  }
-  if (name === "my_tasks") {
-    const L = (await rpc("ai_my_tasks", { p_filter: String(a.filter || "todo") })) || [];
-    L.slice(0, 8).forEach((t) => addCard(cards, { type: "task", id: t.id, title: t.title, sub: [t.ref, t.due_on ? "due " + t.due_on : "", t.overdue ? "overdue" : ""].filter(Boolean).join(" · ") }));
-    return { tasks: L };
-  }
-  if (name === "waiting_for_me") {
-    const r = (await rpc("ai_my_pending", {})) || {};
-    (r.approvals || []).slice(0, 6).forEach((f) => addCard(cards, { type: "file", kind: f.kind, id: f.id, title: f.name, sub: [f.ref, f.step].filter(Boolean).join(" · ") }));
-    if (r.tasks_to_do || r.tasks_waiting_for_my_rating) addCard(cards, { type: "page", page: "tasks", title: PAGES.tasks });
-    if (r.people_waiting_for_my_yes) addCard(cards, { type: "page", page: "me", title: PAGES.me });
-    return r;
-  }
-  if (name === "find_files") {
-    const L = (await rpc("ai_find_files", { p_q: String(a.query || "") })) || [];
-    L.slice(0, 6).forEach((f) => addCard(cards, { type: "file", kind: f.kind, id: f.id, title: f.name, sub: [f.ref, f.status].filter(Boolean).join(" · ") }));
-    return { files: L };
-  }
-  if (name === "file_details") {
-    const f = await rpc("ai_file", { p_kind: a.kind === "flow" ? "flow" : "request", p_id: a.id });
-    if (!f) return { error: "That file could not be found, or the user may not see it" };
-    addCard(cards, { type: "file", kind: f.kind, id: f.id, title: f.name, sub: [f.ref, f.status].filter(Boolean).join(" · ") });
-    return { file: f };
-  }
-  if (name === "open_page") {
-    if (!PAGES[a.page]) return { error: "Unknown page" };
-    addCard(cards, { type: "page", page: a.page, title: PAGES[a.page] });
-    return { ok: true };
-  }
-  if (name === "propose_task") {
-    const kind = ["personal", "single", "shared", "split"].indexOf(a.kind) > -1 ? a.kind : "single";
-    const title = String(a.title || "").trim();
-    if (title.length < 3) return { ok: false, problem: "A task title is needed" };
-    const due = /^\d{4}-\d{2}-\d{2}$/.test(String(a.due_on || "")) ? a.due_on : "";
-    if (kind !== "personal" && !due) return { ok: false, problem: "A due date is needed. Ask the user by when." };
-    const people = [];
-    if (kind !== "personal") {
-      const asked = Array.isArray(a.people) ? a.people : [];
-      if (!asked.length) return { ok: false, problem: "Ask the user who should do it" };
-      for (const x of asked) {
-        let hit = null;
-        if (x.person_id) { const p = await rpc("ai_person", { p_id: x.person_id }); if (p && p.active) hit = p; }
-        if (!hit) {
-          const L = ((await rpc("ai_find_people", { p_q: String(x.name || "") })) || []).filter((p) => p.active);
-          const exact = L.filter((p) => String(p.name).toLowerCase() === String(x.name || "").trim().toLowerCase());
-          if (exact.length === 1) hit = exact[0];
-          else if (L.length === 1) hit = L[0];
-          else if (!L.length) return { ok: false, problem: "Nobody called '" + x.name + "' was found in SETU. Ask the user for the full name or employee ID." };
-          else return { ok: false, problem: "Several people match '" + x.name + "'. Ask the user which one.",
-            options: L.slice(0, 6).map((p) => ({ person_id: p.id, name: p.name, designation: p.designation, department: p.department })) };
-        }
-        if (people.some((p) => p.id === hit.id)) continue;
-        people.push({ id: hit.id, name: hit.name, part: kind === "split" ? String(x.part || "").trim() : "", due_on: kind === "split" && /^\d{4}-\d{2}-\d{2}$/.test(String(x.due_on || "")) ? x.due_on : "" });
-      }
-      if (kind === "split" && people.some((p) => p.part.length < 2)) return { ok: false, problem: "For a split task, ask what each person's part is" };
-    }
-    const k = kind === "single" && people.length > 1 ? "shared" : (kind !== "personal" && kind !== "single" && people.length === 1 ? "single" : kind);
-    addCard(cards, { type: "task_proposal", kind: k, title: title.slice(0, 200), details: String(a.details || "").slice(0, 2000), due_on: due,
-      priority: ["high", "medium", "low"].indexOf(a.priority) > -1 ? a.priority : "medium", people });
-    return { ok: true, note: "The task is shown to the user with a Confirm button. It is NOT created yet. Tell them to check it and press Confirm.",
-      shown: { kind: k, title, due_on: due, people: people.map((p) => p.name) } };
-  }
-  return { error: "Unknown tool" };
+.shell{display:grid;grid-template-columns:246px 1fr;min-height:100vh}
+.side{background:var(--surface);color:var(--ink-soft);border-right:1px solid var(--line);display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.brand{padding:18px 18px 14px;border-bottom:1px solid var(--line)}
+.brand b{color:var(--indigo);font-size:20px;font-weight:800;letter-spacing:.08em;display:block}
+.brand-mark{display:block;width:118px;height:auto;margin-bottom:6px}
+.brand span{display:block;color:var(--steel);font-size:12px}
+.nav{padding:12px 10px;flex:1;overflow:auto}
+.nav button{width:100%;display:flex;align-items:center;gap:10px;background:none;border:0;color:var(--ink-soft);padding:9px 12px;border-radius:999px;cursor:pointer;text-align:left;font-size:14.5px}
+.nav button:hover{background:#EFF3F4;color:var(--ink)}
+.nav button.on{background:var(--indigo-soft);color:var(--indigo-deep);font-weight:700}
+.nav .pill{margin-left:auto;background:var(--indigo);color:#fff;border-radius:999px;padding:1px 8px;font-size:11.5px;font-weight:700;min-width:20px;text-align:center}
+.nav .grp{color:var(--steel);font-size:11px;letter-spacing:.7px;text-transform:uppercase;font-weight:600;padding:16px 13px 6px}
+.side-foot{padding:12px;border-top:1px solid var(--line)}
+.side-foot .who{display:flex;gap:10px;align-items:center;margin-bottom:9px}
+.side-foot .who b{color:var(--ink);font-size:13.5px;display:block;line-height:1.25}
+.side-foot .who small{color:var(--steel)}
+.main{min-width:0;display:flex;flex-direction:column}
+.top{background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid var(--line);padding:14px 26px;display:flex;align-items:center;gap:14px;position:sticky;top:0;z-index:20}
+.top h1{font-size:22px} .top .sub{color:var(--steel);font-size:13px}
+.wrap{padding:24px 26px 60px;max-width:1180px;width:100%}
+/* ---------- phone layout: bottom tabs, compact header, stacked cards ---------- */
+.tabbar{display:none}
+.tlogo{display:none}
+@media(max-width:900px){
+  body{font-size:15px}
+  .shell{grid-template-columns:1fr;padding-bottom:calc(66px + env(safe-area-inset-bottom,0px))}
+  .side{display:none}
+  .top{padding:calc(8px + env(safe-area-inset-top,0px)) 14px 8px;gap:10px;position:sticky;top:0}
+  .top h1{font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .top .sub{display:none}
+  .tlogo{display:block;height:34px;width:auto;flex:none;margin-right:2px}
+  .top{border-bottom:1px solid var(--line)}
+  .pinchip{padding:4px 9px;font-size:11.5px;white-space:nowrap}
+  .wrap{padding:12px 12px 24px}
+  .wrap .grid.g4,.wrap .grid.g3{grid-template-columns:1fr 1fr;gap:10px} .wrap .grid.g2{grid-template-columns:1fr}
+  .stat{padding:12px 13px 11px} .stat .v{font-size:26px;margin-top:0} .stat .k{font-size:12px;line-height:1.3} .stat .hint{font-size:11.5px;line-height:1.3}
+  .stat:before{width:auto;height:3px;inset:0 0 auto 0}
+  .card.pad{padding:15px}
+  h3{font-size:15.5px}
+  input[type=text],input[type=number],input[type=password],input[type=email],input[type=date],select,textarea{font-size:16px;padding:11px 12px}
+  .btn{padding:11px 16px;font-size:15px;min-height:44px} .btn.sm{padding:8px 13px;font-size:14px;min-height:38px} .btn.ghost.sm{min-height:0}
+  .detail-grid{grid-template-columns:1fr;gap:14px}
+  .tabs button{padding:11px 12px;font-size:15px}
+  .kv{grid-template-columns:104px 1fr}
+  .node{padding-left:42px} .node .body{padding:11px 12px}
+  .handover{margin-left:42px}
+  /* every request list becomes a stack of tappable cards */
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%;box-sizing:border-box}
+  table.cards thead{display:none}
+  table.cards tr{padding:12px 14px;border-bottom:1px solid var(--line)}
+  table.cards tr:last-child{border-bottom:0}
+  table.cards td{padding:1px 0;border:0}
+  table.cards td.meta{display:inline-block;width:auto;margin-right:10px;color:var(--steel);font-size:13px}
+  table.cards td.pos{margin-top:4px}
+  /* dialogs slide up as sheets */
+  .veil{align-items:end;padding:0}
+  .modal{width:100%;max-height:92vh;border-radius:18px 18px 0 0;box-shadow:0 -10px 40px rgba(20,32,47,.25)}
+  .modal .f{border-radius:0;padding-bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+  .modal.viewer{max-height:100vh;height:100vh;border-radius:0}
+  .pinbox{justify-content:center} .pinbox input{width:58px;height:62px}
+  #toasts{left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom,0px))} .toast{max-width:none}
+  .tabbar{display:flex}
+  /* the two document-type tabs become a segmented control */
+  .tabs{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:4px;gap:4px;margin-bottom:14px}
+  .tabs button{flex:1;border-bottom:0;border-radius:9px;padding:10px 8px;font-size:15px;text-align:center}
+  .tabs button.on{background:var(--surface);box-shadow:0 1px 3px rgba(15,20,25,.12);border-bottom:0}
+  /* the primary action stays within reach while the form scrolls */
+  .form-actions{position:sticky;bottom:calc(66px + env(safe-area-inset-bottom,0px));background:linear-gradient(to top,var(--paper) 70%,transparent);padding:14px 0 6px;margin-top:6px;z-index:5}
+  .form-actions .btn.primary{flex:1}
+  .form-actions .hint{width:100%;text-align:center}
+  label{font-size:13.5px;margin-bottom:6px} .hint{font-size:13px}
+  .card{border-radius:14px;box-shadow:0 1px 2px rgba(15,20,25,.05)}
+  .drop{padding:20px 14px;border:1.5px dashed #9DBCE8;background:var(--indigo-soft);color:var(--indigo-deep);font-weight:600;border-radius:12px;line-height:1.35}
+  .drop:before{content:"";display:block;width:26px;height:26px;margin:0 auto 8px;background:no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230159BB' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 16V4M6 10l6-6 6 6M4 20h16'/></svg>")}
+  .drop.disabled{opacity:.45;pointer-events:none;border-style:solid;font-weight:500}
+  .filerow{padding:10px 12px;border-radius:12px}
+  .tabbar button{font-size:11.5px;gap:4px} .tabbar svg{width:24px;height:24px}
+  .tabbar button.raise svg{width:40px;height:40px;padding:8px;margin-top:-14px}
+  .top h1{font-size:18px}
+  .empty{padding:34px 16px} .empty h3{font-size:16px}
+  /* Reports: six filters become a 2-column grid; the summary line drops under the buttons */
+  .filters{grid-template-columns:1fr 1fr!important;gap:10px!important}
+  .actions .summary{margin-left:0!important;flex:0 0 100%;text-align:left;margin-top:6px}
+  /* Requests I can see: search on its own line, selects side by side */
+  .filters-row>div{flex:1 1 100%!important} .filters-row select{flex:1 1 calc(50% - 6px);width:auto!important}
+  /* People / Team cards: the action buttons sit on their own line */
+  table.cards td.acts{text-align:left!important;white-space:normal!important;margin-top:8px;display:flex;gap:8px}
+  table.cards td.acts .hint{align-self:center}
+  table.cards.people td.meta{display:inline}
+  /* chain builders: name takes the row, buttons wrap underneath aligned right */
+  .picked .r{flex-wrap:wrap} .picked .who{flex:1 1 55%} .picked .acts{flex:0 0 100%;display:flex;gap:6px;justify-content:flex-end;padding-left:62px;margin-top:2px}
+  .picked .acts .btn{padding:6px 11px;min-height:36px}
+  .hdr-actions{margin-left:0!important;flex:0 0 100%;margin-top:10px;flex-wrap:wrap} .hdr-actions .btn{flex:1 1 calc(50% - 4px);min-width:120px}
+  /* wide data tables scroll sideways inside their card rather than breaking the page */
+  .scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .scroll-x:before{content:"Swipe sideways to see every column";display:block;padding:8px 14px 0;color:var(--steel);font-size:12px}
+  .kv dt{font-size:12.5px}
+  .finder .results{max-height:60vh}
 }
+.scroll-x{overflow-x:auto}
+.filters{grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+.tabbar{position:fixed;left:0;right:0;bottom:0;background:var(--surface);border-top:1px solid var(--line);z-index:60;
+  padding:6px 4px calc(6px + env(safe-area-inset-bottom,0px));justify-content:space-around}
+.tabbar button{flex:1;background:none;border:0;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:10.5px;color:var(--steel);padding:4px 0;position:relative;font-weight:500}
+.tabbar button.on{color:var(--indigo);font-weight:700}
+.tabbar svg{width:23px;height:23px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.tabbar button.raise svg{width:34px;height:34px;background:var(--indigo);color:#fff;border-radius:50%;padding:6px;margin-top:-10px;box-shadow:0 4px 12px -4px rgba(1,89,187,.7)}
+.tabbar .pill{position:absolute;top:0;left:calc(50% + 4px);background:var(--stop);color:#fff;border-radius:999px;font-size:10px;padding:0 5px;min-width:16px;height:16px;line-height:16px;font-weight:700;text-align:center}
+.sheet-list button{width:100%;display:flex;align-items:center;gap:12px;background:none;border:0;border-bottom:1px solid var(--line);padding:13px 4px;text-align:left;font-size:15.5px;color:var(--ink)}
+.sheet-list button:last-child{border-bottom:0}
+.sheet-list .pill{margin-left:auto;background:var(--indigo);color:#fff;border-radius:999px;padding:1px 8px;font-size:12px;font-weight:700}
 
-// one question → { reply, cards }.  rpc(fn, args) runs a database function as the person; gemini(body) calls the model.
-async function askSetu(o) {
-  const cards = [];
-  const contents = [];
-  (Array.isArray(o.history) ? o.history : []).slice(-8).forEach((h) => {
-    const text = String((h && h.text) || "").slice(0, 1500);
-    if (text) contents.push({ role: h.role === "assistant" ? "model" : "user", parts: [{ text }] });
-  });
-  while (contents.length && contents[0].role !== "user") contents.shift();          // must start with the user
-  contents.push({ role: "user", parts: [{ text: String(o.message || "").slice(0, 1000) }] });
-  const base = { systemInstruction: { parts: [{ text: systemPrompt(o.me) }] }, tools: [{ functionDeclarations: TOOLS }] };
-  let reply = "";
-  for (let round = 0; round < 6; round++) {
-    const res = await o.gemini(Object.assign({}, base, { contents }));
-    const content = res && res.candidates && res.candidates[0] && res.candidates[0].content;
-    const parts = (content && content.parts) || [];
-    const calls = parts.filter((p) => p && p.functionCall);
-    if (!calls.length) { reply = parts.map((p) => (p && p.text) || "").join("").trim(); break; }
-    contents.push(content);                                   // unchanged: the model's own turn (keeps its call ids and signatures)
-    const answers = [];
-    for (const p of calls) {
-      const fc = p.functionCall;
-      let result;
-      try { result = await runTool(fc.name, fc.args, o.rpc, cards); } catch (e) { result = { error: String((e && e.message) || e).slice(0, 300) }; }
-      const fr = { name: fc.name, response: { result } };
-      if (fc.id) fr.id = fc.id;
-      answers.push({ functionResponse: fr });
-    }
-    contents.push({ role: "user", parts: answers });
-  }
-  if (!reply) reply = cards.length ? "Here is what I found." : "I could not work that out. Please ask in another way, or use the pages.";
-  cards.forEach((c) => { delete c._k; });
-  return { reply: reply.slice(0, 4000), cards };
-}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);box-shadow:var(--sh)}
+.card.pad{padding:20px}
+.row{display:flex;gap:14px;align-items:center}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:840px){.g3,.g4{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:540px){.g2,.g3,.g4{grid-template-columns:1fr}}
+label{display:block;font-size:13px;color:var(--ink-soft);font-weight:500;margin-bottom:5px}
+.hint{color:var(--steel);font-size:12.5px;margin-top:5px}
+input[type=text],input[type=number],input[type=password],input[type=email],input[type=date],select,textarea{width:100%;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r);padding:9px 11px}
+input:focus,select:focus,textarea:focus{border-color:var(--indigo);outline:none;box-shadow:0 0 0 3px var(--indigo-soft)}
+/* masked password box (a text box showing dots — see pwInput() in app.js) + Show/Hide */
+.pw-wrap{position:relative;display:block}
+.pw-wrap>input{padding-right:64px}
+.pw-mask{-webkit-text-security:disc}
+.pw-mask.pw-show{-webkit-text-security:none}
+.pw-eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:0;background:transparent;box-shadow:none;color:var(--indigo);font-weight:600;font-size:12.5px;padding:7px 9px;cursor:pointer;width:auto;min-height:0}
+.pw-eye:active,.pw-eye:focus{background:transparent;outline:none;box-shadow:none}
+.pw-eye{-webkit-tap-highlight-color:transparent}
+textarea{min-height:80px;resize:vertical}
+.btn{border:1px solid var(--line-2);background:var(--surface);border-radius:999px;padding:7px 16px;cursor:pointer;font-weight:600;font-size:14px}
+.btn:hover{background:#EFF3F4;border-color:var(--ink-soft)}
+.btn.primary{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.btn.primary:hover{background:var(--indigo-deep);border-color:var(--indigo-deep)}
+.btn.ok:hover{filter:brightness(.93)}
+.btn.bad:hover{filter:brightness(.93)}
+.btn.hold:hover{filter:brightness(.93)}
+.btn.ok{background:var(--seal);border-color:var(--seal);color:#fff}
+.btn.bad{background:var(--stop);border-color:var(--stop);color:#fff}
+.btn.hold{background:var(--hold);border-color:var(--hold);color:#fff}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--indigo);padding:6px 10px;font-weight:600}
+.btn.ghost:hover{background:var(--indigo-soft)}
+.btn.sm{padding:5px 13px;font-size:13px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.tag{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;border:1px solid}
+.t-prog{background:var(--indigo-soft);color:var(--indigo-deep);border-color:#BFDCF8}
+.t-ok{background:var(--seal-soft);color:var(--seal);border-color:#AFE0CB}
+.t-bad{background:var(--stop-soft);color:var(--stop);border-color:#F2C4B9}
+.t-hold{background:var(--hold-soft);color:var(--hold);border-color:#EBD7A6}
+.t-wait{background:var(--surface-2);color:var(--steel);border-color:var(--line)}
+.av{width:34px;height:34px;border-radius:50%;background:var(--indigo-soft);color:var(--indigo-deep);display:grid;place-items:center;font-weight:700;font-size:12.5px;flex:none;border:1px solid #CFE3F7}
+.av.sm{width:26px;height:26px;font-size:11px}
+.av.dark{background:var(--indigo);color:#fff;border-color:transparent}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:12.5px;color:var(--steel);font-weight:600;padding:9px 12px;border-bottom:1px solid var(--line)}
+td{padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+tbody tr:hover{background:#F7F9F9;cursor:pointer}
+tbody tr:last-child td{border-bottom:0}
+.empty{text-align:center;padding:46px 20px;color:var(--steel)}
+.empty h3{color:var(--ink);margin-bottom:6px}
+.stat{padding:17px 18px;position:relative;overflow:hidden}
+.stat:before{content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--acc,var(--indigo))}
+.stat .v{color:var(--acc,var(--ink))}
+.stat .k{font-size:12.5px;color:var(--steel)}
+.stat .v{font-size:28px;font-weight:700;line-height:1.15;margin-top:2px;letter-spacing:-.02em}
+.bar{height:9px;border-radius:6px;background:var(--surface-2);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:6px}
 
-// ---- server ----
+.rail{position:relative;padding-left:8px}
+.node{position:relative;padding:0 0 4px 46px}
+.node:before{content:"";position:absolute;left:16px;top:30px;bottom:-6px;width:2px;background:var(--line-2)}
+.node:last-child:before{display:none}
+.node.done:before{background:var(--seal)}
+.node .dot{position:absolute;left:0;top:2px;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:700;font-size:13px;background:var(--surface);border:2px solid var(--line-2);color:var(--steel)}
+.node.done .dot{background:var(--seal);border-color:var(--seal);color:#fff}
+.node.stop .dot{background:var(--stop);border-color:var(--stop);color:#fff}
+.node.hold .dot{background:var(--hold);border-color:var(--hold);color:#fff}
+.node.live .dot{background:var(--indigo);border-color:var(--indigo);color:#fff;box-shadow:0 0 0 4px var(--indigo-soft)}
+.node .body{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;margin-bottom:14px;background:var(--surface)}
+.node.live .body{border-color:var(--indigo);box-shadow:0 0 0 3px var(--indigo-soft)}
+.node.locked .body{opacity:.82;border-style:dashed}
+.node.locked .body h4{color:var(--ink-soft)}
+.node .body h4{font-size:14.5px;font-weight:700}
+.node .meta{color:var(--steel);font-size:12.5px}
+.node .said{margin-top:9px;border-left:3px solid var(--line-2);padding:2px 0 2px 11px;color:var(--ink-soft);font-size:13.5px;white-space:pre-wrap}
+.node.cond .said{border-left-color:var(--hold)}
+.node.flash .body{animation:flash 1.6s ease-out}
+@keyframes flash{0%{box-shadow:0 0 0 0 rgba(47,62,158,.45)}100%{box-shadow:0 0 0 14px rgba(47,62,158,0)}}
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-const send = (status, body) => new Response(JSON.stringify(body), { status, headers: Object.assign({}, CORS, { "content-type": "application/json" }) });
+.handover{display:flex;align-items:center;gap:10px;margin:2px 0 14px 46px;font-size:12px;color:var(--steel)}
+.handover i{flex:1;height:1px;background:repeating-linear-gradient(90deg,var(--line-2) 0 5px,transparent 5px 10px)}
+.handover b{color:#fff;background:var(--ink);border:0;border-radius:999px;padding:3px 12px;font-size:11.5px;font-weight:600}
+.handover span{background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:2px 11px}
+.sub{margin-top:11px;border-left:2px solid var(--line-2);padding-left:13px}
+.sub-h{font-size:12px;color:var(--steel);margin-bottom:8px}
+.subrow{display:flex;gap:10px;padding:9px 11px;border:1px solid var(--line);border-radius:var(--r);background:var(--surface-2);margin-bottom:7px}
+.drop{border:1.5px dashed var(--line-2);border-radius:var(--r);padding:18px;text-align:center;color:var(--steel);background:var(--surface-2);cursor:pointer}
+.drop:hover{border-color:var(--indigo);color:var(--indigo-deep)}
+.drop.busy{opacity:.6;pointer-events:none}
+.filelist{margin-top:10px;display:flex;flex-direction:column;gap:7px}
+.filerow{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface)}
+.ft{width:32px;height:30px;border-radius:7px;display:grid;place-items:center;font-size:10px;font-weight:700;color:#fff;flex:none}
+.ft.pdf{background:var(--stop)}.ft.xls{background:var(--seal)}.ft.doc{background:var(--indigo)}.ft.oth{background:var(--steel)}
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
-  if (req.method !== "POST") return send(405, { ok: false, message: "POST only" });
-  const auth = req.headers.get("authorization") || "";
-  if (!/^Bearer\s+\S+/i.test(auth)) return send(401, { ok: false, why: "signin", message: "Sign in first." });
+#ask-fab{position:fixed;right:18px;bottom:18px;z-index:58;background:var(--indigo);color:#fff;border:0;border-radius:999px;padding:11px 16px 11px 14px;display:flex;gap:8px;align-items:center;font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 8px 22px -6px rgba(1,89,187,.65)}
+#ask-panel{position:fixed;right:18px;bottom:18px;z-index:95;width:400px;max-width:calc(100vw - 24px);height:600px;max-height:calc(100vh - 36px);background:var(--surface);border:1px solid var(--line-2);border-radius:16px;box-shadow:0 18px 50px -12px rgba(20,32,47,.45);display:flex;flex-direction:column;overflow:hidden}
+.ask-h{display:flex;gap:8px;align-items:center;background:var(--indigo);color:#fff;padding:12px 14px}.ask-x{background:rgba(255,255,255,.16);color:#fff;border:0;border-radius:999px;padding:5px 11px;font-size:12.5px;font-weight:600;cursor:pointer}
+.ask-m{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px;background:var(--paper)}
+.ask-b{max-width:88%;padding:9px 12px;border-radius:14px;font-size:14px;line-height:1.45;word-break:break-word}.ask-b.me{align-self:flex-end;background:var(--indigo);color:#fff;border-bottom-right-radius:4px}.ask-b.ai{align-self:flex-start;background:var(--surface);border:1px solid var(--line);border-bottom-left-radius:4px}.ask-b.err{border-color:var(--stop);color:var(--stop)}
+.ask-hello{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;font-size:14px;line-height:1.45}
+.ask-cards{display:flex;flex-direction:column;gap:6px;max-width:92%}.ask-card{display:flex;gap:9px;align-items:center;text-align:left;background:var(--surface);border:1px solid var(--line-2);border-radius:12px;padding:8px 11px;cursor:pointer;font-size:13.5px;width:100%}.ask-card:hover{border-color:var(--indigo)}
+.ask-prop{background:var(--surface);border:1px solid var(--indigo);border-radius:12px;padding:10px 12px;font-size:13.5px}
+.ask-f{display:flex;gap:6px;align-items:center;padding:10px;border-top:1px solid var(--line);background:var(--surface)}.ask-f input{flex:1;min-width:0}.ask-f select{width:auto;padding:6px 4px;font-size:12px;max-width:84px}
+#ask-mic{border:1px solid var(--line-2);background:var(--surface);border-radius:50%;width:38px;height:38px;flex:none;cursor:pointer;font-size:16px}#ask-mic.on{background:var(--stop);border-color:var(--stop)}
+@media(max-width:640px){#ask-fab{right:12px;bottom:calc(78px + env(safe-area-inset-bottom,0px));padding:11px 13px}.ask-fab-l{display:none}#ask-panel{right:0;left:0;top:0;bottom:0;width:auto;max-width:none;height:auto;max-height:none;border-radius:0;border:0}}
+.me-row{display:flex;gap:12px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}.me-row>.hint:first-child{width:108px;flex:none}
+.finder{position:relative}
+.results{position:absolute;z-index:30;left:0;right:0;top:100%;margin-top:4px;background:var(--surface);border:1px solid var(--line-2);border-radius:var(--r);box-shadow:var(--sh);max-height:250px;overflow:auto}
+.results button{width:100%;display:flex;gap:10px;align-items:center;background:none;border:0;padding:9px 12px;cursor:pointer;text-align:left}
+.results button:hover{background:var(--indigo-soft)}
+.picked{border:1px solid var(--line);border-radius:var(--r);overflow:hidden;margin-top:12px}
+.picked .r{display:flex;align-items:center;gap:11px;padding:10px 12px;border-bottom:1px solid var(--line);background:var(--surface)}
+.picked .r:last-child{border-bottom:0}
+.seq{width:26px;height:26px;border-radius:50%;background:var(--indigo);color:#fff;display:grid;place-items:center;font-size:12.5px;font-weight:700;flex:none}
 
-  let b;
-  try { b = await req.json(); } catch (_) { return send(400, { ok: false, message: "Bad request" }); }
-  const message = String((b && b.message) || "").trim();
-  if (!message) return send(200, { ok: false, why: "empty", message: "Type a question." });
+.auto{position:relative}
+.auto .flag{position:absolute;right:9px;top:0;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:20px;pointer-events:none}
+.auto .flag.hi{background:var(--seal-soft);color:var(--seal)}
+.auto .flag.mid{background:var(--hold-soft);color:var(--hold)}
+.auto.hi input,.auto.hi select,.auto.hi textarea{border-color:#8FC9BC;background:#FBFEFD}
+.auto.mid input,.auto.mid select,.auto.mid textarea{border-color:#D9B871;background:#FFFDF7}
 
-  // every database call below runs as the signed-in person (their token), never with a master key
-  const sb = createClient(Deno.env.get("SUPABASE_URL"), Deno.env.get("SUPABASE_ANON_KEY"), {
-    global: { headers: { Authorization: auth } }, auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const rpc = async (fn, args) => { const r = await sb.rpc(fn, args || {}); if (r.error) throw new Error(r.error.message); return r.data; };
+.pinchip{display:flex;align-items:center;gap:8px;border:1px solid var(--line-2);border-radius:999px;padding:5px 12px;background:var(--surface);font-size:12.5px;cursor:pointer}
+.pinchip .led{width:8px;height:8px;border-radius:50%;background:var(--stop)}
+.pinchip.ok .led{background:var(--seal)}
+.pinbox{display:flex;gap:8px}
+.pinbox input{width:52px;height:56px;text-align:center;font-size:22px;font-weight:600}
 
-  let gate;
-  try { gate = await rpc("ai_gate", {}); } catch (e) { return send(200, { ok: false, why: "setup", message: "Ask SETU is not set up yet." }); }
-  if (!gate || !gate.ok) return send(200, { ok: false, why: (gate && gate.why) || "off", message: (gate && gate.message) || "Ask SETU is not available." });
+.veil{position:fixed;inset:0;background:rgba(20,32,47,.6);display:grid;place-items:center;padding:20px;z-index:100}
+.modal{background:var(--surface);border-radius:var(--r-lg);width:min(520px,100%);max-height:88vh;overflow:auto;box-shadow:0 30px 70px -20px rgba(20,32,47,.6)}
+.modal .h{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px}
+.modal .c{padding:20px 22px}
+.modal .f{padding:14px 22px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:9px;align-items:center;background:var(--surface-2);border-radius:0 0 var(--r-lg) var(--r-lg)}
+.modal.viewer{width:min(1000px,100%);max-height:94vh;display:flex;flex-direction:column;overflow:hidden}
+.modal.viewer .c{flex:1;overflow:auto;background:#5A6675;padding:16px;display:flex;flex-direction:column;align-items:center;gap:14px}
+.modal.viewer canvas{box-shadow:0 6px 20px rgba(0,0,0,.35);background:#fff;max-width:100%}
+.sheet{background:#fff;padding:18px;border-radius:8px;max-width:100%;overflow:auto;font-size:13px}
+.sheet table{min-width:460px}
+.sheet td,.sheet th{border:1px solid var(--line);padding:5px 9px;white-space:nowrap}
+#toasts{position:fixed;right:18px;bottom:18px;z-index:200;display:flex;flex-direction:column;gap:9px}
+.toast{background:var(--ink);color:#fff;padding:11px 16px;border-radius:var(--r);box-shadow:var(--sh);max-width:340px;font-size:13.5px}
+.toast.ok{background:var(--seal)}.toast.bad{background:var(--stop)}
+.credit{text-align:center;font-size:11.5px;color:var(--steel);margin-top:10px;letter-spacing:.2px}
+.credit b{color:var(--ink-soft);font-weight:600}
+.hide{display:none!important}
+.sep{height:1px;background:var(--line);margin:16px 0}
+.kv{display:grid;grid-template-columns:130px 1fr;gap:5px 14px;font-size:13.5px}
+.kv dt{color:var(--steel)} .kv dd{margin:0;font-weight:500;word-break:break-word}
+.amount{font-size:25px;font-weight:700;letter-spacing:-.02em}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 15px;cursor:pointer;color:var(--steel);white-space:nowrap}
+.tabs button.on{color:var(--indigo);border-bottom-color:var(--indigo);border-bottom-width:3px;font-weight:700}
+.banner{border-radius:var(--r);padding:13px 16px;display:flex;gap:12px;align-items:flex-start;margin-bottom:16px}
+.banner.hold{background:var(--hold-soft);border:1px solid #EBD7A6;border-left:4px solid var(--hold)}
+.banner.live{background:var(--indigo-soft);border:1px solid #BFDCF8;border-left:4px solid var(--indigo)}
+.detail-grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
+@media(max-width:960px){.detail-grid{grid-template-columns:1fr}}
+.spin{width:15px;height:15px;border:2px solid var(--line-2);border-top-color:var(--indigo);border-radius:50%;display:inline-block;animation:sp .7s linear infinite;vertical-align:-2px}
+@keyframes sp{to{transform:rotate(360deg)}}
 
-  const key = Deno.env.get("GEMINI_API_KEY");
-  if (!key) return send(200, { ok: false, why: "setup", message: "Ask SETU is not set up yet (the AI key is missing). Tell the super admin." });
-  const model = gate.model || "gemini-3.1-flash-lite";
-  const gemini = async (body) => {
-    const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 25000);
-    try {
-      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent", {
-        method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body), signal: ctl.signal });
-      if (!r.ok) { const t = await r.text(); const err = new Error("Gemini " + r.status + ": " + t.slice(0, 400)); err.status = r.status; throw err; }
-      return await r.json();
-    } finally { clearTimeout(timer); }
-  };
+.offline{position:fixed;left:50%;transform:translateX(-50%);bottom:12px;background:var(--stop);color:#fff;padding:7px 14px;border-radius:999px;font-size:13px;z-index:300}
+.busy-veil{position:fixed;inset:0;background:rgba(255,255,255,.55);display:grid;place-items:center;z-index:90}
+.banner.bad{background:var(--stop-soft,#FCECEA);border:1px solid #F3C6BF;border-left:4px solid var(--stop)}
 
-  try {
-    const out = await askSetu({ message, history: b.history, me: gate, rpc, gemini });
-    try { await rpc("ai_save_turn", { p_question: message, p_answer: out.reply, p_cards: out.cards }); } catch (_) { /* history is a convenience */ }
-    return send(200, { ok: true, reply: out.reply, cards: out.cards, remaining: gate.remaining });
-  } catch (e) {
-    console.error("ask-setu", model, String((e && e.message) || e));
-    const st = e && e.status;
-    const msg = st === 404 || st === 400 ? "The AI service did not accept the request (model '" + model + "'). The super admin can check the model name under Org & profiles → Ask SETU."
-      : st === 401 || st === 403 ? "The AI key was not accepted. Tell the super admin."
-      : st === 429 ? "The AI service is busy right now. Please try again in a minute."
-      : "Ask SETU could not reach the AI service just now. Please try again in a minute, or use the pages.";
-    return send(200, { ok: false, why: "ai_down", message: msg });
-  }
-});
+/* ---- Gate Pass ---- */
+.seg{display:flex;gap:4px;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:4px}
+.seg button{flex:1;border:0;background:none;padding:9px 10px;border-radius:9px;font-weight:600;font-size:13.5px;color:var(--steel);cursor:pointer}
+.seg button.on{background:var(--surface);color:var(--indigo);box-shadow:var(--sh)}
+.gp-list{display:grid;gap:12px;padding:12px 16px}
+.gp-card{border:1px solid var(--line)}
+.gp-month-h{padding:12px 16px 4px;font-weight:700;font-size:14px}
+.gp-timeline{display:grid;gap:2px}
+.gp-step{display:flex;align-items:center;gap:11px;padding:7px 0;position:relative}
+.gp-step .gp-dot{width:13px;height:13px;border-radius:50%;border:2px solid var(--line-2);background:var(--surface);flex:none}
+.gp-step.done .gp-dot{background:var(--seal);border-color:var(--seal)}
+.gp-step:not(:last-child):before{content:"";position:absolute;left:6px;top:20px;bottom:-2px;width:2px;background:var(--line)}
+.gp-pick{position:relative}
+.gp-search{width:100%}
+.gp-res{position:relative}
+/* inside a dialog the results sit in normal flow (and the dialog scrolls) so they are never clipped */
+.results.inline{position:static;margin-top:8px;max-height:46vh;box-shadow:none;border-radius:var(--r)}
+/* compact console rows + tiny expandable thumbs */
+.gp-rth{white-space:nowrap;width:1%;vertical-align:middle}
+.gp-mini{display:inline-block;width:34px;height:34px;border-radius:6px;overflow:hidden;background:#0F1419;vertical-align:middle;margin-right:3px;position:relative}
+.gp-mini img{width:100%;height:100%;object-fit:cover;display:block}
+.gp-mini.has{cursor:pointer}
+.gp-mini-x{color:#94a3b8;font-size:13px;font-weight:600;display:grid;place-items:center;height:100%}
+.gp-mini-empty{background:repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 3px,rgba(148,163,184,.14) 3px,rgba(148,163,184,.14) 6px);border:1px dashed var(--line)}
+.gp-mini-empty .gp-mini-x{color:#94a3b8;font-size:10px;font-weight:700}
+.gp-mini.gp-th-retry{background:var(--surface-2);border:1px dashed var(--line);cursor:pointer}
+.gp-mini.gp-th-retry .gp-th-none{font-size:8px;line-height:1.05;text-align:center;color:#94a3b8;display:grid;place-items:center;height:100%;padding:1px}
+.gp-th-img.gp-th-empty{background:repeating-linear-gradient(45deg,var(--surface-2),var(--surface-2) 5px,rgba(148,163,184,.12) 5px,rgba(148,163,184,.12) 10px);border:1px dashed var(--line)}
+.gp-th-img.gp-th-retry{cursor:pointer}
+.spin.sm{width:12px;height:12px;border-width:2px}
+/* report bar charts */
+.gpr-bar{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.gpr-bar-l{flex:0 0 150px;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gpr-bar-t{flex:1;height:14px;background:var(--surface-2);border-radius:7px;overflow:hidden}
+.gpr-bar-t i{display:block;height:100%;background:var(--indigo);border-radius:7px;transition:width .3s}
+.gpr-bar-v{flex:0 0 38px;text-align:right;font-size:12.5px;font-weight:700}
+@media(max-width:600px){.gpr-bar-l{flex-basis:100px}}
+.gpr-click{cursor:pointer}
+.gpr-bar.gpr-click{padding:4px 6px;margin:0 -6px 4px;border-radius:8px;transition:background .15s}
+.gpr-bar.gpr-click:hover{background:var(--surface-2)}
+.gpr-bar.gpr-click.on{background:var(--surface-2);box-shadow:inset 3px 0 0 var(--indigo)}
+.gpr-click .stat{transition:box-shadow .15s}
+.gpr-click:hover .stat{box-shadow:0 0 0 2px var(--indigo)}
+/* ALDS flow chain */
+.flow-step{display:flex;gap:11px;padding:9px 0;position:relative}
+.flow-step:not(:last-child):before{content:"";position:absolute;left:6px;top:24px;bottom:-2px;width:2px;background:var(--line)}
+.flow-dot{width:13px;height:13px;border-radius:50%;border:2px solid var(--line-2);background:var(--surface);flex:none;margin-top:3px}
+.flow-step.done .flow-dot{background:var(--seal);border-color:var(--seal)}
+.flow-step.live .flow-dot{background:var(--indigo);border-color:var(--indigo);box-shadow:0 0 0 4px var(--indigo-soft)}
+/* item 9: make the live (pending) step unmistakable in the timeline */
+.flow-step.live{background:var(--indigo-soft);border-left:3px solid var(--indigo);border-radius:8px;padding-left:9px;margin-left:-9px}
+.pending-with{margin-top:5px;font-size:12.5px;font-weight:600;color:var(--indigo);display:inline-block;line-height:1.45;max-width:100%}
+.pending-with:before{content:"\25CF";font-size:9px;margin-right:6px;vertical-align:1px}
+.pending-with .pw-sub{font-weight:400;color:var(--steel)}
+/* parked on an ask: the approver's row goes quiet; the highlight moves to the tagged people */
+.flow-step.parked{background:var(--surface-2);border-left:3px dashed var(--line-2);border-radius:8px;padding-left:9px;margin-left:-9px}
+.flow-step.parked .flow-dot{background:var(--surface);border-color:var(--steel)}
+.pending-with.tagged{color:var(--hold);background:var(--hold-soft);border:1px solid var(--hold);border-radius:12px;padding:4px 11px}
+.pending-with.tagged:before{color:var(--hold)}
+.node.parked .dot{background:var(--surface);border-color:var(--steel);color:var(--steel)}
+.node.parked .body{background:var(--surface-2);border-style:dashed}
+/* items 5/6: step comment thread — Facebook-style, dated and attributed */
+.cmt-thread{margin-top:7px;border:1px solid var(--line);border-radius:8px;background:var(--surface-2)}
+.cmt-thread>summary{cursor:pointer;padding:6px 10px;font-size:12.5px;font-weight:600;color:var(--indigo);list-style:none;user-select:none}
+.cmt-thread>summary::-webkit-details-marker{display:none}
+.cmt-thread>summary:before{content:"\1F4AC  ";}
+.cmt-list{padding:4px 10px 9px}
+.cmt{padding:7px 0;border-top:1px solid var(--line)}
+.cmt:first-child{border-top:none}
+.cmt-h{display:flex;align-items:baseline;gap:7px;flex-wrap:wrap;font-size:13px}
+.cmt-h>b{font-weight:600}
+.cmt-to{font-size:11px;color:var(--steel)}
+.cmt-t{margin-left:auto;font-size:11px;color:var(--steel);white-space:nowrap}
+.cmt-b{font-size:13px;margin-top:2px;white-space:pre-wrap;word-break:break-word}
+/* item 2: tappable summary tiles */
+.stat.tap{cursor:pointer;transition:transform .08s ease,box-shadow .12s ease}
+.stat.tap:hover{box-shadow:0 0 0 2px var(--indigo-soft)}
+.stat.tap:active{transform:scale(.98)}
+/* item 8: hand-off highlighting — tagged to me (amber) / I'm awaiting a reply (muted) */
+tr.row-tagme>td{background:var(--hold-soft,#FFF6E5)}
+tr.row-tagme>td:first-child{box-shadow:inset 4px 0 0 var(--hold)}
+tr.row-await>td{background:var(--surface-2)}
+tr.row-await>td:first-child{box-shadow:inset 4px 0 0 var(--line-2)}
+.tag-me{color:var(--hold);font-weight:700}
+.tagme-panel{border-color:var(--hold);box-shadow:0 0 0 3px var(--hold-soft,#FFF6E5)}
+/* item 10: the order an ask travels */
+.tchain{display:flex;flex-wrap:wrap;align-items:center;gap:5px}
+.tchain-chip{font-size:12px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);background:var(--surface)}
+.tchain-chip.tc-done{background:#E7F5EC;border-color:#BFE3CB;color:var(--seal)}
+.tchain-chip.tc-now{background:var(--hold-soft,#FFF6E5);border-color:var(--hold);color:var(--hold);font-weight:700}
+.tchain-chip.tc-next{color:var(--hold);border:1px dashed var(--hold);background:var(--surface)}
+.tchain-chip.tc-back{border-style:dashed;color:var(--steel)}
+.tchain-arr{color:var(--steel);font-size:12px}
+/* item 14: site photos — tag each with station + date, and show them grouped by station */
+.site-tags{border:1px solid var(--line);border-radius:10px;padding:10px;background:var(--surface-2)}
+.site-tag-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr) 150px;gap:8px;align-items:center;padding:6px 0;border-top:1px solid var(--line)}
+.site-tag-row:first-of-type{border-top:none}
+.site-tag-row .st-name{font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media (max-width:560px){.site-tag-row{grid-template-columns:1fr 1fr}.site-tag-row .st-name{grid-column:1/-1}}
+.site-photos{margin-top:8px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;background:var(--surface-2)}
+.site-photos .sp-head{font-size:12.5px;font-weight:600;margin-bottom:4px}
+.site-photos .sp-group{padding:5px 0;border-top:1px solid var(--line)}
+.site-photos .sp-group:first-of-type{border-top:none}
+.site-photos .sp-st{font-size:13px;font-weight:600;margin-bottom:4px}
+.gp-picked{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:var(--r);padding:8px 11px;background:var(--surface-2)}
+.gp-selfie-wrap{margin-top:6px}
+.gp-selfie-done{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.gp-selfie-ok{color:var(--seal);font-weight:600}
+.selfie .modal,.modal.selfie{max-width:440px}
+.selfie-stage{position:relative;background:#0F1419;border-radius:var(--r);overflow:hidden;aspect-ratio:1/1;display:grid;place-items:center;color:#fff;isolation:isolate}
+.selfie-ring{position:absolute;left:50%;top:48%;transform:translate(-50%,-50%);width:62%;height:82%;border:3px dashed rgba(255,255,255,.92);border-radius:50%;box-shadow:0 0 0 2000px rgba(15,20,25,.45);pointer-events:none}
+.selfie-video{width:100%;height:100%;object-fit:cover}
+.selfie-video.mirror{transform:scaleX(-1)}
+.selfie-hint,.selfie-err{padding:18px;text-align:center;font-size:14px}
+.selfie-err{color:#fff}
+/* selfie looks: colour wash, round filter previews */
+/* Garuda (CNG stock) — sections live in SETU's left sidebar; keep SETU theme */
+.garuda-mode .tabbar,.garuda-mode .main>.top{display:none!important}
+.garuda-mode #view{padding-top:0}
+/* sidebar "Back to SETU" + a scan shortcut shown above the Garuda sections */
+.gar-side-top{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-bottom:1px solid var(--line);margin-bottom:6px}
+.gar-side-top .btn{width:100%;justify-content:center}
+/* slim in-content header (back/scan + mobile section bar); desktop uses the sidebar */
+.gar-head{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 16px;margin:-16px -16px 14px}
+.gar-head h2{font-size:17px;margin:0}
+.gar-head .gar-actions{margin-left:auto;display:flex;gap:8px}
+.gar-chips{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:0 2px 2px;margin:0 0 12px}
+.gar-chips button{white-space:nowrap;font:inherit;font-weight:600;font-size:13px;padding:7px 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--steel)}
+.gar-chips button.on{background:var(--indigo);color:#fff;border-color:var(--indigo)}
+@media(min-width:901px){.gar-chips,.gar-head .gar-mob{display:none}}
+@media(max-width:900px){.gar-head{margin:-16px -16px 12px}}
+.gar-top{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:linear-gradient(120deg,#0c3aa6,#0a2c78);color:#fff;padding:12px 16px;border-radius:0 0 var(--r) var(--r);margin:-4px 0 14px}
+.gar-brand{font-weight:800;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
+.gar-brand img{height:20px}
+.gar-colsel{font:inherit;font-weight:600;padding:7px 10px;border-radius:8px;border:0;background:#fff;color:var(--ink);min-width:150px}
+.gar-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+.gar-actions .btn{background:rgba(255,255,255,.16);color:#fff;border-color:transparent}
+.gar-actions .btn:hover{background:rgba(255,255,255,.28)}
+.gar-box{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.gar-tile{border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--surface);cursor:pointer;transition:border-color .12s}
+.gar-tile:hover{border-color:var(--indigo)}
+.gar-tile b{display:block;font-size:15px}
+.gar-subtabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.sf-tint{position:absolute;inset:0;mix-blend-mode:soft-light;pointer-events:none}
+.sf-filters{display:flex;gap:12px;overflow-x:auto;padding:12px 6px 2px;scrollbar-width:none;-webkit-overflow-scrolling:touch;scroll-snap-type:x proximity}
+.sf-filters::-webkit-scrollbar{display:none}
+.sf-chip{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:5px;background:none;border:0;padding:0;font:inherit;font-size:11.5px;color:var(--steel);cursor:pointer;scroll-snap-align:start;-webkit-tap-highlight-color:transparent}
+.sf-thumb{position:relative;width:54px;height:54px;border-radius:50%;overflow:hidden;background:linear-gradient(135deg,#536471,#0F1419);box-shadow:0 0 0 2px var(--surface),0 0 0 3px var(--line-2);isolation:isolate}
+.sf-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.sf-thumb img:not([src]){visibility:hidden}
+.sf-thumb i{position:absolute;inset:0;mix-blend-mode:soft-light}
+.sf-chip.on{color:var(--indigo);font-weight:700}
+.sf-chip.on .sf-thumb{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--indigo)}
+/* gateman console: approval selfies side by side */
+.gp-thumbs{display:flex;gap:10px;flex-wrap:wrap}
+.gp-th{flex:1 1 90px;min-width:90px;max-width:140px}
+.gp-th-img{position:relative;aspect-ratio:1/1;border-radius:10px;overflow:hidden;background:#0F1419;display:grid;place-items:center;border:1px solid var(--line)}
+.gp-th-img img{width:100%;height:100%;object-fit:cover;display:block}
+.gp-th-img.has{cursor:pointer}
+.gp-th-none{color:#94a3b8;font-size:11px}
+.gp-th-cap{margin-top:5px;font-size:12px;line-height:1.3}
+.gp-th-cap b{font-size:12.5px}
+
+/* ---- v133 Celebrations & Fun ---- */
+.fun-thought{display:flex;gap:12px;align-items:center;margin-bottom:16px;background:linear-gradient(90deg,#FFF9EC,#FFFFFF);border-color:#F2DDAA}
+.fun-bulb{font-size:26px;line-height:1}
+.fun-thought-txt{font-size:15px;font-weight:600;color:var(--ink)}
+.fun-sec{margin-bottom:16px}
+.fun-sec h3{display:flex;align-items:center;flex-wrap:wrap}
+.fun-switch{display:flex;align-items:flex-start;gap:10px;margin:10px 0 0;cursor:pointer}
+.fun-switch input{width:auto;margin-top:4px}
+.fun-sample{margin-top:8px;min-height:22px;font-size:15px;white-space:pre-line}
+.fun-gifgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin-top:10px}
+.fun-gif{position:relative;display:block;padding:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#000;aspect-ratio:1/1;cursor:pointer}
+.fun-gif img{width:100%;height:100%;object-fit:cover;display:block}
+.fun-gif.has .chip-x{position:absolute;top:4px;right:4px}
+.chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px 4px 11px;border:1px solid var(--line);border-radius:999px;background:var(--surface);margin:4px 6px 0 0;font-size:13px}
+.chip-x{border:0;background:var(--paper);color:var(--ink);width:22px;height:22px;border-radius:50%;cursor:pointer;font-size:15px;line-height:1;display:inline-grid;place-items:center}
+.n-gif{display:block;max-width:220px;max-height:160px;border-radius:10px;margin-top:8px;border:1px solid var(--line)}
+.modal.fun-welcome .h{display:none}
+.modal.fun-welcome .c{padding:0}
+.fun-wel{text-align:center;padding:0 0 10px}
+.fun-wel-img:empty{display:none}
+.fun-wel-img img{display:block;width:100%;max-height:52vh;object-fit:cover;border-radius:var(--r-lg) var(--r-lg) 0 0}
+.fun-wel h2{font-size:24px;margin:18px 20px 6px;line-height:1.25}
+.fun-wel p{margin:0 22px;color:var(--ink-soft);font-size:15px;line-height:1.55}
+/* the live-view frame on a gate-pass selfie (the saved photo gets the same frame drawn in) */
+.sf-fest{position:absolute;inset:0;pointer-events:none;border:4.5% solid transparent;border-image:linear-gradient(135deg,#F7C94B,#B8441F,#F7C94B) 1;box-shadow:inset 0 0 0 2px rgba(255,255,255,.7)}
+.sf-fest i{position:absolute;font-style:normal;font-size:9vmin;line-height:1}
+.sf-fest i:nth-child(1){top:3%;left:3%}.sf-fest i:nth-child(2){top:3%;right:3%}.sf-fest i:nth-child(3){bottom:11%;left:3%}.sf-fest i:nth-child(4){bottom:11%;right:3%}
+.sf-fest b{position:absolute;left:50%;bottom:7%;transform:translateX(-50%);background:rgba(122,31,31,.78);color:#FFE7A3;padding:4px 16px;border-radius:999px;font-size:14px;white-space:nowrap}
+/* Diwali theme — only while the owner has it on */
+body.theme-diwali{--paper:#FFF4E3;--line:#F0D9B5;--indigo-soft:#FDEBD0}
+body.theme-diwali .top{background:linear-gradient(90deg,#7A1F1F,#B8441F 55%,#D98A1C);border-bottom:2px solid #F2C14E;padding-bottom:26px}
+body.theme-diwali .top h1,body.theme-diwali .top .sub{color:#fff}
+body.theme-diwali .top .tlogo{filter:brightness(0) invert(1)}
+body.theme-diwali .top .pinchip{background:rgba(255,255,255,.14);color:#fff;border-color:rgba(255,255,255,.35)}
+body.theme-diwali .top::after{content:"🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔 ✨ 🪔";position:absolute;left:0;right:0;bottom:4px;text-align:center;font-size:14px;letter-spacing:8px;white-space:nowrap;overflow:hidden;pointer-events:none;line-height:1}
+body.theme-diwali .side .brand b{color:#B8441F}
+body.theme-diwali .side .brand{background:linear-gradient(180deg,#FFF1D6,#fff)}
+body.theme-diwali .nav button.on{background:#FDEBD0;color:#7A1F1F}
+body.theme-diwali .tabbar{border-top:2px solid #F2C14E}
+body.theme-diwali .card{border-color:#EAD2A0}
+
+/* ---- v135 Pending by person: each stage is a button ---- */
+.fl-whostages{display:flex;flex-wrap:wrap;gap:5px}
+.filters-row select{max-width:100%}
+.fl-whostage{border:1px solid var(--line);background:var(--surface);color:var(--ink-soft);border-radius:999px;padding:3px 10px;font-size:12.5px;cursor:pointer;line-height:1.4}
+.fl-whostage b{color:var(--ink)}
+.fl-whostage:hover{border-color:var(--indigo);color:var(--indigo)}
+.fl-whostage.on{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.fl-whostage.on b{color:#fff}
+</style>
+</head>
+<body>
+
+<section id="signin">
+  <div class="si-wrap">
+    <div class="si-copy">
+      <img src="logo-lockup-white.png" alt="SETU" class="si-logo">
+      <h1>Every file,<br>and whose desk it is on.</h1>
+      <p class="si-lead">Raise an indent or a work order, attach the ERP document, choose who signs and in what order. Each person acts only when the one before them has.</p>
+      <div class="rail-demo">
+        <div class="on"><i>1</i> Raised, ERP document attached</div>
+        <div class="on"><i>2</i> Approved by the site manager</div>
+        <div class="on"><i>3</i> With finance now</div>
+        <div><i>4</i> Director waits his turn</div>
+      </div>
+      <div class="si-foot">Decisions are signed with a PIN set fresh each day. The record is never deleted.<br>Designed and developed by <b>Sunny Gupta</b></div>
+    </div>
+    <div class="si-card">
+      <img src="logo-lockup.png" alt="SETU" class="si-card-logo">
+      <h2 id="si-title">Sign in</h2>
+      <p class="hint" style="margin:6px 0 18px" id="si-sub"></p>
+      <div id="si-fields"></div>
+      <div id="si-err" class="hide" style="color:var(--stop);font-size:13px;margin-top:10px"></div>
+      <button class="btn primary" style="width:100%;margin-top:16px" id="si-go">Sign in</button>
+      <p class="hint" style="text-align:center;margin-top:12px" id="si-swapwrap">
+        <span id="si-swap-t">New here?</span>
+        <button class="btn ghost sm" id="si-swap">Create an account</button>
+      </p>
+    </div>
+  </div>
+</section>
+
+<div class="shell hide" id="app">
+  <aside class="side">
+    <div class="brand"><img src="logo-mark.png" alt="" class="brand-mark"><b>SETU</b><span>Indent &amp; work order approvals</span></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="who"><div class="av dark sm" id="me-av"></div><div><b id="me-name"></b><small id="me-role"></small></div></div>
+      <button class="btn sm" style="width:100%" id="signout">Sign out</button>
+      <div class="credit">Built by <b>Sunny Gupta</b></div>
+    </div>
+  </aside>
+  <div class="main">
+    <header class="top">
+      <img src="logo-lockup.png" alt="SETU" class="tlogo"><div style="min-width:0"><h1 id="page-title">Dashboard</h1><div class="sub" id="page-sub"></div></div>
+      <div style="margin-left:auto"><div class="pinchip" id="pinchip"><span class="led"></span><span id="pinchip-txt">PIN not set</span></div></div>
+    </header>
+    <div class="wrap" id="view"></div>
+  </div>
+  <nav class="tabbar" id="tabbar"></nav>
+</div>
+
+<div id="modal-root"></div>
+<div id="toasts"></div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
