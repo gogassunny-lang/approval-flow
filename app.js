@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v149';
+const APP_VER='v150';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -139,7 +139,7 @@ async function pageAll(table,orderCol,ascending){
    A full load happens at sign-in and after your own edits. A live change touches
    only its slice, and gate passes / notifications are applied straight from the
    live event with no download at all. */
-const LOAD_PARTS=['people','legacy','flows','gate','notif','wtasks'];
+const LOAD_PARTS=['people','legacy','flows','gate','notif','wtasks','meet'];
 const DATA_PARTS=['legacy','flows','gate','notif'];
 let lastLoadAt=0;
 const gateScopeOnly=()=>!!(ME&&ME.name&&(GATE_ONLY()||HR_HEAD()));   // sees only the gate pages
@@ -158,6 +158,7 @@ async function load(parts,flowIds,legacyIds){
   if(P.has('gate'))   jobs.push(loadGate());
   if(P.has('notif'))  jobs.push(loadNotifs());
   if(P.has('wtasks')) jobs.push(loadWTasks());
+  if(P.has('meet')) jobs.push(loadMeetings());
   if(P.has('legacy')||P.has('flows')) jobs.push(loadAmends());
   await Promise.all(jobs);
   lastLoadAt=Date.now();
@@ -192,7 +193,7 @@ async function loadPeople(){
   DB.profReqs=opt(8).map(q=>({id:q.id,userId:q.user_id,field:q.field,oldValue:q.old_value||'',newValue:q.new_value||'',reason:q.reason||'',status:q.status,decidedName:q.decided_name||'',note:q.note||'',createdAt:ts(q.created_at)}));
   DB.hierSug=opt(9).map(g=>({id:g.id,personId:g.person_id,seniorId:g.senior_id,byUser:g.by_user,status:g.status,createdAt:ts(g.created_at)}));
   DB.org=opt(10)[0]||{hier_compulsory:false}; DB.orgReady=!!(r[10]&&!r[10].error); DB.aiReady=DB.orgReady&&typeof DB.org.ai_enabled==='boolean'; DB.numReady=!!(r[11]&&!r[11].error);
-  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,aiOn:!!p.ai_on,joinedOn:p.joined_on||'',division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
+  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,aiOn:!!p.ai_on,canRecord:!!p.can_record,joinedOn:p.joined_on||'',division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,garudaPages:Array.isArray(p.garuda_pages)?p.garuda_pages:null,reqAccounts:!!p.req_accounts,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
@@ -380,7 +381,7 @@ function catchUp(){
   if(!ME||document.hidden) return;
   clearTimeout(catchUpT);
   catchUpT=setTimeout(async()=>{ if($('.veil')||$('#busy')){ catchUp(); return; }
-    try{ await Promise.all([load(['legacy','gate','notif','wtasks'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
+    try{ await Promise.all([load(['legacy','gate','notif','wtasks','meet'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
 }
 /* v137: someone is typing in a box on the page (e.g. searching a person) — a live redraw would wipe it */
 const typingInView=()=>{ const a=document.activeElement, v=document.getElementById('view'); return !!(a&&v&&v.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.value); };
@@ -1046,7 +1047,7 @@ $('#si-go').onclick=async()=>{
 /* Sign out that always returns to the login screen, even if the network call
    to revoke the session hangs or fails. Local scope avoids the global revoke
    round-trip; a short race + forced leave() guarantees the UI resets. */
-async function doSignOut(){ try{ askReset(); }catch(_){}
+async function doSignOut(){ try{ askReset(); }catch(_){} try{ recStop(); }catch(_){}
   busy(false);                                   // drop any stuck overlay so the click isn't blocked
   try{ await Promise.race([ SB.auth.signOut({scope:'local'}), new Promise(res=>setTimeout(res,2000)) ]); }catch(e){}
   try{ leave(); }catch(e){ location.reload(); }  // force back to sign-in no matter what
@@ -1064,7 +1065,7 @@ async function enter(session){
     await load(['people']);
     if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); hideSplash(); busy(false); return }
     if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); hideSplash(); busy(false); return }
-    await Promise.all([load(gateScopeOnly()?['gate','notif','legacy','wtasks']:['legacy','flows','notif','wtasks']), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
+    await Promise.all([load(gateScopeOnly()?['gate','notif','legacy','wtasks','meet']:['legacy','flows','notif','wtasks','meet']), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
@@ -1443,7 +1444,8 @@ function subscribe(){
       const x=p.new||{}; toast(x.title||'Something landed on your desk.','ok');
       if(x.id){ DB.notifs=[mapNotif(x)].concat(DB.notifs.filter(n=>n.id!==x.id)).slice(0,60); renderSoon(); }
       else reloadSoon(['notif']);
-      if(/^#tasks?(\/|$)/.test(x.route||'')) reloadSoon(['wtasks']);      // 116: a task moved — refresh the task lists only
+      if(/^#tasks?(\/|$)/.test(x.route||'')) reloadSoon(['wtasks']);
+      if(/^#meetings?(\/|$)/.test(x.route||'')) reloadSoon(['meet']);    // 119: minutes were shared with me      // 116: a task moved — refresh the task lists only
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
         try{ const nn=new Notification(x.title||'SETU',{body:(x.body||'').split('\n')[0],icon:'icon-192.png',tag:'setu-'+x.id});
           nn.onclick=()=>{window.focus(); gotoNotif(x); nn.close()} }catch(e){}
@@ -1560,6 +1562,7 @@ const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
   if(k==='me'||k==='find'||k==='person'||k==='ask') return true;
   if((k==='tasks'||k==='task')&&DB.wtReady) return true;
+  if((k==='meetings'||k==='meeting')&&DB.mtReady) return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
   if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda'||k==='req'||k==='detail';   // manage users (+ gate pass as an employee)
   return k==='gate'||k==='gpreport'||k==='req'||k==='detail'||k==='me'; };
@@ -1576,6 +1579,7 @@ const PAGES=[
   {k:'gpreport',label:'Gate Pass Reports',grp:'Overview',when:()=>canSeeReports()},
   {k:'queue',label:'Waiting on me',grp:'My work',badge:()=>myQueue().length+flowMyTurn().length},
   {k:'tasks',label:'My tasks',grp:'My work',badge:()=>myTasks().length+wtBadge()},
+  {k:'meetings',label:'Meetings',grp:'My work',when:()=>DB.mtReady&&(mtMayRecord()||(DB.meetings||[]).length>0),badge:()=>mtBadge()},
   {k:'stuck',label:'Needs my input',grp:'My work',badge:()=>myStuck().length+flowTagged().length+myAmends().length},
   {k:'mine',label:'My requests',grp:'My work'},
   {k:'tpl',label:'Saved hierarchies',grp:'My work',badge:()=>myTemplates().length},
@@ -1711,6 +1715,8 @@ function renderRoute(v){
     case 'queue': v.innerHTML=viewList(myQueue(),'Waiting on me','Requests that cannot move until you act.','Nothing is waiting on you','Requests land here the moment the person before you signs off.',(flowMyTurn().length+legacyAwaiting().length+flowAwaitingReply().length)>0)+flowSection('turn')+legacyAwaitingSection()+flowSection('awaiting'); wireList(v); wireFlowRows(v); break;
     case 'tasks': v.innerHTML=viewTasks(); wireList(v); wireTasks(v); break;
     case 'task': if(typingInView()&&$('#task-root',v)&&$('#task-root',v).dataset.id===ROUTE.id) break; v.innerHTML=viewTask(ROUTE.id); wireTask(v); break;
+    case 'meetings': v.innerHTML=viewMeetings(); wireMeetings(v); break;
+    case 'meeting': if(typingInView()&&$('#mt-root',v)&&$('#mt-root',v).dataset.id===ROUTE.id) break; v.innerHTML=viewMeeting(ROUTE.id); wireMeeting(v); break;
     case 'stuck': v.innerHTML=viewList(myStuck(),'Needs my input','An approver has asked you (or tagged you) for more before they will sign.','No one has asked you for anything','If an approver needs a clarification or tags you, it comes here.',flowTagged().length>0||myAmends().length>0)+amendMineSection()+flowSection('tagged'); wireList(v); wireFlowRows(v); wireAmendRows(v); break;
     case 'req': v.innerHTML=viewReq(); wireReq(v); break;
     case 'fun': if(!ME.owner){ROUTE={name:'dash'};return render();} if($('#fun-root',v)) break; /* a live event must not wipe what the owner is typing */ v.innerHTML=viewFun(); wireFun(v); break;
@@ -3031,11 +3037,12 @@ function viewOrg(){
   const todo=u=>{ const k=hierState(u); return k==='none'||k==='wait'||k==='open'; };
   let html='<div id="org-root">';
   if(!DB.numReady) orgTab='people';
-  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button>'+(ME.owner&&DB.aiReady?'<button class="btn sm '+(orgTab==='ai'?'primary':'')+'" data-orgtab="ai">Ask SETU</button>':'')+(ME.owner&&DB.ownReady?'<button class="btn sm '+(orgTab==='chats'?'primary':'')+'" data-orgtab="chats">Chats</button><button class="btn sm '+(orgTab==='clean'?'primary':'')+'" data-orgtab="clean">Clean up</button>':'')+'</div>';
+  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button>'+(ME.owner&&DB.aiReady?'<button class="btn sm '+(orgTab==='ai'?'primary':'')+'" data-orgtab="ai">Ask SETU</button>':'')+(ME.owner&&DB.mtReady?'<button class="btn sm '+(orgTab==='meet'?'primary':'')+'" data-orgtab="meet">Meetings</button>':'')+(ME.owner&&DB.ownReady?'<button class="btn sm '+(orgTab==='chats'?'primary':'')+'" data-orgtab="chats">Chats</button><button class="btn sm '+(orgTab==='clean'?'primary':'')+'" data-orgtab="clean">Clean up</button>':'')+'</div>';
   if((orgTab==='chats'||orgTab==='clean')&&!(ME.owner&&DB.ownReady)) orgTab='people';
   if(orgTab==='chats') return html+viewOwnChats()+'</div>';
   if(orgTab==='clean') return html+viewOwnClean()+'</div>';
   if(orgTab==='ai'&&ME.owner&&DB.aiReady) return html+viewOrgAI()+'</div>';
+  if(orgTab==='meet'&&ME.owner&&DB.mtReady) return html+viewOrgMeet()+'</div>';
   if(orgTab==='details') return html+viewOrgDetails()+'</div>';
   html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><b style="flex:1">Change requests</b><span class="tag '+(reqs.length?'t-hold':'t-ok')+'">'+reqs.length+' waiting</span></div>'+
     (reqs.length?'<table class="cards"><thead><tr><th>Person</th><th>Detail</th><th>From → to</th><th></th></tr></thead><tbody>'+reqs.map(q=>{ const u=user(q.userId); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.empId||'')+(u.dept?' · '+esc(u.dept):'')+'</div></td><td>'+esc(ME_FIELD[q.field]||q.field)+'<div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td><span class="hint">'+esc(q.oldValue||'—')+'</span> → <b>'+esc(q.newValue)+'</b>'+(q.reason?'<div class="hint">“'+esc(q.reason)+'”</div>':'')+'</td><td style="text-align:right;white-space:nowrap"><button class="btn sm ok" data-rqyes="'+q.id+'">Accept</button> <button class="btn sm" data-rqno="'+q.id+'">Decline</button></td></tr>'; }).join('')+'</tbody></table>'
@@ -3068,7 +3075,7 @@ function wireOrg(v){
   wirePersonLinks(v);
   $$('[data-orgtab]',v).forEach(b=>b.onclick=()=>{ orgTab=b.dataset.orgtab; render(); });
   $$('[data-edit]',v).forEach(b=>b.onclick=()=>orgEditDialog(user(b.dataset.edit)));
-  wireOrgDetails(v); wireOrgAI(v); wireOwnChats(v); wireOwnClean(v);
+  wireOrgDetails(v); wireOrgAI(v); wireOrgMeet(v); wireOwnChats(v); wireOwnClean(v);
   $$('[data-orgf]',v).forEach(b=>b.onclick=()=>{ orgF=b.dataset.orgf; render(); });
   const qi=$('#org-q',v); if(qi) qi.oninput=()=>{ orgQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#org-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
   $$('[data-unlock]',v).forEach(b=>b.onclick=()=>act('hier_unlock',{p_user:b.dataset.unlock},user(b.dataset.unlock).name+' can correct their line now.'));
@@ -3493,7 +3500,7 @@ function askCardHTML(c,mi,ci){
       (c.old?'<div class="hint" style="margin-top:6px">From an earlier chat — ask again to create it.</div>':c.dismissed?'<div class="hint" style="margin-top:6px">Dismissed.</div>'
         :'<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn sm primary" data-propok="'+mi+'-'+ci+'">Confirm</button><button class="btn sm" data-proped="'+mi+'-'+ci+'">Edit</button><button class="btn sm ghost" data-propno="'+mi+'-'+ci+'">Dismiss</button></div><div class="hint ask-properr" style="color:var(--stop)"></div>')+'</div>';
   }
-  const ic=c.type==='person'?'👤':c.type==='task'?'☑':c.type==='file'?'📄':'↗';
+  const ic=c.type==='person'?'👤':c.type==='task'?'☑':c.type==='file'?'📄':c.type==='meeting'?'🗒':'↗';
   return '<button type="button" class="ask-card" data-askgo="'+esc(c.type)+'" data-id="'+esc(c.id||'')+'" data-kind="'+esc(c.kind||'')+'" data-page="'+esc(c.page||'')+'"><span>'+ic+'</span><span style="min-width:0;flex:1"><b>'+esc(c.title||'')+'</b>'+(c.sub?'<span class="hint" style="display:block">'+esc(c.sub)+'</span>':'')+'</span><span class="hint">›</span></button>';
 }
 function askDraw(){
@@ -3516,7 +3523,7 @@ function askDraw(){
   $('#ask-in',p).onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); askSend($('#ask-in',p).value); } };
   $$('[data-asksug]',p).forEach(b=>b.onclick=()=>askSend(b.dataset.asksug));
   $$('[data-askgo]',p).forEach(b=>b.onclick=()=>{ const t=b.dataset.askgo, id=b.dataset.id;
-    const r=t==='person'?{name:'person',id}:t==='task'?{name:'task',id}:t==='file'?{name:b.dataset.kind==='flow'?'flowdetail':'detail',id}:{name:b.dataset.page||'dash'};
+    const r=t==='person'?{name:'person',id}:t==='task'?{name:'task',id}:t==='meeting'?{name:'meeting',id}:t==='file'?{name:b.dataset.kind==='flow'?'flowdetail':'detail',id}:{name:b.dataset.page||'dash'};
     askClose(); go(r); });
   const card=k=>{ const a=k.split('-'); return ask.msgs[+a[0]].cards[+a[1]]; };
   $$('[data-propok]',p).forEach(b=>b.onclick=async()=>{ const c=card(b.dataset.propok), box=b.closest('.ask-prop'); b.disabled=true;
@@ -3643,6 +3650,374 @@ async function wtDelRun(){
       const r=await rpc('wt_owner_delete',{p_ids:ids,p_pin:pin,p_dry:false}); const paths=(r&&r.paths)||[]; if(paths.length){ try{ await SB.storage.from('documents').remove(paths); }catch(_){} }
       wtDelSel.clear(); DB.wtAll=null; ownClean.log=null; await loadWTasks(); toast('Deleted '+((r&&r.counts&&r.counts.tasks)||ids.length)+' task'+(ids.length===1?'':'s')+'.','ok'); paintNav(); if(ROUTE.name==='tasks') render();
     }),0); }; }});
+}
+/* ================= Meetings and minutes (migration 119, v150) =================
+   A ticked person records a meeting; the audio is saved in parts and turned into text by the AI
+   (edge function ask-setu, as that person); the AI drafts the minutes; the organiser corrects and
+   confirms; only then are tasks created and the people present told. Every rule is on the server. */
+let mtTab='mine', mtDet={id:null,d:null,loading:false}, mtEd=null, mtDelSel=new Set(), mtAllBusy=false, mtUse=null, mtUseBusy=false;
+const mtBusy=new Set();      // audio parts being turned into text right now
+const mtWork={};             // per meeting: {up: uploads running, err, held: audio not saved yet, minutes: being written}
+const mtRunning={};
+const MT_MAX_FILE=12582912;  // the storage limit per file (12 MB)
+const mtW=id=>mtWork[id]||(mtWork[id]={up:0,err:'',held:[],minutes:false});
+const mtMayRecord=()=>!!(ME&&DB.mtReady&&(ME.owner||ME.canRecord));
+const mtMap=m=>({id:m.id,ref:m.ref,title:m.title,heldOn:m.held_on,organiserId:m.organiser_id,guests:m.guests||'',status:m.status,byAi:!!m.by_ai,createdAt:ts(m.created_at),confirmedAt:ts(m.confirmed_at),
+  people:m.people||[],parts:+m.parts||0,partsDone:+m.parts_done||0,secs:+m.secs||0,nActions:+m.n_actions||0,
+  summary:m.summary||'',decisions:m.decisions||[],actions:m.actions||[],transcript:m.transcript||'',partList:m.part_list||[]});
+async function loadMeetings(){ const r=await SB.rpc('mt_list'); if(r.error){ DB.mtReady=false; DB.meetings=[]; return; } DB.mtReady=true; DB.meetings=(r.data||[]).map(mtMap); }
+const mtBadge=()=>DB.mtReady?(DB.meetings||[]).filter(m=>m.organiserId===ME.id&&m.status==='review').length:0;
+const mtDur=s=>{ s=Math.max(0,Math.round(s||0)); const h=Math.floor(s/3600), m=Math.floor(s%3600/60), x=s%60; return (h?h+':'+String(m).padStart(2,'0'):String(m))+':'+String(x).padStart(2,'0'); };
+const mtTag=m=>m.status==='confirmed'?'<span class="tag t-ok">Confirmed</span>':m.status==='review'?'<span class="tag t-hold">Minutes to confirm</span>':'<span class="tag t-wait">Draft</span>';
+const mtSleep=ms=>new Promise(r=>setTimeout(r,ms));
+const mtErrText=e=>String((e&&e.message)||e||'').replace(/^.*?: /,'');
+
+/* ---- the list ---- */
+function mtRow(m,tick){
+  const org=user(m.organiserId);
+  return '<div data-mt="'+m.id+'" style="display:flex;cursor:pointer;border-top:1px solid var(--line);padding:12px 16px;gap:10px;align-items:flex-start">'+
+    (tick?'<input type="checkbox" class="ma-tick" data-id="'+m.id+'" '+(mtDelSel.has(m.id)?'checked':'')+' style="width:18px;height:18px;margin-top:3px;accent-color:var(--stop)">':'')+
+    '<div style="min-width:0;flex:1"><b>'+esc(m.title)+'</b><div class="hint">'+esc(m.ref)+' · '+esc(dOn(m.heldOn))+' · by '+esc(org.name)+' · '+m.people.length+' present'+(m.secs?' · '+mtDur(m.secs)+' recorded':'')+'</div></div>'+mtTag(m)+'</div>';
+}
+function viewMeetings(){
+  head('Meetings','Record a meeting, get the minutes written, and turn the action points into tasks');
+  if(!DB.mtReady) return '<div class="card pad"><h3 style="margin:0">Meetings are not set up yet</h3><p class="hint" style="margin-top:6px">The super admin has to run the latest database file first.</p></div>';
+  const own=ME.owner&&DB.ownReady; if(mtTab==='all'&&!own) mtTab='mine';
+  const L=DB.meetings||[];
+  let body;
+  if(mtTab==='all'){
+    if(DB.mtAll==null){ if(!mtAllBusy){ mtAllBusy=true; rpc('mt_all').then(r=>{ DB.mtAll=(r||[]).map(mtMap); mtAllBusy=false; if(ROUTE.name==='meetings'&&mtTab==='all') render(); },e=>{ DB.mtAll=[]; mtAllBusy=false; fail(e); }); }
+      body='<div class="card pad"><p class="hint" style="margin:0">Loading every meeting…</p></div>'; }
+    else body='<div class="card"><div class="row" style="padding:12px 16px;gap:10px;flex-wrap:wrap;align-items:center"><span class="hint" style="flex:1">Every meeting in SETU, drafts included. Tick to delete.</span><span class="tag t-prog">'+DB.mtAll.length+'</span>'+
+        '<button class="btn sm" id="ma-del" style="'+GDEL_RED+'" '+(mtDelSel.size?'':'disabled')+'>Delete selected'+(mtDelSel.size?' ('+mtDelSel.size+')':'')+'</button></div>'+
+      (DB.mtAll.length?DB.mtAll.map(m=>mtRow(m,true)).join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">There are no meetings in SETU.</p>')+'</div>';
+  } else body='<div class="card">'+(L.length?L.map(m=>mtRow(m,false)).join('').replace('border-top:1px solid var(--line);','')
+      :'<div class="empty" style="padding:22px 16px"><h3>No meetings yet</h3><p class="hint">'+(mtMayRecord()?'Press “New meeting”, then record it or upload its audio.':'Minutes of meetings you were part of come here once the organiser confirms them.')+'</p></div>')+'</div>';
+  return '<div id="mts-root">'+(mtMayRecord()?'<div class="row" style="gap:10px;margin-bottom:12px;flex-wrap:wrap"><button class="btn primary" id="mt-new">＋ New meeting</button></div>':'')+
+    (own?'<div class="seg" style="margin-bottom:12px"><button data-mttab="mine" class="'+(mtTab==='mine'?'on':'')+'">My meetings</button><button data-mttab="all" class="'+(mtTab==='all'?'on':'')+'">All meetings</button></div>':'')+body+'</div>';
+}
+function wireMeetings(v){
+  if(!$('#mts-root',v)) return;
+  if($('#mt-new',v)) $('#mt-new',v).onclick=()=>mtFormDialog(null);
+  $$('[data-mttab]',v).forEach(b=>b.onclick=()=>{ mtTab=b.dataset.mttab; if(mtTab==='all'){ DB.mtAll=null; mtDelSel.clear(); } render(); });
+  $$('[data-mt]',v).forEach(b=>b.onclick=()=>go({name:'meeting',id:b.dataset.mt}));
+  $$('.ma-tick',v).forEach(c=>{ c.onclick=e=>e.stopPropagation(); c.onchange=()=>{ if(c.checked) mtDelSel.add(c.dataset.id); else mtDelSel.delete(c.dataset.id); render(); }; });
+  if($('#ma-del',v)) $('#ma-del',v).onclick=mtDelRun;
+}
+async function mtDelRun(){
+  const ids=[...mtDelSel]; if(!ids.length) return; let c;
+  try{ busy(true); c=((await rpc('mt_owner_delete',{p_ids:ids,p_pin:'',p_dry:true}))||{}).counts||{}; busy(false); }catch(e){ busy(false); return fail(e); }
+  modal({title:'Delete meetings',body:'<p style="margin:0 0 8px">This will delete, for good:</p><ul id="madel-list" style="margin:0 0 10px 18px;padding:0;line-height:1.7"><li><b class="num">'+(c.meetings||0)+'</b> meeting'+(c.meetings===1?'':'s')+' with the minutes and the full text</li>'+
+      (c.audio_parts?'<li><b class="num">'+c.audio_parts+'</b> audio part'+(c.audio_parts===1?'':'s')+'</li>':'')+'</ul>'+
+      (c.tasks_kept?'<p class="hint" style="margin:0 0 8px"><b class="num">'+c.tasks_kept+'</b> task'+(c.tasks_kept===1?'':'s')+' made from these minutes will stay. Delete them from My tasks → All tasks if needed.</p>':'')+
+      '<p class="hint" style="margin:0">Nobody is told; the meetings simply disappear. <b>This cannot be undone.</b></p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="madel-yes" style="'+GDEL_RED+'">Delete for good</button>',
+    onOpen:(m,close)=>{ $('#madel-yes',m).onclick=()=>{ close(); setTimeout(()=>confirmPin('delete '+ids.length+' meeting'+(ids.length===1?'':'s'),async pin=>{
+      const r=await rpc('mt_owner_delete',{p_ids:ids,p_pin:pin,p_dry:false}); const paths=(r&&r.paths)||[]; if(paths.length){ try{ await SB.storage.from('documents').remove(paths); }catch(_){} }
+      mtDelSel.clear(); DB.mtAll=null; ownClean.log=null; await loadMeetings(); toast('Deleted '+ids.length+' meeting'+(ids.length===1?'':'s')+'.','ok'); paintNav(); if(ROUTE.name==='meetings') render();
+    }),0); }; }});
+}
+/* ---- New meeting / change its details ---- */
+function mtFormDialog(m){
+  const d={people:m?m.people.filter(id=>id!==ME.id):[]};
+  modal({title:m?'Meeting details':'New meeting',
+    body:'<label for="mf-title">What is the meeting about</label><input id="mf-title" type="text" maxlength="200" placeholder="For example: Weekly purchase review" autocomplete="off">'+
+      '<div style="margin-top:10px"><label for="mf-date">Date of the meeting</label><input id="mf-date" type="date" max="'+esc(DAY())+'" style="max-width:200px"></div>'+
+      '<div style="margin-top:12px"><label>People present (from SETU)</label><div id="mf-people"></div><div id="mf-pick" style="margin-top:6px"></div><div class="hint">You are added by yourself. Only these people will get the minutes, and only they can be given an action point as a task.</div></div>'+
+      '<div style="margin-top:10px"><label for="mf-guests">Guests who are not in SETU (optional)</label><input id="mf-guests" type="text" maxlength="500" placeholder="Names, separated by commas" autocomplete="off"></div>'+
+      '<div id="mf-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="mf-go">'+(m?'Save':'Create meeting')+'</button>',
+    onOpen:(v,close)=>{
+      $('#mf-title',v).value=m?m.title:''; $('#mf-date',v).value=m?m.heldOn:DAY(); $('#mf-guests',v).value=m?m.guests:'';
+      const paint=()=>{ $('#mf-people',v).innerHTML=d.people.length?d.people.map((id,i)=>'<div class="filerow"><div style="min-width:0;flex:1"><b>'+esc(user(id).name)+'</b><div class="hint">'+esc(user(id).role||'')+'</div></div><button type="button" class="btn sm ghost" data-mfrm="'+i+'">Remove</button></div>').join(''):'';
+        $$('[data-mfrm]',v).forEach(b=>b.onclick=()=>{ d.people.splice(+b.dataset.mfrm,1); paint(); });
+        personPicker($('#mf-pick',v),{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(d.people),onPick:id=>{ d.people.push(id); paint(); }}); };
+      paint();
+      $('#mf-go',v).onclick=async()=>{ const err=$('#mf-err',v); err.textContent=''; $('#mf-go',v).disabled=true;
+        const a={p_title:$('#mf-title',v).value,p_held_on:$('#mf-date',v).value||null,p_people:d.people,p_guests:$('#mf-guests',v).value};
+        try{ if(m){ await rpc('mt_update',Object.assign({p_meeting:m.id},a)); await Promise.all([loadMeetings(),mtLoad(m.id,true)]); if(mtEd&&!mtEd.dirty) mtEd=null; toast('Saved.','ok'); close(); render(); }
+          else { const id=await rpc('mt_create',a); await loadMeetings(); paintNav(); closeThen(close,()=>go({name:'meeting',id})); } }
+        catch(e){ $('#mf-go',v).disabled=false; err.textContent=mtErrText(e); } };
+    }});
+}
+/* ---- one meeting ---- */
+async function mtLoad(id,quiet){
+  if(!quiet) mtDet={id,d:null,loading:true};
+  const r=await SB.rpc('mt_get',{p_meeting:id});
+  if(mtDet.id!==id) return null;
+  mtDet={id,loading:false,d:(r.data&&!r.error)?mtMap(r.data):null};
+  return mtDet.d;
+}
+function mtRefresh(id){ if(ROUTE.name!=='meeting'||ROUTE.id!==id) return; if(typingInView()) mtPaintRec(); else render(); }
+function viewMeeting(id){
+  const back='<div class="row" style="margin-bottom:10px"><button class="btn sm ghost" id="mt-back">← Meetings</button></div>';
+  if(mtDet.id!==id){ mtLoad(id).then(m=>{ if(ROUTE.name==='meeting'&&ROUTE.id===id){ render(); if(m&&m.organiserId===ME.id&&m.status!=='confirmed'&&m.partList.some(p=>p.status==='uploaded'&&!p.audio_gone)) mtRun(id); } }); }
+  const m=mtDet.id===id?mtDet.d:null;
+  if(!m){ head('Meeting',''); return '<div id="mt-root" data-id="'+esc(id||'')+'">'+back+'<div class="card pad">'+(mtDet.id===id&&!mtDet.loading?'<h3 style="margin:0">This meeting could not be found</h3><p class="hint" style="margin-top:6px">It may have been deleted, or its minutes are not confirmed yet.</p>':'<p class="hint" style="margin:0">Loading…</p>')+'</div></div>'; }
+  const mine=m.organiserId===ME.id, open=m.status!=='confirmed', org=user(m.organiserId);
+  head(m.title,m.ref+' · '+dOn(m.heldOn)+' · by '+org.name);
+  let html='<div id="mt-root" data-id="'+esc(id)+'">'+back;
+  html+='<div class="card pad" style="margin-bottom:14px"><div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'+mtTag(m)+(m.secs?'<span class="tag t-wait">'+mtDur(m.secs)+' recorded</span>':'')+'</div>'+
+    '<div class="hint" style="margin-bottom:4px">Present</div><div style="display:flex;gap:6px;flex-wrap:wrap">'+m.people.map(u=>'<span class="tag t-wait" data-person="'+u+'" style="cursor:pointer">'+esc(user(u).name)+'</span>').join('')+'</div>'+
+    (m.guests?'<div class="hint" style="margin-top:8px">Guests: '+esc(m.guests)+'</div>':'')+
+    (mine&&open?'<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn sm" id="mt-edit">Change details</button><button class="btn sm ghost" id="mt-del">Delete this meeting</button></div>':'')+
+    (m.status==='confirmed'?'<div class="hint" style="margin-top:8px">Minutes confirmed by '+esc(org.name)+' on '+esc(fmtD(m.confirmedAt))+'.</div>':'')+'</div>';
+  if(mine&&open) html+='<div class="card pad" style="margin-bottom:14px" id="mt-rec">'+mtRecHTML(m)+'</div>';
+  if(mine&&m.status==='review') html+='<div class="card pad" style="margin-bottom:14px;border-color:var(--indigo)" id="mt-min">'+mtMinEditHTML(m)+'</div>';
+  else if(m.status!=='draft') html+='<div class="card pad" style="margin-bottom:14px" id="mt-min">'+mtMinReadHTML(m)+'</div>';
+  else if(!mine) html+='<div class="card pad" style="margin-bottom:14px"><p class="hint" style="margin:0">No minutes have been written for this meeting yet.</p></div>';
+  if(m.transcript) html+='<details class="card pad" id="mt-text"><summary style="cursor:pointer;font-weight:700">Full text of the meeting</summary><p class="hint" style="margin:8px 0">Written by the AI from the recording, in the languages spoken. It can contain mistakes.</p><div style="white-space:pre-wrap;line-height:1.6;max-height:520px;overflow:auto">'+esc(m.transcript)+'</div></details>';
+  return html+'</div>';
+}
+function mtRecHTML(m){
+  const w=mtW(m.id), here=REC.on&&REC.mid===m.id, other=REC.on&&REC.mid!==m.id, L=m.partList;
+  const pend=L.filter(p=>p.status==='uploaded'&&!p.audio_gone).length, done=L.filter(p=>p.status==='done').length, running=!!mtRunning[m.id];
+  let h='<h3 style="margin:0 0 8px">Recording</h3>';
+  if(here) h+='<div class="row" style="gap:10px;align-items:center;flex-wrap:wrap"><span style="width:12px;height:12px;border-radius:50%;background:var(--stop);'+(REC.paused?'opacity:.4':'animation:recblink 1.2s infinite')+'"></span><b id="mt-recword">'+(REC.paused?'Paused':'Recording')+'</b><b class="num" id="mt-rectime" style="font-size:18px">'+mtDur(REC.secs)+'</b>'+
+      '<span style="flex:1"></span><button class="btn" id="mt-pause">'+(REC.paused?'Resume':'Pause')+'</button><button class="btn primary" id="mt-stop">Stop</button></div>'+
+      '<p class="hint" style="margin:8px 0 0">Keep SETU open with the screen on, and the phone or laptop near the people speaking.</p>';
+  else h+='<div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn primary" id="mt-start" '+(other?'disabled':'')+'>● '+(L.length?'Record more':'Start recording')+'</button><button class="btn" id="mt-upbtn">Upload an audio file</button><input type="file" id="mt-up" accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm,.aac" style="display:none"></div>'+
+      '<p class="hint" style="margin:8px 0 0">'+(other?'Another meeting is being recorded now. Stop it first. ':'')+'The sound is saved in parts of 5 minutes and turned into text as you go. An uploaded file can be up to 12 MB. The audio is deleted after '+esc((DB.org&&DB.org.meet_audio_days)||7)+' days; the text and the minutes stay.</p>';
+  if(L.length) h+='<div style="margin-top:12px;border:1px solid var(--line);border-radius:12px;overflow:hidden" id="mt-parts">'+L.map((p,i)=>{
+      const st=mtBusy.has(p.id)?'<span class="tag t-prog"><span class="spin"></span> Writing the text…</span>':p.status==='done'?'<span class="tag t-ok">Text ready</span>':p.status==='failed'?'<span class="tag t-bad">Failed</span>':'<span class="tag t-wait">Waiting</span>';
+      return '<div class="row" style="padding:9px 12px;gap:10px;flex-wrap:wrap;align-items:center'+(i?';border-top:1px solid var(--line)':'')+'" data-part="'+p.id+'"><b>Part '+p.n+'</b><span class="hint num">'+(p.secs?mtDur(p.secs):'')+'</span><span style="flex:1"></span>'+st+
+        (p.status==='failed'&&!mtBusy.has(p.id)&&!p.audio_gone?'<button class="btn sm" data-mtretry="'+p.id+'">Try again</button>':'')+
+        (p.status==='failed'&&p.error?'<div class="hint" style="flex-basis:100%;color:var(--stop)">'+esc(p.error)+'</div>':'')+'</div>'; }).join('')+'</div>';
+  if(w.up) h+='<p class="hint" style="margin:10px 0 0"><span class="spin"></span> Saving the audio…</p>';
+  if(w.err) h+='<p class="hint" id="mt-recerr" style="margin:10px 0 0;color:var(--stop)">'+esc(w.err)+'</p>'+(w.held.length?'<button class="btn sm" id="mt-resave" style="margin-top:6px">Save again</button>':'');
+  if(L.length){
+    h+='<div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">';
+    if(w.minutes) h+='<span class="hint"><span class="spin"></span> Writing the minutes… this can take a minute.</span>';
+    else { if(pend&&!running&&!here) h+='<button class="btn" id="mt-cont">Turn the remaining '+pend+' part'+(pend===1?'':'s')+' into text</button>';
+      h+='<button class="btn primary" id="mt-write" '+(done&&!pend&&!w.up&&!here&&!running?'':'disabled')+'>'+(m.status==='review'?'Write the minutes again':'Write the minutes')+'</button>'; }
+    h+='<span class="hint" id="mt-prog">'+done+' of '+L.length+' part'+(L.length===1?'':'s')+' turned into text</span></div>';
+  }
+  if(m.status==='draft'&&!w.minutes) h+='<div style="margin-top:10px"><button class="btn sm ghost" id="mt-self">Write the minutes myself</button></div>';
+  return h;
+}
+function mtPaintRec(){ const el=$('#mt-rec'), m=mtDet.d; if(!el||!m||ROUTE.name!=='meeting'||ROUTE.id!==m.id) return; el.innerHTML=mtRecHTML(m); mtRecWire(el,m); }
+function mtRecWire(v,m){
+  const id=m.id, w=mtW(id);
+  if($('#mt-start',v)) $('#mt-start',v).onclick=()=>modal({title:'Start recording',
+    body:'<p style="margin-top:0"><b>Tell everyone in the room that the meeting is being recorded.</b></p><p class="hint" style="margin:0">While it records, a red “Recording” sign stays at the top of SETU. Keep SETU open with the screen on. You can pause or stop at any time.</p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rec-yes">Start recording</button>',onOpen:(d,close)=>{ $('#rec-yes',d).onclick=()=>{ close(); setTimeout(()=>recStart(m),0); }; }});
+  if($('#mt-pause',v)) $('#mt-pause',v).onclick=recPause;
+  if($('#mt-stop',v)) $('#mt-stop',v).onclick=()=>recStop();
+  const up=$('#mt-up',v);
+  if(up){ $('#mt-upbtn',v).onclick=()=>up.click();
+    up.onchange=async()=>{ const f=up.files&&up.files[0]; up.value=''; if(!f) return;
+      const ext=(f.name.split('.').pop()||'').toLowerCase(), mime=(f.type&&/^audio\//.test(f.type)?f.type.split(';')[0]:({mp3:'audio/mpeg',m4a:'audio/mp4',wav:'audio/wav',ogg:'audio/ogg',webm:'audio/webm',aac:'audio/aac'})[ext])||'';
+      if(!mime){ w.err='That is not an audio file. Choose an mp3, m4a, wav, ogg, webm or aac file.'; return mtPaintRec(); }
+      if(f.size>MT_MAX_FILE){ w.err='That file is '+(f.size/1048576).toFixed(1)+' MB. An uploaded file can be up to 12 MB — record the meeting in SETU instead, or cut the file into shorter pieces.'; return mtPaintRec(); }
+      w.err=''; const secs=await mtAudioSecs(f); mtAddAudio(id,f,mime,secs); }; }
+  $$('[data-mtretry]',v).forEach(b=>b.onclick=()=>{ w.err=''; mtRun(id,b.dataset.mtretry); });
+  if($('#mt-resave',v)) $('#mt-resave',v).onclick=()=>{ const held=w.held.splice(0); w.err=''; held.forEach(x=>mtAddAudio(id,x.blob,x.mime,x.secs)); };
+  if($('#mt-cont',v)) $('#mt-cont',v).onclick=()=>{ w.err=''; mtRun(id); };
+  if($('#mt-write',v)) $('#mt-write',v).onclick=()=>{ if(m.status!=='review') return mtWrite(id);
+    modal({title:'Write the minutes again?',body:'<p style="margin:0">The AI will write the minutes afresh from the full text. <b>What you have typed or corrected in the minutes below will be replaced.</b></p>',
+      footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="mw-yes">Write again</button>',onOpen:(d,close)=>{ $('#mw-yes',d).onclick=()=>{ close(); mtWrite(id); }; }}); };
+  if($('#mt-self',v)) $('#mt-self',v).onclick=async()=>{ try{ await rpc('mt_minutes_save',{p_meeting:id,p_summary:'',p_decisions:[],p_actions:[],p_ai:false}); mtEd=null; await Promise.all([loadMeetings(),mtLoad(id,true)]); paintNav(); render(); }catch(e){ fail(e); } };
+}
+const mtAudioSecs=f=>new Promise(res=>{ let done=false; const fin=s=>{ if(done) return; done=true; try{ URL.revokeObjectURL(a.src); }catch(_){} res(isFinite(s)&&s>0?Math.round(s):0); };
+  const a=document.createElement('audio'); a.preload='metadata'; a.onloadedmetadata=()=>fin(a.duration); a.onerror=()=>fin(0); setTimeout(()=>fin(0),4000); try{ a.src=URL.createObjectURL(f); }catch(_){ fin(0); } });
+/* save one piece of audio in my folder, add it to the meeting, then have it turned into text */
+async function mtAddAudio(mid,blob,mime,secs){
+  const w=mtW(mid); w.up++; mtPaintRec();
+  const ext={'audio/webm':'webm','audio/mp4':'m4a','audio/ogg':'ogg','audio/mpeg':'mp3','audio/mp3':'mp3','audio/wav':'wav','audio/x-wav':'wav','audio/aac':'aac','audio/m4a':'m4a','audio/x-m4a':'m4a'}[mime]||'webm';
+  const path=ME.id+'/meet-'+mid.slice(0,8)+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,7)+'.'+ext;
+  let ok=false, why='';
+  for(let i=0;i<3&&!ok;i++){
+    try{ const r=await SB.storage.from('documents').upload(path,blob,{contentType:mime,upsert:false}); if(r.error){ if(i>0&&/exist|duplicate/i.test(r.error.message||'')) ok=true; else throw r.error; } else ok=true; }
+    catch(e){ why=mtErrText(e); if(i<2) await mtSleep(1500*(i+1)); } }
+  if(ok){ try{ await rpc('mt_part_add',{p_meeting:mid,p_path:path,p_mime:mime,p_secs:Math.round(secs||0),p_bytes:blob.size}); }catch(e){ ok=false; why=mtErrText(e); } }
+  w.up--;
+  if(!ok){ w.held.push({blob,mime,secs}); w.err='A part of the recording could not be saved ('+why.slice(0,140)+'). Keep this page open and press “Save again”.'; }
+  await Promise.all([mtLoad(mid,true),loadMeetings()]); mtRefresh(mid);
+  if(ok) mtRun(mid);
+}
+/* call the edge function for a meeting; always answers {ok, message, retry} */
+async function mtFn(body){
+  try{ const r=await SB.functions.invoke('ask-setu',{body}); if(r.error) throw r.error; let d=r.data; if(typeof d==='string'){ try{ d=JSON.parse(d); }catch(_){ d=null; } }
+    if(!d) return {ok:false,message:'The AI function did not answer properly. Please try again.'};
+    if(!d.ok&&d.why==='empty') return {ok:false,message:'The ask-setu function in Supabase is an older version. The super admin has to deploy the latest one.'};
+    return d; }
+  catch(e){ return {ok:false,retry:true,message:'The AI function could not be reached. Check the internet and try again.'}; }
+}
+/* turn the waiting audio parts into text, one after another (only: also retry that failed part) */
+async function mtRun(mid,only){
+  if(mtRunning[mid]){ mtRunning[mid]=2; return; }
+  mtRunning[mid]=1; const tried=new Set(), w=mtW(mid);
+  try{ for(;;){
+      const r=await SB.rpc('mt_get',{p_meeting:mid}); const m=r.data&&!r.error?mtMap(r.data):null; if(!m) break;
+      const todo=m.partList.filter(p=>!p.audio_gone&&!tried.has(p.id)&&(p.status==='uploaded'||only===p.id)); only=null;
+      if(!todo.length){ if(mtRunning[mid]===2){ mtRunning[mid]=1; continue; } break; }
+      mtRunning[mid]=1; let stop=false;
+      for(const p of todo){ tried.add(p.id); mtBusy.add(p.id); mtRefresh(mid);
+        let d=await mtFn({meet:{id:mid,part:p.id}});
+        for(let i=0;i<2&&!d.ok&&d.retry;i++){ await mtSleep(mtRun.wait); d=await mtFn({meet:{id:mid,part:p.id}}); }
+        mtBusy.delete(p.id);
+        if(!d.ok&&d.why!=='ai_down'){ w.err=d.message||'The text could not be written.'; stop=true; }   // a refusal (limit, switched off, old function): no point trying the next part
+        await mtLoad(mid,true); mtRefresh(mid); if(stop) break; }
+      if(stop) break; } }
+  finally{ delete mtRunning[mid]; await loadMeetings(); mtRefresh(mid); }
+}
+mtRun.wait=20000;
+async function mtWrite(mid){
+  const w=mtW(mid); if(w.minutes) return; w.minutes=true; w.err=''; mtRefresh(mid);
+  let d=await mtFn({meet:{id:mid,minutes:true}});
+  for(let i=0;i<2&&!d.ok&&d.retry;i++){ await mtSleep(mtRun.wait); d=await mtFn({meet:{id:mid,minutes:true}}); }
+  w.minutes=false;
+  if(!d.ok){ w.err=d.message||'The minutes could not be written.'; return mtRefresh(mid); }
+  mtEd=null; await Promise.all([loadMeetings(),mtLoad(mid,true)]); paintNav();
+  if(ROUTE.name==='meeting'&&ROUTE.id===mid){ render(); const el=$('#mt-min'); if(el&&el.scrollIntoView) el.scrollIntoView({behavior:'smooth',block:'start'}); }
+  toast('The minutes are written. Read and correct them, then confirm.','ok');
+}
+/* ---- minutes: the organiser's editor ---- */
+const mtActNote=(a,m)=>{ if(a.user_id&&a.due_on) return a.due_on<DAY()?'<span style="color:var(--stop)">The due date is in the past.</span>':(a.user_id===ME.id?'Becomes a task for you':'Becomes a task for '+esc(user(a.user_id).name))+', due '+esc(dOn(a.due_on))+'.';
+  return 'No task will be made: '+(a.user_id?'give a due date.':a.due_on?'choose a person from the meeting.':'choose a person from the meeting and a due date.')+' It stays in the minutes.'; };
+function mtMinEditHTML(m){
+  if(!mtEd||mtEd.id!==m.id) mtEd={id:m.id,dirty:false,summary:m.summary,decisions:m.decisions.slice(),actions:m.actions.map(a=>({text:a.text||'',user_id:a.user_id||'',name:a.name||'',due_on:a.due_on||''}))};
+  const E=mtEd;
+  return '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px"><h3 style="margin:0;flex:1">Minutes — draft</h3><span class="tag t-hold">Not shared yet</span></div>'+
+    '<p class="hint" style="margin:0 0 12px">'+(m.byAi?'Written by the AI from the recording. It can mishear names, numbers and dates — read it against what was said and correct it. ':'')+'The people present get the minutes, and the tasks are made, only when you press Confirm.</p>'+
+    '<label for="mt-sum">Summary</label><textarea id="mt-sum" rows="5" maxlength="6000" placeholder="What the meeting was about and where it ended">'+esc(E.summary)+'</textarea>'+
+    '<label style="margin-top:12px">Decisions</label><div id="mt-decs">'+E.decisions.map((d,i)=>'<div class="row" style="gap:6px;margin-bottom:6px"><input type="text" class="mt-dec" data-i="'+i+'" maxlength="600" value="'+esc(d)+'" style="flex:1"><button type="button" class="btn sm ghost" data-decrm="'+i+'" aria-label="Remove">✕</button></div>').join('')+'</div>'+
+    '<button type="button" class="btn sm" id="mt-decadd">＋ Add a decision</button>'+
+    '<label style="margin-top:14px">Action points</label><div id="mt-acts">'+E.actions.map((a,i)=>'<div class="mt-act" data-i="'+i+'" style="border:1px solid var(--line);border-radius:12px;padding:10px;margin-bottom:8px">'+
+        '<div class="row" style="gap:6px"><input type="text" class="mt-atext" data-i="'+i+'" maxlength="500" placeholder="What has to be done" value="'+esc(a.text)+'" style="flex:1"><button type="button" class="btn sm ghost" data-actrm="'+i+'" aria-label="Remove">✕</button></div>'+
+        '<div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap"><select class="mt-awho" data-i="'+i+'" style="flex:1;min-width:210px"><option value="">Nobody in SETU'+(a.name&&!a.user_id?' ('+esc(a.name)+')':'')+'</option>'+m.people.map(u=>'<option value="'+u+'" '+(a.user_id===u?'selected':'')+'>'+esc(user(u).name)+(u===ME.id?' (me)':'')+'</option>').join('')+'</select>'+
+          '<input type="date" class="mt-adue" data-i="'+i+'" value="'+esc(a.due_on)+'" min="'+esc(DAY())+'" style="width:160px" title="Due date"></div>'+
+        '<div class="hint mt-anote" style="margin-top:6px">'+mtActNote(a,m)+'</div></div>').join('')+'</div>'+
+    '<button type="button" class="btn sm" id="mt-actadd">＋ Add an action point</button>'+
+    '<div id="mt-err" class="hint" style="color:var(--stop);margin-top:10px"></div>'+
+    '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap"><button class="btn" id="mt-save">Save draft</button><button class="btn primary" id="mt-confirm">Confirm and share</button></div>';
+}
+function mtMinSync(v){ const E=mtEd; if(!E||!$('#mt-sum',v)) return;
+  E.summary=$('#mt-sum',v).value; $$('.mt-dec',v).forEach(i=>{ E.decisions[+i.dataset.i]=i.value; });
+  $$('.mt-atext',v).forEach(i=>{ E.actions[+i.dataset.i].text=i.value; }); $$('.mt-adue',v).forEach(i=>{ E.actions[+i.dataset.i].due_on=i.value; });
+  $$('.mt-awho',v).forEach(i=>{ const a=E.actions[+i.dataset.i]; a.user_id=i.value; if(i.value) a.name=user(i.value).name; }); }
+function mtMinWire(v,m){
+  const E=mtEd, id=m.id; if(!E||!$('#mt-sum',v)) return;
+  const repaint=()=>{ const el=$('#mt-min'); if(el){ el.innerHTML=mtMinEditHTML(m); mtMinWire(el,m); } };
+  $$('#mt-sum,.mt-dec,.mt-atext',v).forEach(i=>i.oninput=()=>{ E.dirty=true; mtMinSync(v); });
+  $$('.mt-awho,.mt-adue',v).forEach(i=>i.onchange=()=>{ E.dirty=true; mtMinSync(v); const box=i.closest('.mt-act'); $('.mt-anote',box).innerHTML=mtActNote(E.actions[+i.dataset.i],m); });
+  $$('[data-decrm]',v).forEach(b=>b.onclick=()=>{ mtMinSync(v); E.decisions.splice(+b.dataset.decrm,1); E.dirty=true; repaint(); });
+  $$('[data-actrm]',v).forEach(b=>b.onclick=()=>{ mtMinSync(v); E.actions.splice(+b.dataset.actrm,1); E.dirty=true; repaint(); });
+  $('#mt-decadd',v).onclick=()=>{ mtMinSync(v); E.decisions.push(''); E.dirty=true; repaint(); const L=$$('.mt-dec'); if(L.length) L[L.length-1].focus(); };
+  $('#mt-actadd',v).onclick=()=>{ mtMinSync(v); E.actions.push({text:'',user_id:'',name:'',due_on:''}); E.dirty=true; repaint(); const L=$$('.mt-atext'); if(L.length) L[L.length-1].focus(); };
+  const save=async()=>{ mtMinSync(v); await rpc('mt_minutes_save',{p_meeting:id,p_summary:E.summary,p_decisions:E.decisions.filter(d=>d.trim()),p_actions:E.actions.filter(a=>a.text.trim()).map(a=>({text:a.text,user_id:a.user_id||null,name:a.name||'',due_on:a.due_on||null})),p_ai:null}); mtEd=null; await mtLoad(id,true); };
+  $('#mt-save',v).onclick=async()=>{ const err=$('#mt-err',v); err.textContent=''; try{ await save(); render(); toast('Draft saved.','ok'); }catch(e){ err.textContent=mtErrText(e); } };
+  $('#mt-confirm',v).onclick=async()=>{ const err=$('#mt-err',v); err.textContent=''; mtMinSync(v);
+    const acts=E.actions.filter(a=>a.text.trim()), tasks=acts.filter(a=>a.user_id&&a.due_on), past=tasks.find(a=>a.due_on<DAY());
+    if(!E.summary.trim()&&!E.decisions.some(d=>d.trim())&&!acts.length){ err.textContent='The minutes are empty.'; return; }
+    if(past){ err.textContent='The due date of “'+past.text.slice(0,60)+'” is in the past. Change it, or clear it.'; return; }
+    const others=m.people.filter(u=>u!==ME.id).length;
+    modal({title:'Confirm the minutes',body:'<ul id="mc-list" style="margin:0 0 10px 18px;padding:0;line-height:1.7"><li><b class="num">'+tasks.length+'</b> task'+(tasks.length===1?'':'s')+' will be made, given by you'+(acts.length>tasks.length?' ('+(acts.length-tasks.length)+' action point'+(acts.length-tasks.length===1?'':'s')+' without a person or date stay in the minutes only)':'')+'</li>'+
+        '<li><b class="num">'+others+'</b> '+(others===1?'person':'people')+' present will be told and can read the minutes and the full text</li></ul><p class="hint" style="margin:0"><b>After this the minutes cannot be changed.</b></p>',
+      footer:'<button class="btn" data-x>Go back</button><button class="btn primary" id="mc-yes">Confirm and share</button>',
+      onOpen:(d,close)=>{ $('#mc-yes',d).onclick=async()=>{ $('#mc-yes',d).disabled=true;
+        try{ await save(); const r=await rpc('mt_confirm',{p_meeting:id}); mtEd=null; await Promise.all([loadMeetings(),loadWTasks(),mtLoad(id,true)]); close(); render(); paintNav(); toast('Minutes confirmed.'+(r&&r.tasks?' '+r.tasks+' task'+(r.tasks===1?'':'s')+' made.':''),'ok'); }
+        catch(e){ close(); await mtLoad(id,true); render(); const x=$('#mt-err'); if(x) x.textContent=mtErrText(e); else fail(e); } }; }});
+  };
+}
+/* ---- minutes: read-only ---- */
+function mtMinReadHTML(m){
+  return '<h3 style="margin:0 0 8px">Minutes'+(m.status==='review'?' <span class="tag t-hold">Draft — not confirmed</span>':'')+'</h3>'+
+    (m.summary?'<p style="margin:0 0 12px;white-space:pre-wrap;line-height:1.6">'+esc(m.summary)+'</p>':'')+
+    (m.decisions.length?'<b>Decisions</b><ol style="margin:6px 0 12px 20px;padding:0;line-height:1.7">'+m.decisions.map(d=>'<li>'+esc(d)+'</li>').join('')+'</ol>':'')+
+    (m.actions.length?'<b>Action points</b><div style="margin-top:6px" id="mt-actlist">'+m.actions.map(a=>'<div style="padding:9px 0;border-top:1px solid var(--line)"><div>'+esc(a.text)+'</div><div class="hint" style="margin-top:2px">'+
+        (a.user_id?'<b data-person="'+esc(a.user_id)+'" style="cursor:pointer;color:var(--ink)">'+esc(user(a.user_id).name||a.name||'')+'</b>':a.name?esc(a.name):'Nobody named')+(a.due_on?' · by '+esc(dOn(a.due_on)):'')+
+        (a.task_id&&wtFind(a.task_id)?' · <a href="#task/'+esc(a.task_id)+'" data-mttask="'+esc(a.task_id)+'">Open the task</a>':a.task_id?' · made into a task':'')+'</div></div>').join('')+'</div>':'')+
+    (!m.summary&&!m.decisions.length&&!m.actions.length?'<p class="hint" style="margin:0">The minutes are empty.</p>':'');
+}
+function wireMeeting(v){
+  const id=ROUTE.id, m=mtDet.id===id?mtDet.d:null;
+  if($('#mt-back',v)) $('#mt-back',v).onclick=()=>go({name:'meetings'});
+  if(!m) return;
+  wirePersonLinks(v);
+  $$('[data-mttask]',v).forEach(a=>a.onclick=e=>{ e.preventDefault(); go({name:'task',id:a.dataset.mttask}); });
+  if($('#mt-edit',v)) $('#mt-edit',v).onclick=()=>{ if($('#mt-min',v)) mtMinSync(v); mtFormDialog(m); };
+  if($('#mt-del',v)) $('#mt-del',v).onclick=()=>modal({title:'Delete this meeting?',body:'<p style="margin:0">The meeting, its audio, its text and the draft minutes will be deleted. Nothing has been shared with anyone yet.</p>',
+    footer:'<button class="btn" data-x>Keep it</button><button class="btn" id="md-yes" style="'+GDEL_RED+'">Delete</button>',
+    onOpen:(d,close)=>{ $('#md-yes',d).onclick=async()=>{ try{ if(REC.on&&REC.mid===id) recStop(); const r=await rpc('mt_delete',{p_meeting:id}); const paths=(r&&r.paths)||[]; if(paths.length){ try{ await SB.storage.from('documents').remove(paths); }catch(_){} }
+        delete mtWork[id]; mtEd=null; await loadMeetings(); paintNav(); toast('Meeting deleted.','ok'); closeThen(close,()=>go({name:'meetings'})); }catch(e){ close(); fail(e); } }; }});
+  if($('#mt-rec',v)) mtRecWire($('#mt-rec',v),m);
+  if($('#mt-sum',v)) mtMinWire($('#mt-min',v),m);
+}
+/* ---- the recorder: lives outside the page, so moving around SETU does not stop it ---- */
+const REC={on:false,paused:false,mid:null,ref:'',stream:null,mr:null,mime:'',secs:0,timer:null,wake:null};
+let REC_PART_SECS=300;        // one audio part = 5 minutes
+const recMime=()=>{ if(typeof MediaRecorder==='undefined') return null; return ['audio/webm;codecs=opus','audio/webm','audio/mp4','audio/ogg;codecs=opus'].find(t=>{ try{ return MediaRecorder.isTypeSupported(t); }catch(_){ return false; } })||''; };
+function recPart(){     // a fresh recorder on the live microphone; what it hears becomes one audio part when it stops
+  const mid=REC.mid, chunks=[], st={secs:0}; let mr;
+  try{ mr=new MediaRecorder(REC.stream,REC.mime?{mimeType:REC.mime,audioBitsPerSecond:32000}:{audioBitsPerSecond:32000}); }catch(_){ mr=new MediaRecorder(REC.stream); }
+  mr._st=st;
+  mr.ondataavailable=e=>{ if(e.data&&e.data.size) chunks.push(e.data); };
+  mr.onstop=()=>{ const type=(mr.mimeType||REC.mime||'audio/webm').split(';')[0]; const blob=new Blob(chunks,{type}); if(blob.size>600&&st.secs>=1) mtAddAudio(mid,blob,type,st.secs); };
+  mr.start(); REC.mr=mr;
+}
+async function recStart(m){
+  if(REC.on) return toast('A recording is already running.','');
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia||recMime()===null) return modal({title:'This device cannot record here',body:'<p style="margin:0">Recording is not available in this browser or app. Record with the phone’s own recorder and use “Upload an audio file”.</p>',footer:'<button class="btn primary" data-x>OK</button>'});
+  let stream;
+  try{ stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}}); }
+  catch(e){ return modal({title:'The microphone could not be opened',body:'<p style="margin-top:0">SETU needs the microphone to record the meeting. Allow the microphone for SETU in the phone or browser settings, then try again.</p><p class="hint" style="margin:0">If it still does not open inside the SETU app, record with the phone’s own recorder and use “Upload an audio file”. ('+esc((e&&e.name)||'')+')</p>',footer:'<button class="btn primary" data-x>OK</button>'}); }
+  Object.assign(REC,{on:true,paused:false,mid:m.id,ref:m.ref,stream,mime:recMime(),secs:0});
+  if(!$('#rec-css')){ const s=document.createElement('style'); s.id='rec-css'; s.textContent='@keyframes recblink{50%{opacity:.25}}'; document.head.appendChild(s); }
+  try{ recPart(); }catch(e){ REC.on=false; try{ stream.getTracks().forEach(t=>t.stop()); }catch(_){} return fail(new Error('The recording could not start on this device. Use “Upload an audio file” instead.')); }
+  REC.timer=setInterval(recTick,1000);
+  recWake();
+  stream.getAudioTracks().forEach(t=>{ t.onended=()=>{ if(REC.on) recStop('The microphone stopped. What was recorded so far is saved.'); }; });
+  recPaint(); mtPaintRec();
+}
+async function recWake(){ try{ if(REC.on&&navigator.wakeLock&&document.visibilityState==='visible') REC.wake=await navigator.wakeLock.request('screen'); }catch(_){} }
+function recTick(){
+  if(!REC.on) return;
+  if(!REC.paused){ REC.secs++; const st=REC.mr&&REC.mr._st; if(st){ st.secs++; if(st.secs>=REC_PART_SECS){ const old=REC.mr; try{ recPart(); old.stop(); }catch(_){ recStop('The recording stopped. What was recorded so far is saved.'); } } } }
+  recPaint();
+}
+function recPause(){ if(!REC.on) return; try{ if(REC.paused){ REC.mr.resume(); REC.paused=false; } else { REC.mr.pause(); REC.paused=true; } }catch(_){} recPaint(); mtPaintRec(); }
+function recStop(msg){
+  if(!REC.on) return; REC.on=false; clearInterval(REC.timer);
+  try{ REC.mr.stop(); }catch(_){} try{ REC.stream.getTracks().forEach(t=>t.stop()); }catch(_){} try{ if(REC.wake) REC.wake.release(); }catch(_){} REC.wake=null;
+  recPaint(); if(msg) toast(msg,''); mtPaintRec();
+}
+function recPaint(){
+  let p=$('#rec-pill');
+  if(!REC.on){ if(p) p.remove(); return; }
+  if(!p){ p=document.createElement('button'); p.id='rec-pill'; p.type='button'; p.title='Open the meeting being recorded';
+    p.style.cssText='position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:96;background:var(--stop);color:#fff;border:0;border-radius:999px;padding:7px 14px;font-weight:700;font-size:13px;display:flex;gap:8px;align-items:center;box-shadow:0 6px 18px -6px rgba(0,0,0,.5);cursor:pointer;white-space:nowrap';
+    if(window.innerWidth<=640) p.style.top='64px'; p.onclick=()=>go({name:'meeting',id:REC.mid}); document.body.appendChild(p); }
+  p.innerHTML='<span style="width:9px;height:9px;border-radius:50%;background:#fff;'+(REC.paused?'opacity:.5':'animation:recblink 1.2s infinite')+'"></span>'+(REC.paused?'Paused ':'Recording ')+mtDur(REC.secs)+' · '+esc(REC.ref);
+  const t=$('#mt-rectime'); if(t) t.textContent=mtDur(REC.secs);
+}
+document.addEventListener('visibilitychange',()=>{ if(REC.on&&document.visibilityState==='visible') recWake(); });
+window.addEventListener('beforeunload',e=>{ if(REC.on||Object.keys(mtWork).some(k=>mtWork[k].up||mtWork[k].held.length)){ e.preventDefault(); e.returnValue=''; } });
+/* ---- Org & profiles → Meetings (owner): who may record, how long audio is kept, AI use ---- */
+function viewOrgMeet(){
+  const o=DB.org||{}, on=DB.users.filter(u=>u.active&&u.canRecord&&!u.owner).sort((a,b)=>a.name.localeCompare(b.name));
+  let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Meeting settings</h3><p class="hint" style="margin:0 0 10px">A meeting’s audio is sent to Google Gemini to be turned into text. The audio is then deleted from SETU after the days set here; the text and the minutes stay.</p>'+
+    '<div class="grid g2" style="gap:12px"><div><label for="om-days">Keep the audio for (days)</label><input id="om-days" type="number" min="1" max="30" value="'+esc(o.meet_audio_days||7)+'"></div>'+
+    '<div><label for="om-daily">AI calls per person a day</label><input id="om-daily" type="number" min="10" max="2000" value="'+esc(o.meet_daily_ai||150)+'"><div class="hint">One call for every 5 minutes of audio, and one for the minutes.</div></div></div>'+
+    '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="om-save">Save</button><span id="om-err" class="hint" style="color:var(--stop)"></span></div></div>';
+  html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;gap:10px"><div style="flex:1"><b>Who can record meetings</b><div class="hint">You always can. Add or remove people here.</div></div><span class="tag t-prog">'+on.length+'</span></div>'+
+    '<div style="padding:0 16px 12px"><div id="om-add"></div></div>'+
+    (on.length?on.map(u=>'<div class="filerow" style="border-top:1px solid var(--line);border-radius:0;padding:10px 16px"><div style="min-width:0;flex:1"><b data-person="'+u.id+'" style="cursor:pointer">'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div><button class="btn sm ghost" data-omoff="'+u.id+'">Remove</button></div>').join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody else yet.</p>')+'</div>';
+  html+='<div class="card"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>AI use for meetings</b><div class="hint">Calls made — today and in the last 30 days</div></div>'+
+    (mtUse===null?'<p class="hint" style="padding:14px 16px;margin:0">Loading…</p>':!mtUse.length?'<p class="hint" style="padding:14px 16px;margin:0">No meeting has used the AI yet.</p>'
+      :'<table class="cards"><thead><tr><th>Person</th><th>Today</th><th>Last 30 days</th></tr></thead><tbody>'+mtUse.map(x=>'<tr><td><b>'+esc(x.name)+'</b></td><td class="num">'+esc(x.today)+'</td><td class="num">'+esc(x.last30)+'</td></tr>').join('')+'</tbody></table>')+'</div>';
+  return html;
+}
+function wireOrgMeet(v){
+  if(!$('#om-save',v)) return;
+  wirePersonLinks(v);
+  $('#om-save',v).onclick=async()=>{ $('#om-err',v).textContent='';
+    try{ await rpc('mt_settings_set',{p_days:parseInt($('#om-days',v).value,10)||0,p_daily:parseInt($('#om-daily',v).value,10)||0}); await load(['people']); render(); toast('Saved.','ok'); }
+    catch(e){ $('#om-err',v).textContent=mtErrText(e); } };
+  const set=async(id,on)=>{ try{ await rpc('mt_set_recorder',{p_user:id,p_on:on}); await load(['people']); render(); toast(user(id).name+(on?' can now record meetings.':' can no longer record meetings.'),'ok'); }catch(e){ fail(e); } };
+  personPicker($('#om-add',v),{placeholder:'Search a name or employee ID to add',exclude:()=>DB.users.filter(u=>u.canRecord||u.owner).map(u=>u.id),onPick:id=>set(id,true)});
+  $$('[data-omoff]',v).forEach(b=>b.onclick=()=>set(b.dataset.omoff,false));
+  if(mtUse===null&&!mtUseBusy){ mtUseBusy=true; rpc('mt_usage_report').then(r=>{ mtUse=r||[]; mtUseBusy=false; if(ROUTE.name==='org'&&orgTab==='meet') render(); },()=>{ mtUse=[]; mtUseBusy=false; }); }
 }
 /* ---- Org & profiles → Chats (owner) ---- */
 function viewOwnChats(){
