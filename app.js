@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v143';
+const APP_VER='v144';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -175,7 +175,8 @@ async function loadPeople(){
     SB.from('req_settings').select('tat_high,tat_medium,tat_low').limit(1),
     SB.from('profile_change_requests').select('*').order('created_at',{ascending:false}).limit(300),
     SB.from('hier_suggestions').select('*').in('status',['open','conflict']),
-    SB.from('org_settings').select('*').limit(1)
+    SB.from('org_settings').select('*').limit(1),
+    SB.from('company_numbers').select('id').limit(1)
   ]);
   const bad=r.slice(0,5).find(x=>x.error); if(bad) throw bad.error;   // units is optional (table may not exist before migration 71)
   const [prof,tpl,dept,proj,st]=r.slice(0,5).map(x=>x.data||[]);
@@ -187,8 +188,8 @@ async function loadPeople(){
   const opt=i=>(r[i]&&!r[i].error&&r[i].data)?r[i].data:[];
   DB.profReqs=opt(8).map(q=>({id:q.id,userId:q.user_id,field:q.field,oldValue:q.old_value||'',newValue:q.new_value||'',reason:q.reason||'',status:q.status,decidedName:q.decided_name||'',note:q.note||'',createdAt:ts(q.created_at)}));
   DB.hierSug=opt(9).map(g=>({id:g.id,personId:g.person_id,seniorId:g.senior_id,byUser:g.by_user,status:g.status,createdAt:ts(g.created_at)}));
-  DB.org=opt(10)[0]||{hier_compulsory:false}; DB.orgReady=!!(r[10]&&!r[10].error);
-  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
+  DB.org=opt(10)[0]||{hier_compulsory:false}; DB.orgReady=!!(r[10]&&!r[10].error); DB.numReady=!!(r[11]&&!r[11].error);
+  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,joinedOn:p.joined_on||'',division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,garudaPages:Array.isArray(p.garuda_pages)?p.garuda_pages:null,reqAccounts:!!p.req_accounts,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
@@ -1684,7 +1685,8 @@ function render(){
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
   if(ROUTE.name==='org'&&!(ME.admin||ME.owner)) ROUTE={name:'dash'};
   if((ROUTE.name==='me'||ROUTE.name==='org')&&!DB.orgReady) ROUTE={name:GATE_ONLY()?'gate':'dash'};
-  if(hierMust()&&ROUTE.name!=='me') ROUTE={name:'me'};          // 114: the owner made the reporting line compulsory
+  if(hierMust()&&ROUTE.name!=='me') ROUTE={name:'me'};
+  if(ROUTE.name!=='me'){ meErr=''; meHErr=''; }          // 114: the owner made the reporting line compulsory
   // Garuda takes over the screen (its own top bar + column dropdown); SETU nav hides
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
   if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
@@ -2878,7 +2880,7 @@ function wireUsage(v){
    The reporting line is filled by the people themselves, level by level;
    the senior confirms; "This is final" locks it. The server decides it all.
    ============================================================ */
-let hierDraft=[], orgF='todo', orgQ='', meBusy=false;
+let hierDraft=[], orgF='todo', orgQ='', meBusy=false, orgTab='people', numQ='', numRes=null, numBusy=false, meErr='', meHErr='';
 const hierDone=u=>!!(u&&(u.hierFinal||u.noSenior));
 const hierMust=()=>!!(ME&&DB.orgReady&&DB.org&&DB.org.hier_compulsory&&!ME.owner&&!hierDone(ME));
 const hierUp=id=>{ const out=[]; let u=user(id), n=0; const seen=new Set([id]);
@@ -2902,6 +2904,7 @@ function hierNudge(v){
 const ME_FIELD={email:'Email',designation:'Designation',department:'Department'};
 function viewMe(){
   head('My profile','Your details and who you report to');
+  if(viewMe._last!==ME.id){ viewMe._last=ME.id; meErr=''; meHErr=''; }
   const u=ME, reqs=(DB.profReqs||[]).filter(q=>q.userId===u.id), pendOf=f=>reqs.find(q=>q.field===f&&q.status==='pending');
   const locked=(f,val)=>{ const q=pendOf(f); return '<div class="me-row"><div class="hint">'+ME_FIELD[f]+'</div><div style="min-width:0;flex:1"><b style="word-break:break-word">'+esc(val||'—')+'</b>'+(q?'<div class="hint" style="color:var(--hold)">Change to “'+esc(q.newValue)+'” is waiting for an admin</div>':'')+'</div><button class="btn sm ghost" data-flag="'+f+'" title="Ask an admin to change this">⚑ '+(q?'Edit request':'Request change')+'</button></div>'; };
   const plain=(l,val)=>val?'<div class="me-row"><div class="hint">'+esc(l)+'</div><div style="flex:1"><b>'+esc(val)+'</b></div></div>':'';
@@ -2916,7 +2919,7 @@ function viewMe(){
     '<div><label for="me-phone">Mobile number</label><input id="me-phone" type="tel" inputmode="tel" maxlength="16" value="'+esc(u.phone)+'" placeholder="10-digit mobile" autocomplete="off"></div>'+
     '<div><label for="me-loc">Location</label><input id="me-loc" type="text" maxlength="80" value="'+esc(u.location)+'" placeholder="Office, city or site"></div></div>'+
     '<div style="margin-top:12px"><label for="me-handles">What I handle</label><textarea id="me-handles" rows="2" maxlength="300" placeholder="Stations, regions or the kind of work you look after">'+esc(u.handles)+'</textarea></div>'+
-    '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="me-save">Save</button><span id="me-err" class="hint" style="color:var(--stop)"></span></div></div>';
+    '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="me-save">Save</button><span id="me-err" class="hint" style="color:var(--stop)">'+esc(meErr)+'</span></div></div>';
   if(reqs.length) html+='<div class="card" style="margin-bottom:14px"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>My change requests</b></div><table class="cards"><thead><tr><th>Detail</th><th>Asked</th><th>Status</th></tr></thead><tbody>'+
     reqs.slice(0,12).map(q=>'<tr><td><b>'+esc(ME_FIELD[q.field]||q.field)+'</b><div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td>'+esc(q.newValue)+'<div class="hint">was '+esc(q.oldValue||'—')+'</div></td><td>'+(q.status==='pending'?'<span class="tag t-hold">Waiting</span>':q.status==='accepted'?'<span class="tag t-ok">Accepted</span>':'<span class="tag t-bad">Declined</span>')+(q.note?'<div class="hint">'+esc(q.note)+'</div>':'')+(q.decidedName?'<div class="hint">by '+esc(q.decidedName)+'</div>':'')+'</td></tr>').join('')+'</tbody></table></div>';
   // ---- reporting line
@@ -2936,7 +2939,7 @@ function viewMe(){
         (hierDraft.length?'<button class="btn" id="me-hsave">Save'+(u.hierFinal?' the added level'+(hierDraft.length>1?'s':''):'')+'</button>':'')+
         (!u.hierFinal?'<button class="btn primary" id="me-hfinal">This is final</button>':'')+
         (!u.hierFinal&&u.managerId?'<button class="btn ghost" id="me-hclear">Start again</button>':'')+
-        '<span id="me-herr" class="hint" style="color:var(--stop)"></span></div>'+
+        '<span id="me-herr" class="hint" style="color:var(--stop)">'+esc(meHErr)+'</span></div>'+
       '<p class="hint" style="margin:8px 0 0">'+(u.hierFinal?'Your line is final. You can still add levels above; to correct a level, ask an admin.':'After “This is final” only an admin can correct it. You can still add more levels above later.')+'</p>';
     if(mine.length) html+='<div class="hint" style="margin-top:8px">Waiting on others: '+mine.map(g=>esc(user(g.personId).name)+' → '+esc(user(g.seniorId).name)+(g.status==='conflict'?' (with the admins)':'')).join(' · ')+'</div>';
   }
@@ -2964,7 +2967,8 @@ function wireMe(v){
   avLoad(v);
   const refresh=async msg=>{ await load(['people']); render(); paintNav(); if(msg) toast(msg,'ok'); };
   const saveDetails=async photo=>{ await rpc('my_profile_save',{p_phone:$('#me-phone',v).value,p_location:$('#me-loc',v).value,p_handles:$('#me-handles',v).value,p_photo:photo===undefined?ME.photo:photo}); };
-  $('#me-save',v).onclick=async()=>{ $('#me-err',v).textContent=''; try{ busy(true); await saveDetails(); busy(false); await refresh('Saved.'); }catch(e){ busy(false); $('#me-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
+  // the message is kept in a variable too, so a redraw of the page cannot wipe it before it is read
+  $('#me-save',v).onclick=async()=>{ meErr=''; $('#me-err',v).textContent=''; try{ busy(true); await saveDetails(); busy(false); await refresh('Saved.'); }catch(e){ busy(false); meErr=(e.message||'').replace(/^.*?: /,''); const el=$('#me-err'); if(el) el.textContent=meErr; } };
   $('#me-pic',v).onclick=()=>$('#me-picfile',v).click();
   $('#me-picfile',v).onchange=async e=>{ const f=e.target.files&&e.target.files[0]; if(!f) return; const old=ME.photo;
     try{ busy(true); const path=await mePhoto(f); await saveDetails(path); if(old){ try{ await SB.storage.from('documents').remove([old]); }catch(_){} } busy(false); await refresh('Photo updated.'); }catch(err){ busy(false); fail(err); } };
@@ -2974,11 +2978,11 @@ function wireMe(v){
   const pick=$('#me-pick',v);
   if(pick) personPicker(pick,{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(hierUp(ME.id).map(c=>c.u.id),hierDraft),onPick:id=>{ hierDraft.push(id); render(); }});
   $$('[data-drm]',v).forEach(b=>b.onclick=()=>{ hierDraft.splice(Number(b.dataset.drm),1); render(); });
-  const send=async final=>{ const err=$('#me-herr',v); err.textContent='';
+  const send=async final=>{ const err=$('#me-herr',v); err.textContent=''; meHErr='';
     try{ busy(true); const r=await rpc('hier_set',{p_levels:hierDraft.length?hierDraft:null,p_final:final}); hierDraft=[]; busy(false);
       const bits=[]; if(r&&r.set) bits.push('Level 1 is waiting for their yes'); if(r&&r.suggested) bits.push(r.suggested+' level'+(r.suggested===1?'':'s')+' suggested to your senior'+(r.suggested===1?'':'s')); if(r&&r.conflicts) bits.push(r.conflicts+' sent to the admins to settle');
       await refresh((final?'Your reporting line is final. ':'Saved. ')+bits.join(' · ')); }
-    catch(e){ busy(false); err.textContent=(e.message||'').replace(/^.*?: /,''); } };
+    catch(e){ busy(false); meHErr=(e.message||'').replace(/^.*?: /,''); const el=$('#me-herr'); if(el) el.textContent=meHErr; } };
   if($('#me-hsave',v)) $('#me-hsave',v).onclick=()=>send(false);
   if($('#me-hfinal',v)) $('#me-hfinal',v).onclick=()=>{ if(!ME.managerId&&!hierDraft.length){ $('#me-herr',v).textContent='Add your first reporting person before you make it final.'; return; }
     modal({title:'Make it final?',body:'<p style="margin:0">After this, only an admin can correct your reporting line. You can still add more levels above.</p>',footer:'<button class="btn" data-x>Not yet</button><button class="btn primary" id="hf-yes">Yes, this is final</button>',onOpen:(m,close)=>{ $('#hf-yes',m).onclick=()=>{ close(); send(true); }; }}); };
@@ -3010,6 +3014,9 @@ function viewOrg(){
   const act=DB.users.filter(u=>u.active), cnt=k=>act.filter(u=>hierState(u)===k).length;
   const todo=u=>{ const k=hierState(u); return k==='none'||k==='wait'||k==='open'; };
   let html='<div id="org-root">';
+  if(!DB.numReady) orgTab='people';
+  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button></div>';
+  if(orgTab==='details') return html+viewOrgDetails()+'</div>';
   html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><b style="flex:1">Change requests</b><span class="tag '+(reqs.length?'t-hold':'t-ok')+'">'+reqs.length+' waiting</span></div>'+
     (reqs.length?'<table class="cards"><thead><tr><th>Person</th><th>Detail</th><th>From → to</th><th></th></tr></thead><tbody>'+reqs.map(q=>{ const u=user(q.userId); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.empId||'')+(u.dept?' · '+esc(u.dept):'')+'</div></td><td>'+esc(ME_FIELD[q.field]||q.field)+'<div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td><span class="hint">'+esc(q.oldValue||'—')+'</span> → <b>'+esc(q.newValue)+'</b>'+(q.reason?'<div class="hint">“'+esc(q.reason)+'”</div>':'')+'</td><td style="text-align:right;white-space:nowrap"><button class="btn sm ok" data-rqyes="'+q.id+'">Accept</button> <button class="btn sm" data-rqno="'+q.id+'">Decline</button></td></tr>'; }).join('')+'</tbody></table>'
       :'<p class="hint" style="padding:14px 16px;margin:0">No request is waiting.</p>')+'</div>';
@@ -3026,7 +3033,7 @@ function viewOrg(){
   html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap">'+chip('todo','To do')+chip('all','Everyone')+chip('done','Final')+'<input id="org-q" type="text" placeholder="Search name, employee ID, department or senior" value="'+esc(orgQ)+'" style="flex:1;min-width:200px"><span class="tag t-prog" style="align-self:center">'+L.length+'</span></div>'+
     '<table class="cards"><thead><tr><th>Person</th><th>Reports to</th><th>Status</th><th></th></tr></thead><tbody>'+
     (L.length?L.slice(0,200).map(u=>{ const up=hierUp(u.id); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div></td><td class="hint meta">'+(up.length?up.map(c=>esc(c.u.name)).join(' → '):'—')+'</td><td>'+hierTag(u)+'</td><td style="text-align:right;white-space:nowrap">'+
-        (u.hierFinal&&!u.noSenior?'<button class="btn sm" data-unlock="'+u.id+'">Reopen</button> ':'')+(ME.owner?'<button class="btn sm ghost" data-top="'+u.id+'" data-on="'+(u.noSenior?'0':'1')+'">'+(u.noSenior?'Not a top person':'Mark as top person')+'</button>':'')+'</td></tr>'; }).join('')
+        (DB.numReady?'<button class="btn sm ghost" data-edit="'+u.id+'">Edit details</button> ':'')+(u.hierFinal&&!u.noSenior?'<button class="btn sm" data-unlock="'+u.id+'">Reopen</button> ':'')+(ME.owner?'<button class="btn sm ghost" data-top="'+u.id+'" data-on="'+(u.noSenior?'0':'1')+'">'+(u.noSenior?'Not a top person':'Mark as top person')+'</button>':'')+'</td></tr>'; }).join('')
       :'<tr><td colspan="4"><div class="empty" style="padding:18px"><p class="hint">Nobody in this list.</p></div></td></tr>')+'</tbody></table>'+(L.length>200?'<p class="hint" style="padding:10px 16px;margin:0">Showing the first 200. Search to narrow it down.</p>':'')+'</div>';
   return html+'</div>';
 }
@@ -3038,6 +3045,9 @@ function wireOrg(v){
     onOpen:(m,close)=>{ $('#dc-go',m).onclick=async()=>{ try{ await rpc('profile_change_decide',{p_id:b.dataset.rqno,p_accept:false,p_note:$('#dc-why',m).value}); close(); await load(['people']); render(); paintNav(); toast('Declined.','ok'); }catch(e){ $('#dc-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }}));
   $$('[data-cfyes]',v).forEach(b=>b.onclick=()=>act('hier_conflict_settle',{p_id:b.dataset.cfyes,p_apply:true},'Changed.'));
   $$('[data-cfno]',v).forEach(b=>b.onclick=()=>act('hier_conflict_settle',{p_id:b.dataset.cfno,p_apply:false},'Kept as it is.'));
+  $$('[data-orgtab]',v).forEach(b=>b.onclick=()=>{ orgTab=b.dataset.orgtab; render(); });
+  $$('[data-edit]',v).forEach(b=>b.onclick=()=>orgEditDialog(user(b.dataset.edit)));
+  wireOrgDetails(v);
   $$('[data-orgf]',v).forEach(b=>b.onclick=()=>{ orgF=b.dataset.orgf; render(); });
   const qi=$('#org-q',v); if(qi) qi.oninput=()=>{ orgQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#org-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
   $$('[data-unlock]',v).forEach(b=>b.onclick=()=>act('hier_unlock',{p_user:b.dataset.unlock},user(b.dataset.unlock).name+' can correct their line now.'));
@@ -3046,6 +3056,81 @@ function wireOrg(v){
   if($('#org-must',v)) $('#org-must',v).onclick=()=>{ const on=!DB.org.hier_compulsory;
     modal({title:on?'Make the hierarchy compulsory?':'Make it optional again?',body:'<p style="margin:0">'+(on?'From now, nobody (except you) can use SETU until their reporting line is final. They are taken straight to their profile.':'People will only see a reminder again.')+'</p>',
       footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="om-yes">'+(on?'Yes, make it compulsory':'Yes, make it optional')+'</button>',onOpen:(m,close)=>{ $('#om-yes',m).onclick=()=>{ close(); act('hier_compulsory_set',{p_on:on},on?'The hierarchy is now compulsory.':'The hierarchy is optional again.'); }; }}); };
+}
+/* ---- v144 (115): fill details from Excel + the company number register ---- */
+function orgEditDialog(u){
+  modal({title:'Details of '+u.name,
+    body:'<div class="grid g2" style="gap:12px"><div><label for="oe-phone">Mobile number</label><input id="oe-phone" type="tel" value="'+esc(u.phone)+'" autocomplete="off"></div><div><label for="oe-email">Email</label><input id="oe-email" type="email" value="'+esc(u.email)+'" autocomplete="off"></div>'+
+      '<div><label for="oe-loc">Location</label><input id="oe-loc" type="text" maxlength="80" value="'+esc(u.location)+'"></div><div><label for="oe-join">Date of joining</label><input id="oe-join" type="date" value="'+esc(u.joinedOn)+'"></div></div>'+
+      '<p class="hint" style="margin:10px 0 0">Designation and department are changed on People &amp; masters. A number or email that someone else holds is moved with “Hand over” in the number register.</p><div id="oe-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="oe-go">Save</button>',
+    onOpen:(m,close)=>{ $('#oe-go',m).onclick=async()=>{ try{ await rpc('admin_profile_details',{p_user:u.id,p_phone:$('#oe-phone',m).value,p_email:$('#oe-email',m).value,p_location:$('#oe-loc',m).value,p_joined:$('#oe-join',m).value||null}); close(); await load(['people']); render(); toast('Saved.','ok'); }
+      catch(e){ $('#oe-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
+}
+function viewOrgDetails(){
+  const act=DB.users.filter(u=>u.active&&u.empId), noPh=act.filter(u=>!u.phone).length;
+  let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Fill details from Excel</h3><p class="hint" style="margin:0 0 10px">Download the sheet (everyone, with what SETU has today), fill the mobile number, email, location and date of joining, and upload it back. An empty cell leaves that detail as it is. You see what will change before anything is saved. '+noPh+' of '+act.length+' people have no mobile number yet.</p>'+
+    '<div class="row" style="gap:8px;flex-wrap:wrap"><button class="btn" id="bf-down">⬇ Download the sheet</button><button class="btn primary" id="bf-up">⬆ Upload the filled sheet</button></div></div>';
+  html+='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Company number register</h3><p class="hint" style="margin:0 0 10px">A company number or email belongs to the seat. Search one to see who holds it today and who held it before. It keeps itself whenever a number changes or an account is switched off.</p>'+
+    '<div class="row" style="gap:8px"><input id="nr-q" type="text" placeholder="Mobile number or email (at least 4 characters)" value="'+esc(numQ)+'" style="flex:1;min-width:0" autocomplete="off"><button class="btn primary" id="nr-go">Search</button></div><div id="nr-err" class="hint" style="color:var(--stop);margin-top:6px"></div></div>';
+  if(numBusy) html+='<p class="hint">Searching…</p>';
+  else if(numRes){
+    const by={}, order=[]; numRes.forEach(r=>{ const k=r.kind+'|'+r.value; if(!by[k]){ by[k]=[]; order.push(k); } by[k].push(r); });
+    html+=order.length?order.map(k=>{ const L=by[k], cur=L.find(r=>!r.to_at), past=L.filter(r=>r.to_at), kind=L[0].kind, val=L[0].value;
+      return '<div class="card pad" style="margin-bottom:10px" data-num="'+esc(k)+'"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><div style="flex:1;min-width:200px"><b class="num" style="font-size:16px">'+esc(val)+'</b> <span class="tag t-wait">'+(kind==='mobile'?'Mobile':'Email')+'</span>'+
+        '<div style="margin-top:6px">'+(cur?'<span class="tag t-ok">Today</span> <b>'+esc(cur.holder_name)+'</b> <span class="hint">'+esc(cur.holder_role||'')+(cur.holder_dept?' · '+esc(cur.holder_dept):'')+' · since '+esc(fmtD(ts(cur.from_at)))+'</span>':'<span class="tag t-hold">Vacant</span> <span class="hint">nobody holds it today</span>')+'</div></div>'+
+        '<button class="btn sm" data-hand="'+esc(kind)+'" data-val="'+esc(val)+'">Hand over</button></div>'+
+        (past.length?'<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px"><div class="hint" style="margin-bottom:4px">Earlier</div>'+past.map(r=>'<div class="hint" style="padding:2px 0"><b style="color:var(--ink)">'+esc(r.holder_name)+'</b>'+(r.holder_active?'':' (left)')+' — '+esc(fmtD(ts(r.from_at)))+' to '+esc(fmtD(ts(r.to_at)))+'</div>').join('')+'</div>':'')+'</div>'; }).join('')
+      :'<div class="card pad"><p class="hint" style="margin:0">Nothing in the register matches “'+esc(numQ)+'”.</p></div>';
+  }
+  return html;
+}
+const bfDate=v=>{ if(v instanceof Date&&!isNaN(v)) return new Date(v.getTime()-v.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  const t=String(v==null?'':v).trim(); if(!t) return ''; let m=t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if(m) return m[1]+'-'+m[2].padStart(2,'0')+'-'+m[3].padStart(2,'0');
+  m=t.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/); if(m) return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0'); return t; };
+async function numSearch(){ const q=numQ.trim(); if(q.length<4){ numRes=null; return; } numBusy=true; render(); try{ numRes=await rpc('number_lookup',{p_q:q})||[]; }catch(e){ numRes=[]; fail(e); } numBusy=false; render(); }
+function wireOrgDetails(v){
+  if(!$('#bf-down',v)) return;
+  $('#bf-down',v).onclick=()=>{ const A=[['Employee ID','Name','Department','Mobile','Email','Location','Date of joining']];
+    DB.users.filter(u=>u.active&&u.empId).sort((a,b)=>a.name.localeCompare(b.name)).forEach(u=>A.push([u.empId,u.name,u.dept||'',u.phone||'',u.email||'',u.location||'',u.joinedOn||'']));
+    const wb=XLSX.utils.book_new(), ws=XLSX.utils.aoa_to_sheet(A); ws['!cols']=[{wch:13},{wch:28},{wch:20},{wch:15},{wch:32},{wch:20},{wch:16}];
+    XLSX.utils.book_append_sheet(wb,ws,'Details'); XLSX.writeFile(wb,'setu-people-details-'+DAY()+'.xlsx'); toast('Sheet downloaded. Name and Department are only for your reference.','ok'); };
+  $('#bf-up',v).onclick=()=>{ const inp=document.createElement('input'); inp.type='file'; inp.accept='.xlsx,.xls,.csv';
+    inp.onchange=async()=>{ const f=inp.files&&inp.files[0]; if(!f) return;
+      try{ const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true}), ws=wb.Sheets[wb.SheetNames[0]], data=XLSX.utils.sheet_to_json(ws,{defval:''});
+        const norm=o=>{ const m={}; Object.keys(o).forEach(k=>m[String(k).toLowerCase().replace(/[^a-z0-9]/g,'')]=o[k]); return m; };
+        const rows=data.map(norm).map(m=>({emp_id:String(m.employeeid||m.empid||m.empcode||m.employeecode||m.id||'').trim(),phone:String(m.mobile||m.mobileno||m.mobilenumber||m.phone||m.contact||'').trim(),email:String(m.email||m.emailid||m.mail||'').trim(),location:String(m.location||m.site||m.city||'').trim(),joined_on:bfDate(m.dateofjoining||m.doj||m.joiningdate||m.joinedon||'')})).filter(r=>r.emp_id);
+        if(!rows.length) return toast('No rows with an Employee ID found — check the column headings.','bad');
+        busy(true); const d=await rpc('profiles_bulk_fill',{p_rows:rows,p_dry:true}); busy(false); bfPreview(rows,d); }
+      catch(e){ busy(false); fail(e); } };
+    inp.click(); };
+  const q=$('#nr-q',v); q.oninput=()=>{ numQ=q.value; };
+  q.onkeydown=e=>{ if(e.key==='Enter'){ numQ=q.value; if(numQ.trim().length<4) $('#nr-err',v).textContent='Type at least 4 characters.'; else numSearch(); } };
+  $('#nr-go',v).onclick=()=>{ numQ=q.value; if(numQ.trim().length<4){ $('#nr-err',v).textContent='Type at least 4 characters.'; return; } numSearch(); };
+  $$('[data-hand]',v).forEach(b=>b.onclick=()=>numHandDialog(b.dataset.hand,b.dataset.val));
+}
+function bfPreview(rows,d){
+  const nf=d.not_found||[], bad=d.bad||[], mv=d.moved||[];
+  modal({title:'Check before saving',
+    body:'<ul id="bf-sum" style="margin:0 0 10px 18px;padding:0;line-height:1.8"><li><b class="num">'+(d.updated||0)+'</b> '+(d.updated===1?'person':'people')+' will be updated</li><li><b class="num">'+(d.unchanged||0)+'</b> already the same</li>'+
+      (nf.length?'<li><b class="num">'+nf.length+'</b> employee ID'+(nf.length===1?'':'s')+' not found in SETU: <span class="hint">'+esc(nf.slice(0,15).join(', '))+(nf.length>15?' …':'')+'</span></li>':'')+'</ul>'+
+      (bad.length?'<div style="margin-bottom:10px;padding:10px 12px;border:1px solid var(--stop);border-radius:var(--r)"><b>'+bad.length+' row'+(bad.length===1?'':'s')+' will be skipped</b>'+bad.slice(0,20).map(x=>'<div class="hint">'+esc(x.emp_id)+' '+esc(x.name||'')+' — '+esc(x.why)+'</div>').join('')+(bad.length>20?'<div class="hint">… and '+(bad.length-20)+' more</div>':'')+'</div>':'')+
+      (mv.length?'<div style="margin-bottom:10px;padding:10px 12px;border:1px solid var(--hold);border-radius:var(--r)"><b>'+mv.length+' number'+(mv.length===1?'':'s')+' / email'+(mv.length===1?'':'s')+' will move to the person in the sheet</b>'+mv.slice(0,20).map(x=>'<div class="hint">'+esc(x.what)+': '+esc(x.from)+' → '+esc(x.to)+'</div>').join('')+'</div>':'')+
+      '<p class="hint" style="margin:0">Nothing is saved yet.</p><div id="bf-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button>'+(d.updated?'<button class="btn primary" id="bf-go">Save '+d.updated+' '+(d.updated===1?'person':'people')+'</button>':''),
+    onOpen:(m,close)=>{ if($('#bf-go',m)) $('#bf-go',m).onclick=async()=>{ try{ busy(true); const r=await rpc('profiles_bulk_fill',{p_rows:rows,p_dry:false}); await load(['people']); busy(false); close(); render(); toast((r.updated||0)+' '+(r.updated===1?'person':'people')+' updated.','ok'); }
+      catch(e){ busy(false); $('#bf-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }});
+}
+function numHandDialog(kind,val){
+  let to=null;
+  modal({title:'Hand over '+val,
+    body:'<p class="hint" style="margin:0 0 10px">The '+(kind==='mobile'?'number':'email')+' is taken off whoever has it today and given to the person you pick. The history stays in the register.</p><label>New holder</label><div id="nh-pick"></div><div id="nh-sel" style="margin-top:8px"></div><div id="nh-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="nh-vac">Leave it vacant</button><button class="btn primary" id="nh-go">Hand over</button>',
+    onOpen:(m,close)=>{ const run=async dest=>{ try{ await rpc('number_handover',{p_kind:kind,p_value:val,p_to:dest}); close(); await load(['people']); toast(dest?'Handed over to '+user(dest).name+'.':'Left vacant.','ok'); await numSearch(); }
+        catch(e){ $('#nh-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } };
+      personPicker($('#nh-pick',m),{placeholder:'Search a name or employee ID',onPick:id=>{ to=id; $('#nh-sel',m).innerHTML='<span class="tag t-prog">'+esc(user(id).name)+'</span>'; }});
+      $('#nh-go',m).onclick=()=>{ if(!to){ $('#nh-err',m).textContent='Pick the new holder, or choose “Leave it vacant”.'; return; } run(to); };
+      $('#nh-vac',m).onclick=()=>run(null); }});
 }
 /* ============================================================
    People & masters
