@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v148';
+const APP_VER='v149';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -146,6 +146,8 @@ const gateScopeOnly=()=>!!(ME&&ME.name&&(GATE_ONLY()||HR_HEAD()));   // sees onl
 async function load(parts,flowIds,legacyIds){
   const P=new Set(parts&&parts.length?parts:LOAD_PARTS);
   if(P.has('people')){ P.delete('people'); await loadPeople(); const me=DB.users.find(u=>u.id===(ME&&ME.id)); if(me) ME=me; }
+  // 118: are the owner's oversight tools installed? (probe once, only for the owner — after ME is set)
+  if(ME&&ME.owner&&DB.ownReady===undefined){ DB.ownReady=false; SB.from('owner_delete_log').select('id').limit(1).then(x=>{ DB.ownReady=!x.error; if(DB.ownReady&&ME&&(ROUTE.name==='tasks'||ROUTE.name==='org')) render(); }); }
   // Gate-Pass-only and HR-Head accounts only ever see the gate pages — don't download
   // every flow and request for them (500+ such accounts)
   // (legacy rows are still loaded for them: the server returns only requisitions they are part of)
@@ -3029,7 +3031,10 @@ function viewOrg(){
   const todo=u=>{ const k=hierState(u); return k==='none'||k==='wait'||k==='open'; };
   let html='<div id="org-root">';
   if(!DB.numReady) orgTab='people';
-  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button>'+(ME.owner&&DB.aiReady?'<button class="btn sm '+(orgTab==='ai'?'primary':'')+'" data-orgtab="ai">Ask SETU</button>':'')+'</div>';
+  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button>'+(ME.owner&&DB.aiReady?'<button class="btn sm '+(orgTab==='ai'?'primary':'')+'" data-orgtab="ai">Ask SETU</button>':'')+(ME.owner&&DB.ownReady?'<button class="btn sm '+(orgTab==='chats'?'primary':'')+'" data-orgtab="chats">Chats</button><button class="btn sm '+(orgTab==='clean'?'primary':'')+'" data-orgtab="clean">Clean up</button>':'')+'</div>';
+  if((orgTab==='chats'||orgTab==='clean')&&!(ME.owner&&DB.ownReady)) orgTab='people';
+  if(orgTab==='chats') return html+viewOwnChats()+'</div>';
+  if(orgTab==='clean') return html+viewOwnClean()+'</div>';
   if(orgTab==='ai'&&ME.owner&&DB.aiReady) return html+viewOrgAI()+'</div>';
   if(orgTab==='details') return html+viewOrgDetails()+'</div>';
   html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><b style="flex:1">Change requests</b><span class="tag '+(reqs.length?'t-hold':'t-ok')+'">'+reqs.length+' waiting</span></div>'+
@@ -3063,7 +3068,7 @@ function wireOrg(v){
   wirePersonLinks(v);
   $$('[data-orgtab]',v).forEach(b=>b.onclick=()=>{ orgTab=b.dataset.orgtab; render(); });
   $$('[data-edit]',v).forEach(b=>b.onclick=()=>orgEditDialog(user(b.dataset.edit)));
-  wireOrgDetails(v); wireOrgAI(v);
+  wireOrgDetails(v); wireOrgAI(v); wireOwnChats(v); wireOwnClean(v);
   $$('[data-orgf]',v).forEach(b=>b.onclick=()=>{ orgF=b.dataset.orgf; render(); });
   const qi=$('#org-q',v); if(qi) qi.oninput=()=>{ orgQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#org-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
   $$('[data-unlock]',v).forEach(b=>b.onclick=()=>act('hier_unlock',{p_user:b.dataset.unlock},user(b.dataset.unlock).name+' can correct their line now.'));
@@ -3249,11 +3254,13 @@ async function loadWTasks(){
   const r=await SB.rpc('wt_list');
   if(r.error){ DB.wtReady=false; DB.wtasks=[]; return; }              // before migration 116 the page stays as it was
   DB.wtReady=true;
-  DB.wtasks=(r.data||[]).map(t=>({id:t.id,ref:t.ref,kind:t.kind,title:t.title,details:t.details||'',priority:t.priority,dueOn:t.due_on||'',createdBy:t.created_by,status:t.status,
+  DB.wtasks=(r.data||[]).map(wtMap);
+}
+const wtFind=id=>(DB.wtasks||[]).find(x=>x.id===id)||(DB.wtAll||[]).find(x=>x.id===id);
+const wtMap=t=>({id:t.id,ref:t.ref,kind:t.kind,title:t.title,details:t.details||'',priority:t.priority,dueOn:t.due_on||'',createdBy:t.created_by,status:t.status,
     rating:t.rating,ratingNote:t.rating_note||'',cancelWhy:t.cancel_why||'',createdAt:ts(t.created_at),closedAt:ts(t.closed_at),
     people:(t.people||[]).map(p=>({userId:p.user_id,part:p.part||'',dueOn:p.due_on||'',status:p.status,declineWhy:p.decline_why||'',submitNote:p.submit_note||'',submittedAt:ts(p.submitted_at),
-      rating:p.rating,ratingNote:p.rating_note||'',returned:p.returned||0,extDue:p.ext_due||'',extWhy:p.ext_why||''}))}));
-}
+      rating:p.rating,ratingNote:p.rating_note||'',returned:p.returned||0,extDue:p.ext_due||'',extWhy:p.ext_why||''}))});
 const WT_KIND={personal:'Personal',single:'One person',shared:'Shared',split:'Split'};
 const WT_PRI={high:['t-bad','High'],medium:['t-hold','Medium'],low:['t-wait','Low']};
 const dOn=d=>d?fmtD(new Date(d+'T00:00:00').getTime()):'';
@@ -3291,6 +3298,7 @@ function viewWTasks(){
   head('My tasks','What you have to do, what you gave to others, and what is waiting for your rating');
   const todo=wtTodo(), wait=wtWaiting(), given=wtGiven(), needs=wtNeedsMe(), closed=wtClosed(), others=wtOthers(), leg=myTasks().length;
   if(wtTab==='others'&&!others.length) wtTab='todo';
+  if(wtTab==='all'&&!(ME.owner&&DB.ownReady)) wtTab='todo';
   const tab=(k,l,n)=>'<button data-wttab="'+k+'" class="'+(wtTab===k?'on':'')+'">'+l+(n?' <span class="pill" style="position:static;display:inline-block;margin-left:4px">'+n+'</span>':'')+'</button>';
   const empty=(h,p)=>'<div class="empty" style="padding:22px 16px"><h3>'+h+'</h3><p class="hint">'+p+'</p></div>';
   let body='';
@@ -3300,21 +3308,23 @@ function viewWTasks(){
   else if(wtTab==='given') body='<div class="card">'+(given.length?given.map(wtRow).join(''):empty('You have not given anyone a task','Press “New task” and choose who should do it.'))+'</div>';
   else if(wtTab==='rate') body='<div class="card">'+(needs.length?needs.map(wtRow).join(''):empty('Nothing is waiting for you','When someone marks your task done, or asks for more time, it comes here.'))+'</div>';
   else if(wtTab==='others') body='<p class="hint" style="margin:0 0 8px">Open tasks of the people below you'+(ME.admin||ME.owner?' and, as an admin, everyone':'')+'. You can read and comment.</p><div class="card">'+others.slice(0,150).map(wtRow).join('')+'</div>';
+  else if(wtTab==='all') body=viewWtAll();
   else body='<div class="card">'+(closed.length?closed.slice(0,100).map(wtRow).join(''):empty('Nothing closed yet','Accepted and cancelled tasks of the last 45 days are listed here, with the rating.'))+'</div>';
   return '<div id="wt-root"><div class="row" style="gap:10px;margin-bottom:12px;flex-wrap:wrap"><button class="btn primary" id="wt-new">＋ New task</button></div>'+
-    '<div class="seg" style="margin-bottom:12px;flex-wrap:wrap">'+tab('todo','To do',todo.length+leg)+tab('given','Given by me',given.length)+tab('rate','Needs me',needs.length)+tab('done','Done',0)+(others.length?tab('others','Team',others.length):'')+'</div>'+body+'</div>';
+    '<div class="seg" style="margin-bottom:12px;flex-wrap:wrap">'+tab('todo','To do',todo.length+leg)+tab('given','Given by me',given.length)+tab('rate','Needs me',needs.length)+tab('done','Done',0)+(others.length?tab('others','Team',others.length):'')+(ME.owner&&DB.ownReady?tab('all','All tasks',0):'')+'</div>'+body+'</div>';
 }
 function wireTasks(v){
   if(!$('#wt-root',v)) return;
   $('#wt-new',v).onclick=()=>wtNewDialog();
-  $$('[data-wttab]',v).forEach(b=>b.onclick=()=>{ wtTab=b.dataset.wttab; render(); });
+  $$('[data-wttab]',v).forEach(b=>b.onclick=()=>{ wtTab=b.dataset.wttab; if(wtTab==='all'){ DB.wtAll=null; wtDelSel.clear(); } render(); });
+  wireWtAll(v);
   wireWtRows(v);
 }
 /* ---- New task ---- */
 function wtNewDialog(pre){
   const d={kind:(pre&&pre.kind)||'single',people:((pre&&pre.people)||[]).map(x=>typeof x==='string'?{id:x,part:'',due:''}:{id:x.id,part:x.part||'',due:x.due_on||x.due||''}),files:[]};
   const KINDS=[['personal','For me'],['single','One person'],['shared','Shared'],['split','Split']];
-  const HELP={personal:'A to-do for yourself. Only you see it.',single:'One person does it and presses Done. You accept and rate.',shared:'Given to several people together. Anyone of them presses Done and it is done for all. You give one rating, for all of them.',split:'One task with parts. Each person does and submits their own part, and you rate each person separately.'};
+  const HELP={personal:'A to-do for yourself.',single:'One person does it and presses Done. You accept and rate.',shared:'Given to several people together. Anyone of them presses Done and it is done for all. You give one rating, for all of them.',split:'One task with parts. Each person does and submits their own part, and you rate each person separately.'};
   modal({title:'New task',
     body:'<div class="seg" id="nt-kind" style="margin-bottom:6px"></div><p class="hint" id="nt-help" style="margin:0 0 12px"></p>'+
       '<label for="nt-title">Task</label><input id="nt-title" type="text" maxlength="200" placeholder="What has to be done" autocomplete="off">'+
@@ -3359,10 +3369,10 @@ async function wtLoadDetail(id){
 }
 const WT_ACT={created:'created the task',submitted:'marked it done',accepted:'accepted',closed:'Task closed','sent back':'sent it back',declined:'declined','asked for time':'asked for more time','more time given':'gave more time','more time refused':'did not give more time',changed:'changed',cancelled:'cancelled the task','person added':'added'};
 function viewTask(id){
-  const t=(DB.wtasks||[]).find(x=>x.id===id);
+  const t=wtFind(id);
   if(!t){ head('Task',''); return '<div class="card pad" id="task-root" data-id="'+esc(id||'')+'"><h3 style="margin:0">This task could not be found</h3><p class="hint" style="margin-top:6px">It may have been deleted, or you may not be on it.</p><button class="btn sm" id="tk-back" style="margin-top:10px">← My tasks</button></div>'; }
   const mine=t.createdBy===ME.id, me=wtMe(t), open=t.status==='open', by=user(t.createdBy);
-  head(t.title,t.ref+' · '+WT_KIND[t.kind]+(t.kind==='personal'?'':' · from '+by.name));
+  head(t.title,t.ref+' · '+WT_KIND[t.kind]+(t.kind==='personal'?(mine?'':' · of '+by.name):' · from '+by.name));
   if(wtDetail.id!==id) wtLoadDetail(id);
   let html='<div id="task-root" data-id="'+esc(id)+'"><div class="row" style="margin-bottom:10px"><button class="btn sm ghost" id="tk-back">← My tasks</button></div>';
   html+='<div class="card pad" style="margin-bottom:14px"><div class="row" style="gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'+(t.status==='done'?'<span class="tag t-ok">Done</span>':t.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">Open</span>')+
@@ -3398,11 +3408,11 @@ function viewTask(id){
     (wtDetail.id!==id||wtDetail.loading?'<p class="hint" style="margin:0 0 10px">Loading…</p>':wtDetail.events.map(e=>e.action==='comment'
       ?'<div style="margin:0 0 10px;padding:9px 12px;background:var(--surface-2);border-radius:12px"><b style="font-size:13px">'+esc(e.by)+'</b> <span class="hint">'+esc(fmtDT(e.at))+'</span><div style="white-space:pre-wrap;margin-top:2px">'+esc(e.detail)+'</div></div>'
       :'<div class="hint" style="margin:0 0 8px">'+(e.action==='closed'?'<b style="color:var(--ink)">Task closed</b>':'<b style="color:var(--ink)">'+esc(e.by)+'</b> '+esc(WT_ACT[e.action]||e.action))+(e.detail&&e.action!=='created'?' — '+esc(e.detail):'')+' · '+esc(fmtDT(e.at))+'</div>').join(''))+
-    '<textarea id="tk-com" rows="2" maxlength="1000" placeholder="Write a comment"></textarea><div id="tk-cfiles" style="margin-top:8px"></div><div class="row" style="margin-top:8px"><button class="btn" id="tk-comgo">Add comment</button></div></div>';
+    (t.kind==='personal'&&!mine?'':'<textarea id="tk-com" rows="2" maxlength="1000" placeholder="Write a comment"></textarea><div id="tk-cfiles" style="margin-top:8px"></div><div class="row" style="margin-top:8px"><button class="btn" id="tk-comgo">Add comment</button></div>')+'</div>';
   return html+'</div>';
 }
 function wireTask(v){
-  const id=ROUTE.id, t=(DB.wtasks||[]).find(x=>x.id===id);
+  const id=ROUTE.id, t=wtFind(id);
   if($('#tk-back',v)) $('#tk-back',v).onclick=()=>go({name:'tasks'});
   if(!t) return;
   avLoad(v); wirePersonLinks(v);
@@ -3467,7 +3477,8 @@ async function askOpen(){
   if(!askOn()) return;
   ask.open=true; askPaint(); askDraw();
   if(!ask.loaded){ ask.loaded=true;
-    try{ const r=await SB.from('ai_messages').select('*').order('id',{ascending:false}).limit(30);
+    try{ let r=await SB.from('ai_messages').select('*').eq('user_id',ME.id).eq('hidden',false).order('id',{ascending:false}).limit(30);
+      if(r.error) r=await SB.from('ai_messages').select('*').eq('user_id',ME.id).order('id',{ascending:false}).limit(30);   // before 118 there is no "hidden" column
       if(r.data&&r.data.length&&!ask.msgs.length){ ask.msgs=r.data.slice().reverse().map(m=>({role:m.role,text:m.body||'',cards:(m.role==='assistant'&&Array.isArray(m.cards))?m.cards.map(c=>c.type==='task_proposal'?Object.assign({},c,{old:true}):c):[]})); askDraw(); } }catch(_){} }
   setTimeout(()=>{ const i=$('#ask-in'); if(i&&window.innerWidth>640) i.focus(); },50);
 }
@@ -3491,7 +3502,7 @@ function askDraw(){
   const keep=$('#ask-in',p)?$('#ask-in',p).value:'';
   const sug=['What is waiting for me?','What are my tasks due today?','Who is '+(ME.name.split(' ')[0])+'?'];
   p.innerHTML='<div class="ask-h"><b style="flex:1">✦ Ask SETU</b>'+(ask.remaining!=null?'<span class="hint" id="ask-left" style="color:#dbe7f7">'+ask.remaining+' left today</span>':'')+
-      '<button type="button" class="ask-x" id="ask-clear" title="Clear my chat history">Clear</button><button type="button" class="ask-x" id="ask-close" aria-label="Close">✕</button></div>'+
+      '<button type="button" class="ask-x" id="ask-clear" title="Start a new chat">New chat</button><button type="button" class="ask-x" id="ask-close" aria-label="Close">✕</button></div>'+
     '<div class="ask-m" id="ask-m">'+(ask.msgs.length?ask.msgs.map((m,mi)=>'<div class="ask-b '+(m.role==='user'?'me':'ai')+(m.err?' err':'')+'">'+askText(m.text)+'</div>'+((m.cards&&m.cards.length)?'<div class="ask-cards">'+m.cards.map((c,ci)=>askCardHTML(c,mi,ci)).join('')+'</div>':'')).join('')
         :'<div class="ask-hello"><b>Namaste '+esc(ME.name.split(' ')[0])+'.</b><br>Ask about people, your tasks or your files — in English, Hindi or Marathi. I can also set up a task for you to confirm.<div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">'+sug.map(x=>'<button type="button" class="ask-card" data-asksug="'+esc(x)+'"><span style="flex:1">'+esc(x)+'</span></button>').join('')+'</div></div>')+
       (ask.busy?'<div class="ask-b ai" id="ask-wait"><span class="spin"></span> Thinking…</div>':'')+'</div>'+
@@ -3500,7 +3511,7 @@ function askDraw(){
   $('#ask-in',p).value=keep;
   const m=$('#ask-m',p); m.scrollTop=m.scrollHeight;
   $('#ask-close',p).onclick=askClose;
-  $('#ask-clear',p).onclick=async()=>{ if(!ask.msgs.length) return; try{ await rpc('ai_history_clear'); ask.msgs=[]; askDraw(); toast('Your chat history is cleared.','ok'); }catch(e){ fail(e); } };
+  $('#ask-clear',p).onclick=async()=>{ if(!ask.msgs.length) return; try{ await rpc('ai_history_clear'); ask.msgs=[]; askDraw(); }catch(e){ fail(e); } };
   $('#ask-send',p).onclick=()=>askSend($('#ask-in',p).value);
   $('#ask-in',p).onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); askSend($('#ask-in',p).value); } };
   $$('[data-asksug]',p).forEach(b=>b.onclick=()=>askSend(b.dataset.asksug));
@@ -3582,6 +3593,107 @@ function wireOrgAI(v){
   personPicker($('#ai-add',v),{placeholder:'Search a name or employee ID to add',exclude:()=>DB.users.filter(u=>u.aiOn||u.owner).map(u=>u.id),onPick:id=>set(id,true)});
   $$('[data-aioff]',v).forEach(b=>b.onclick=()=>set(b.dataset.aioff,false));
   if(aiUse===null&&!aiUseBusy){ aiUseBusy=true; rpc('ai_usage_report').then(r=>{ aiUse=r||[]; aiUseBusy=false; if(ROUTE.name==='org'&&orgTab==='ai') render(); },()=>{ aiUse=[]; aiUseBusy=false; }); }
+}
+/* ============================================================
+   v149 (118): the super admin's oversight and clean-up — owner only.
+   My tasks → "All tasks" (every task incl. personal; tick and delete);
+   Org & profiles → "Chats" (anyone's Ask SETU chat) and "Clean up" (test
+   data + the delete log). The server refuses everyone else; nothing here
+   notifies anyone or marks a page other people can open.
+   ============================================================ */
+let wtDelSel=new Set(), wtAllQ='', wtAllBusy=false, ownChat={people:null,uid:null,msgs:null,busy:false}, ownClean={sel:new Set(),numQ:'',num:null,numSel:new Set(),log:null};
+function viewWtAll(){
+  if(DB.wtAll==null){ if(!wtAllBusy){ wtAllBusy=true; rpc('wt_all').then(r=>{ DB.wtAll=(r||[]).map(wtMap); wtAllBusy=false; if(ROUTE.name==='tasks'&&wtTab==='all') render(); },e=>{ DB.wtAll=[]; wtAllBusy=false; fail(e); }); }
+    return '<div class="card pad"><p class="hint" style="margin:0">Loading every task…</p></div>'; }
+  const q=wtAllQ.trim().toLowerCase();
+  let L=DB.wtAll; if(q) L=L.filter(t=>(t.title+' '+t.ref+' '+user(t.createdBy).name+' '+t.people.map(p=>user(p.userId).name).join(' ')+' '+WT_KIND[t.kind]+' '+t.status).toLowerCase().includes(q));
+  const shown=L.slice(0,300), allOn=shown.length>0&&shown.every(t=>wtDelSel.has(t.id));
+  const st=t=>t.status==='done'?'<span class="tag t-ok">Done</span>':t.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">Open</span>';
+  return '<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px;flex-wrap:wrap;align-items:center"><label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:400"><input type="checkbox" id="wa-all" '+(allOn?'checked':'')+' style="width:auto"> <span class="hint">All shown</span></label>'+
+      '<input id="wa-q" type="text" placeholder="Search a task, person, T-number, personal, open…" value="'+esc(wtAllQ)+'" style="flex:1;min-width:200px"><span class="tag t-prog">'+L.length+' of '+DB.wtAll.length+'</span></div>'+
+    (shown.length?'<table class="cards"><thead><tr><th style="width:34px"></th><th>Task</th><th>From → to</th><th>Due</th><th>Status</th></tr></thead><tbody>'+shown.map(t=>'<tr data-wt="'+t.id+'" style="cursor:pointer"><td><input type="checkbox" class="wa-tick" data-id="'+t.id+'" '+(wtDelSel.has(t.id)?'checked':'')+' style="width:18px;height:18px;accent-color:var(--stop)"></td>'+
+        '<td><b>'+esc(t.title)+'</b><div class="hint">'+esc(t.ref)+' · '+WT_KIND[t.kind]+' · '+esc(fmtD(t.createdAt))+'</div></td>'+
+        '<td class="hint meta">'+esc(user(t.createdBy).name)+(t.kind==='personal'?'':' → '+esc(t.people.map(p=>user(p.userId).name).slice(0,3).join(', '))+(t.people.length>3?' +'+(t.people.length-3):''))+'</td>'+
+        '<td class="hint meta">'+esc(t.dueOn?dOn(t.dueOn):'—')+'</td><td>'+st(t)+(t.rating?' '+stars(t.rating):'')+'</td></tr>').join('')+'</tbody></table>'
+      :'<p class="hint" style="padding:14px 16px;margin:0">'+(DB.wtAll.length?'No task matches.':'There are no tasks in SETU.')+'</p>')+(L.length>300?'<p class="hint" style="padding:10px 16px;margin:0">Showing the first 300. Search to narrow it down.</p>':'')+'</div>';
+}
+function wtDelBar(){
+  const v=$('#view'); let b=$('#wtdel-bar'); const n=wtDelSel.size;
+  if(!n||!v||wtTab!=='all'||ROUTE.name!=='tasks'){ if(b) b.remove(); return; }
+  if(!b){ b=document.createElement('div'); b.id='wtdel-bar'; b.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:84px;z-index:55;background:var(--ink);color:#fff;border-radius:999px;padding:8px 10px 8px 18px;display:flex;gap:10px;align-items:center;box-shadow:0 8px 24px -8px rgba(0,0,0,.5);font-size:13.5px;white-space:nowrap'; v.appendChild(b); }
+  b.innerHTML='<b>'+n+' selected</b><button class="btn sm" id="wtdel-clear" style="background:transparent;color:#fff;border-color:rgba(255,255,255,.55)">Clear</button><button class="btn sm" id="wtdel-go" style="'+GDEL_RED+'">Delete selected</button>';
+  $('#wtdel-clear',b).onclick=()=>{ wtDelSel.clear(); render(); };
+  $('#wtdel-go',b).onclick=wtDelRun;
+}
+function wireWtAll(v){
+  if(wtTab!=='all'){ wtDelBar(); return; }
+  const qi=$('#wa-q',v); if(qi) qi.oninput=()=>{ wtAllQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#wa-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
+  $$('.wa-tick',v).forEach(c=>{ c.onclick=e=>e.stopPropagation(); c.onchange=()=>{ if(c.checked) wtDelSel.add(c.dataset.id); else wtDelSel.delete(c.dataset.id); const a=$('#wa-all',v); if(a) a.checked=$$('.wa-tick',v).every(x=>x.checked); wtDelBar(); }; });
+  const all=$('#wa-all',v); if(all) all.onchange=()=>{ $$('.wa-tick',v).forEach(c=>{ c.checked=all.checked; if(all.checked) wtDelSel.add(c.dataset.id); else wtDelSel.delete(c.dataset.id); }); wtDelBar(); };
+  wtDelBar();
+}
+async function wtDelRun(){
+  const ids=[...wtDelSel]; let c;
+  try{ busy(true); c=((await rpc('wt_owner_delete',{p_ids:ids,p_pin:'',p_dry:true}))||{}).counts||{}; busy(false); }catch(e){ busy(false); return fail(e); }
+  const li=(n,one,many)=>n?'<li><b class="num">'+n+'</b> '+(n===1?one:many)+'</li>':'';
+  modal({title:'Delete tasks',body:'<p style="margin:0 0 8px">This will delete, for good:</p><ul id="wtdel-list" style="margin:0 0 10px 18px;padding:0;line-height:1.7">'+li(c.tasks,'task','tasks')+li(c.history,'comment or history line','comments and history lines')+li(c.files,'attached file','attached files')+li(c.ratings,'rating','ratings')+'</ul>'+
+      '<p class="hint" style="margin:0">The people on these tasks are not told; the tasks simply disappear from their lists. <b>This cannot be undone.</b></p>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="wtdel-yes" style="'+GDEL_RED+'">Delete for good</button>',
+    onOpen:(m,close)=>{ $('#wtdel-yes',m).onclick=()=>{ close(); setTimeout(()=>confirmPin('delete '+ids.length+' task'+(ids.length===1?'':'s'),async pin=>{
+      const r=await rpc('wt_owner_delete',{p_ids:ids,p_pin:pin,p_dry:false}); const paths=(r&&r.paths)||[]; if(paths.length){ try{ await SB.storage.from('documents').remove(paths); }catch(_){} }
+      wtDelSel.clear(); DB.wtAll=null; ownClean.log=null; await loadWTasks(); toast('Deleted '+((r&&r.counts&&r.counts.tasks)||ids.length)+' task'+(ids.length===1?'':'s')+'.','ok'); paintNav(); if(ROUTE.name==='tasks') render();
+    }),0); }; }});
+}
+/* ---- Org & profiles → Chats (owner) ---- */
+function viewOwnChats(){
+  const C=ownChat;
+  if(C.people==null){ if(!C.busy){ C.busy=true; rpc('ai_chat_people').then(r=>{ C.people=r||[]; C.busy=false; if(ROUTE.name==='org'&&orgTab==='chats') render(); },e=>{ C.people=[]; C.busy=false; fail(e); }); }
+    return '<div class="card pad"><p class="hint" style="margin:0">Loading…</p></div>'; }
+  let html='<div class="card" style="margin-bottom:14px"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>Ask SETU chats</b><div class="hint">Pick a person to read what they asked and what was answered.</div></div>'+
+    (C.people.length?'<div style="padding:10px 16px;display:flex;gap:6px;flex-wrap:wrap">'+C.people.map(p=>'<button class="btn sm '+(C.uid===p.user_id?'primary':'')+'" data-ochat="'+esc(p.user_id)+'">'+esc(p.name)+' <span style="opacity:.75;font-weight:400">'+esc(p.questions)+'</span></button>').join('')+'</div>':'<p class="hint" style="padding:14px 16px;margin:0">Nobody has asked anything yet.</p>')+'</div>';
+  if(C.uid){ html+='<div class="card pad" id="ochat-box"><div class="row" style="gap:10px;margin-bottom:10px"><b style="flex:1">'+esc(user(C.uid).name)+'</b>'+(C.msgs?'<span class="tag t-prog">'+C.msgs.filter(m=>m.role==='user').length+' questions</span>':'')+'</div>'+
+      (C.msgs==null?'<p class="hint" style="margin:0">Loading…</p>':!C.msgs.length?'<p class="hint" style="margin:0">No chat.</p>'
+        :'<div style="display:flex;flex-direction:column;gap:8px">'+C.msgs.map(m=>'<div class="ask-b '+(m.role==='user'?'me':'ai')+'" style="max-width:80%">'+askText(m.body)+'<div style="font-size:11px;opacity:.7;margin-top:3px">'+esc(fmtDT(ts(m.at)))+(m.hidden?' · before a “New chat”':'')+'</div></div>').join('')+'</div>')+'</div>'; }
+  return html;
+}
+function wireOwnChats(v){
+  $$('[data-ochat]',v).forEach(b=>b.onclick=async()=>{ const C=ownChat; C.uid=b.dataset.ochat; C.msgs=null; render();
+    const r=await SB.from('ai_messages').select('*').eq('user_id',C.uid).order('id',{ascending:false}).limit(300); if(C.uid!==b.dataset.ochat) return;
+    C.msgs=(r.data||[]).slice().reverse(); if(ROUTE.name==='org'&&orgTab==='chats') render(); });
+}
+/* ---- Org & profiles → Clean up (owner) ---- */
+function viewOwnClean(){
+  const K=ownClean, reqs=(DB.profReqs||[]);
+  if(K.log==null&&!K.logBusy){ K.logBusy=true; SB.from('owner_delete_log').select('*').order('id',{ascending:false}).limit(60).then(r=>{ K.log=(r&&r.data)||[]; K.logBusy=false; if(ROUTE.name==='org'&&orgTab==='clean') render(); }); }
+  let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Tasks</h3><p class="hint" style="margin:0 0 10px">Every task in SETU is listed under My tasks → All tasks. Tick the ones to delete there.</p><button class="btn" id="oc-tasks">Open All tasks</button></div>';
+  html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px"><div style="flex:1"><b>Profile change requests</b><div class="hint">Removes the request only. A detail that was already changed stays as it is.</div></div><button class="btn sm" id="oc-reqgo" style="'+GDEL_RED+'" '+(K.sel.size?'':'disabled')+'>Remove '+(K.sel.size||'')+'</button></div>'+
+    (reqs.length?'<table class="cards"><thead><tr><th style="width:34px"></th><th>Person</th><th>Detail</th><th>Status</th></tr></thead><tbody>'+reqs.map(q=>'<tr><td><input type="checkbox" class="oc-req" data-id="'+q.id+'" '+(K.sel.has(q.id)?'checked':'')+' style="width:18px;height:18px;accent-color:var(--stop)"></td><td><b>'+esc(user(q.userId).name)+'</b><div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td>'+esc(ME_FIELD[q.field]||q.field)+'<div class="hint">'+esc(q.oldValue||'—')+' → '+esc(q.newValue)+'</div></td><td class="hint">'+esc(q.status)+'</td></tr>').join('')+'</tbody></table>'
+      :'<p class="hint" style="padding:14px 16px;margin:0">There are no change requests.</p>')+'</div>';
+  html+='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Ask SETU usage counts</h3><p class="hint" style="margin:0 0 10px">Resets the “questions asked” numbers. It also gives back today’s full limit.</p><div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><div id="oc-usepick" style="flex:1;min-width:220px"></div><span id="oc-usesel" class="hint"></span><button class="btn" id="oc-useone" disabled>Reset this person</button><button class="btn" id="oc-useall" style="'+GDEL_RED+'">Reset everyone</button></div></div>';
+  html+='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Number register history</h3><p class="hint" style="margin:0 0 10px">Search a number or email, then tick the “earlier holder” lines to remove. Today’s holder cannot be removed here.</p>'+
+    '<div class="row" style="gap:8px"><input id="oc-numq" type="text" placeholder="Mobile number or email (at least 4 characters)" value="'+esc(K.numQ)+'" style="flex:1;min-width:0" autocomplete="off"><button class="btn" id="oc-numgo">Search</button></div>'+
+    (K.num?'<div style="margin-top:10px">'+(K.num.length?K.num.map(r=>'<div class="filerow"><input type="checkbox" class="oc-num" data-id="'+r.id+'" '+(r.to_at?'':'disabled')+' '+(K.numSel.has(String(r.id))?'checked':'')+' style="width:18px;height:18px;accent-color:var(--stop);flex:none"><div style="min-width:0;flex:1"><b class="num">'+esc(r.value)+'</b> — '+esc(r.holder_name)+'<div class="hint">'+(r.to_at?esc(fmtD(ts(r.from_at)))+' to '+esc(fmtD(ts(r.to_at))):'Today’s holder, since '+esc(fmtD(ts(r.from_at))))+'</div></div></div>').join('')+
+        '<button class="btn sm" id="oc-numdel" style="margin-top:8px;'+GDEL_RED+'" '+(K.numSel.size?'':'disabled')+'>Remove '+(K.numSel.size||'')+' line'+(K.numSel.size===1?'':'s')+'</button>':'<p class="hint" style="margin:0">Nothing in the register matches.</p>')+'</div>':'')+'</div>';
+  const W={tasks:'Tasks','profile change requests':'Profile change requests','Ask SETU usage counts':'Ask SETU usage counts','number register history':'Number register history'};
+  html+='<div class="card"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>Delete log</b><div class="hint">Only you can see this.</div></div>'+
+    (K.log==null?'<p class="hint" style="padding:14px 16px;margin:0">Loading…</p>':!K.log.length?'<p class="hint" style="padding:14px 16px;margin:0">Nothing has been deleted yet.</p>'
+      :'<table class="cards"><thead><tr><th>When</th><th>What</th><th>How many</th></tr></thead><tbody>'+K.log.map(x=>'<tr><td class="hint meta">'+esc(fmtDT(ts(x.at)))+'</td><td>'+esc(W[x.what]||x.what)+(x.detail?'<div class="hint" style="word-break:break-word">'+esc(String(x.detail).slice(0,200))+'</div>':'')+'</td><td class="hint num">'+esc(Object.keys(x.counts||{}).filter(k=>x.counts[k]).map(k=>x.counts[k]+' '+k).join(' · ')||'—')+'</td></tr>').join('')+'</tbody></table>')+'</div>';
+  return html;
+}
+function wireOwnClean(v){
+  if(!$('#oc-tasks',v)) return;
+  const K=ownClean, done=async(msg,part)=>{ K.log=null; if(part) await load([part]); render(); paintNav(); toast(msg,'ok'); };
+  $('#oc-tasks',v).onclick=()=>{ wtTab='all'; DB.wtAll=null; wtDelSel.clear(); go({name:'tasks'}); };
+  $$('.oc-req',v).forEach(c=>c.onchange=()=>{ if(c.checked) K.sel.add(c.dataset.id); else K.sel.delete(c.dataset.id); render(); });
+  $('#oc-reqgo',v).onclick=()=>{ const ids=[...K.sel]; if(!ids.length) return; confirmPin('remove '+ids.length+' change request'+(ids.length===1?'':'s'),async pin=>{ const n=await rpc('owner_cleanup_change_requests',{p_ids:ids,p_pin:pin}); K.sel.clear(); await done(n+' request'+(n===1?'':'s')+' removed.','people'); }); };
+  let who=null;
+  personPicker($('#oc-usepick',v),{placeholder:'Search a person to reset only theirs',onPick:id=>{ who=id; $('#oc-usesel',v).textContent=user(id).name; $('#oc-useone',v).disabled=false; }});
+  $('#oc-useone',v).onclick=()=>{ if(!who) return; confirmPin('reset the Ask SETU count of '+user(who).name,async pin=>{ await rpc('owner_cleanup_ai_usage',{p_user:who,p_pin:pin}); aiUse=null; await done('Reset for '+user(who).name+'.'); }); };
+  $('#oc-useall',v).onclick=()=>confirmPin('reset the Ask SETU counts of everyone',async pin=>{ await rpc('owner_cleanup_ai_usage',{p_user:null,p_pin:pin}); aiUse=null; await done('Usage counts reset for everyone.'); });
+  const search=async()=>{ K.numQ=$('#oc-numq',v).value; K.numSel.clear(); if(K.numQ.trim().length<4){ K.num=null; toast('Type at least 4 characters.','bad'); return; } try{ K.num=await rpc('owner_number_history',{p_q:K.numQ})||[]; }catch(e){ K.num=[]; fail(e); } render(); };
+  $('#oc-numgo',v).onclick=search; $('#oc-numq',v).onkeydown=e=>{ if(e.key==='Enter') search(); };
+  $$('.oc-num',v).forEach(c=>c.onchange=()=>{ if(c.checked) K.numSel.add(c.dataset.id); else K.numSel.delete(c.dataset.id); render(); });
+  if($('#oc-numdel',v)) $('#oc-numdel',v).onclick=()=>{ const ids=[...K.numSel].map(Number); if(!ids.length) return; confirmPin('remove '+ids.length+' line'+(ids.length===1?'':'s')+' of register history',async pin=>{ const n=await rpc('owner_cleanup_number_history',{p_ids:ids,p_pin:pin}); K.numSel.clear(); try{ K.num=await rpc('owner_number_history',{p_q:K.numQ})||[]; }catch(_){ K.num=null; } await done(n+' line'+(n===1?'':'s')+' removed.'); }); };
 }
 /* ============================================================
    People & masters
