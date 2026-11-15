@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v144';
+const APP_VER='v145';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -1554,7 +1554,7 @@ const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
-  if(k==='me') return true;
+  if(k==='me'||k==='find'||k==='person') return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
   if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda'||k==='req'||k==='detail';   // manage users (+ gate pass as an employee)
   return k==='gate'||k==='gpreport'||k==='req'||k==='detail'||k==='me'; };
@@ -1563,6 +1563,7 @@ const PAGES=[
   {k:'assist',label:'Assisting',grp:'Overview',when:()=>ASSISTANT(),badge:()=>assistErpTodo().length},
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'me',label:'My profile',grp:'Overview',when:()=>DB.orgReady,badge:()=>meBadge()},
+  {k:'find',label:'Find people',grp:'Overview',when:()=>DB.orgReady},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
   {k:'req',label:'Requisition',grp:'Overview',when:()=>reqPageOn(),badge:()=>reqWaiting().length},
@@ -1684,7 +1685,7 @@ function render(){
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
   if(ROUTE.name==='org'&&!(ME.admin||ME.owner)) ROUTE={name:'dash'};
-  if((ROUTE.name==='me'||ROUTE.name==='org')&&!DB.orgReady) ROUTE={name:GATE_ONLY()?'gate':'dash'};
+  if((ROUTE.name==='me'||ROUTE.name==='org'||ROUTE.name==='find'||ROUTE.name==='person')&&!DB.orgReady) ROUTE={name:GATE_ONLY()?'gate':'dash'};
   if(hierMust()&&ROUTE.name!=='me') ROUTE={name:'me'};
   if(ROUTE.name!=='me'){ meErr=''; meHErr=''; }          // 114: the owner made the reporting line compulsory
   // Garuda takes over the screen (its own top bar + column dropdown); SETU nav hides
@@ -1713,6 +1714,8 @@ function renderRoute(v){
     case 'team': v.innerHTML=viewTeam(); wireTeam(v); break;
     case 'me': if(typingInView(v)&&$('#me-root',v)) break; v.innerHTML=viewMe(); wireMe(v); break;
     case 'org': v.innerHTML=viewOrg(); wireOrg(v); break;
+    case 'find': v.innerHTML=viewFind(); wireFind(v); break;
+    case 'person': v.innerHTML=viewPerson(ROUTE.id); wirePerson(v); break;
     case 'all': v.innerHTML=viewAll()+flowSection('all'); wireList(v); wireFlowRows(v);
       head(ME.admin||ME.seeAll?'All requests':'Requests I can see',ME.admin||ME.seeAll?'You can see every chain in the system':'Only chains you raised, approve, or were given a task in'); break;
     case 'report': v.innerHTML=viewReport(); wireReport(v); head('Reports','Filter the record and download it'); break;
@@ -2927,7 +2930,7 @@ function viewMe(){
   html+='<div class="card pad" style="margin-bottom:14px" id="me-hier"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><h3 style="margin:0;flex:1">Who I report to</h3>'+hierTag(u)+'</div>';
   if(u.noSenior) html+='<p class="hint" style="margin:8px 0 0">You are marked as a top person — nobody is above you.</p>';
   else{
-    html+=chain.length?'<div style="margin-top:10px">'+chain.map((c,i)=>'<div class="filerow"><span class="tag t-wait" style="min-width:64px;text-align:center">Level '+(i+1)+'</span>'+avHTML(c.u,'sm')+'<div style="min-width:0;flex:1"><b>'+esc(c.u.name)+'</b><div class="hint">'+esc(c.u.role||'')+(c.u.dept?' · '+esc(c.u.dept):'')+'</div></div>'+(c.confirmed?'<span class="tag t-ok">Confirmed</span>':'<span class="tag t-hold">'+(i===0?'Waiting for their yes':'Not confirmed yet')+'</span>')+'</div>').join('')+'</div>'
+    html+=chain.length?'<div style="margin-top:10px">'+chain.map((c,i)=>'<div class="filerow"><span class="tag t-wait" style="min-width:64px;text-align:center">Level '+(i+1)+'</span>'+avHTML(c.u,'sm')+'<div style="min-width:0;flex:1"><b data-person="'+c.u.id+'" style="cursor:pointer">'+esc(c.u.name)+'</b><div class="hint">'+esc(c.u.role||'')+(c.u.dept?' · '+esc(c.u.dept):'')+'</div></div>'+(c.confirmed?'<span class="tag t-ok">Confirmed</span>':'<span class="tag t-hold">'+(i===0?'Waiting for their yes':'Not confirmed yet')+'</span>')+'</div>').join('')+'</div>'
       :'<p class="hint" style="margin:8px 0 0">Nobody yet. Add the person you report to directly as Level 1, then the levels above if you know them.</p>';
     if(chain.length>1) html+='<p class="hint" style="margin:8px 0 0">Levels above the first come from what your seniors filled in — the line joins up by itself.</p>';
     if(sug.length) html+='<div style="margin-top:12px;padding:10px 12px;border:1px solid var(--hold);border-radius:var(--r)"><b>Suggested for you</b>'+sug.map(g=>'<div class="filerow"><div style="min-width:0;flex:1">'+esc(user(g.byUser).name)+' added <b>'+esc(user(g.seniorId).name)+'</b> as the person above you.</div><button class="btn sm ok" data-sugyes="'+g.id+'">Yes, I report to them</button><button class="btn sm" data-sugno="'+g.id+'">Dismiss</button></div>').join('')+'<div class="hint">You can leave these open and add your own.</div></div>';
@@ -2949,7 +2952,7 @@ function viewMe(){
   if(pend.length||team.length||isManager(u)){
     html+='<div class="card pad" id="me-team"><div class="row" style="gap:10px;flex-wrap:wrap;align-items:center"><h3 style="margin:0;flex:1">People who report to me</h3><span class="tag t-prog">'+team.length+'</span></div>'+
       (pend.length?'<div style="margin-top:10px;padding:10px 12px;border:1px solid var(--hold);border-radius:var(--r)"><b>Waiting for your yes</b>'+pend.map(x=>'<div class="filerow">'+avHTML(x,'sm')+'<div style="min-width:0;flex:1"><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.role||'')+(x.dept?' · '+esc(x.dept):'')+'</div></div><button class="btn sm ok" data-tyes="'+x.id+'">Reports to me</button><button class="btn sm" data-tno="'+x.id+'">Not my team</button></div>').join('')+'</div>':'')+
-      (team.length?'<div style="margin-top:10px">'+team.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>'<div class="filerow">'+avHTML(x,'sm')+'<div style="min-width:0;flex:1"><b>'+esc(x.name)+'</b><div class="hint">'+esc(x.role||'')+(x.dept?' · '+esc(x.dept):'')+'</div></div></div>').join('')+'</div>':(!pend.length?'<p class="hint" style="margin:8px 0 0">Nobody yet.</p>':''))+
+      (team.length?'<div style="margin-top:10px">'+team.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(x=>'<div class="filerow">'+avHTML(x,'sm')+'<div style="min-width:0;flex:1"><b data-person="'+x.id+'" style="cursor:pointer">'+esc(x.name)+'</b><div class="hint">'+esc(x.role||'')+(x.dept?' · '+esc(x.dept):'')+'</div></div></div>').join('')+'</div>':(!pend.length?'<p class="hint" style="margin:8px 0 0">Nobody yet.</p>':''))+
       (isManager(u)?'<div style="margin-top:12px"><b>Add someone to my team</b><div id="me-addteam" style="margin-top:6px"></div><div class="hint" style="margin-top:4px">They are mapped to you straight away and are told about it.</div></div>':'')+'</div>';
   }
   return html+'</div>';
@@ -2964,7 +2967,7 @@ async function mePhoto(file){
   return path;
 }
 function wireMe(v){
-  avLoad(v);
+  avLoad(v); wirePersonLinks(v);
   const refresh=async msg=>{ await load(['people']); render(); paintNav(); if(msg) toast(msg,'ok'); };
   const saveDetails=async photo=>{ await rpc('my_profile_save',{p_phone:$('#me-phone',v).value,p_location:$('#me-loc',v).value,p_handles:$('#me-handles',v).value,p_photo:photo===undefined?ME.photo:photo}); };
   // the message is kept in a variable too, so a redraw of the page cannot wipe it before it is read
@@ -3032,7 +3035,7 @@ function viewOrg(){
   const chip=(k,l)=>'<button class="btn sm '+(orgF===k?'primary':'ghost')+'" data-orgf="'+k+'">'+l+'</button>';
   html+='<div class="card"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap">'+chip('todo','To do')+chip('all','Everyone')+chip('done','Final')+'<input id="org-q" type="text" placeholder="Search name, employee ID, department or senior" value="'+esc(orgQ)+'" style="flex:1;min-width:200px"><span class="tag t-prog" style="align-self:center">'+L.length+'</span></div>'+
     '<table class="cards"><thead><tr><th>Person</th><th>Reports to</th><th>Status</th><th></th></tr></thead><tbody>'+
-    (L.length?L.slice(0,200).map(u=>{ const up=hierUp(u.id); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div></td><td class="hint meta">'+(up.length?up.map(c=>esc(c.u.name)).join(' → '):'—')+'</td><td>'+hierTag(u)+'</td><td style="text-align:right;white-space:nowrap">'+
+    (L.length?L.slice(0,200).map(u=>{ const up=hierUp(u.id); return '<tr><td><b data-person="'+u.id+'" style="cursor:pointer">'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div></td><td class="hint meta">'+(up.length?up.map(c=>esc(c.u.name)).join(' → '):'—')+'</td><td>'+hierTag(u)+'</td><td style="text-align:right;white-space:nowrap">'+
         (DB.numReady?'<button class="btn sm ghost" data-edit="'+u.id+'">Edit details</button> ':'')+(u.hierFinal&&!u.noSenior?'<button class="btn sm" data-unlock="'+u.id+'">Reopen</button> ':'')+(ME.owner?'<button class="btn sm ghost" data-top="'+u.id+'" data-on="'+(u.noSenior?'0':'1')+'">'+(u.noSenior?'Not a top person':'Mark as top person')+'</button>':'')+'</td></tr>'; }).join('')
       :'<tr><td colspan="4"><div class="empty" style="padding:18px"><p class="hint">Nobody in this list.</p></div></td></tr>')+'</tbody></table>'+(L.length>200?'<p class="hint" style="padding:10px 16px;margin:0">Showing the first 200. Search to narrow it down.</p>':'')+'</div>';
   return html+'</div>';
@@ -3045,6 +3048,7 @@ function wireOrg(v){
     onOpen:(m,close)=>{ $('#dc-go',m).onclick=async()=>{ try{ await rpc('profile_change_decide',{p_id:b.dataset.rqno,p_accept:false,p_note:$('#dc-why',m).value}); close(); await load(['people']); render(); paintNav(); toast('Declined.','ok'); }catch(e){ $('#dc-err',m).textContent=(e.message||'').replace(/^.*?: /,''); } }; }}));
   $$('[data-cfyes]',v).forEach(b=>b.onclick=()=>act('hier_conflict_settle',{p_id:b.dataset.cfyes,p_apply:true},'Changed.'));
   $$('[data-cfno]',v).forEach(b=>b.onclick=()=>act('hier_conflict_settle',{p_id:b.dataset.cfno,p_apply:false},'Kept as it is.'));
+  wirePersonLinks(v);
   $$('[data-orgtab]',v).forEach(b=>b.onclick=()=>{ orgTab=b.dataset.orgtab; render(); });
   $$('[data-edit]',v).forEach(b=>b.onclick=()=>orgEditDialog(user(b.dataset.edit)));
   wireOrgDetails(v);
@@ -3131,6 +3135,87 @@ function numHandDialog(kind,val){
       personPicker($('#nh-pick',m),{placeholder:'Search a name or employee ID',onPick:id=>{ to=id; $('#nh-sel',m).innerHTML='<span class="tag t-prog">'+esc(user(id).name)+'</span>'; }});
       $('#nh-go',m).onclick=()=>{ if(!to){ $('#nh-err',m).textContent='Pick the new holder, or choose “Leave it vacant”.'; return; } run(to); };
       $('#nh-vac',m).onclick=()=>run(null); }});
+}
+/* ============================================================
+   v145: Find people (Phase 1 of SETU AI) — everyone can search a colleague
+   by name, mobile number, email or employee ID and open the profile card:
+   details, who they report to, who reports to them. A number or email that
+   has moved shows today's holder and the earlier ones (number register).
+   Reads only what every signed-in person may already read; no new SQL.
+   ============================================================ */
+let findQ='', findReg=null, findRegQ='', findRegT=0, findLeft=false;
+const digitsOf=t=>String(t||'').replace(/\D/g,'');
+const wirePersonLinks=v=>$$('[data-person]',v).forEach(b=>b.onclick=e=>{ e.stopPropagation(); go({name:'person',id:b.dataset.person}); });
+function findHits(){
+  const q=findQ.trim().toLowerCase(), qd=digitsOf(q); if(q.length<2) return [];
+  const words=q.split(/\s+/).filter(Boolean);
+  const L=DB.users.filter(u=>(u.active||findLeft)&&((()=>{ const hay=(u.name+' '+(u.empId||'')+' '+(u.email||'')+' '+(u.dept||'')+' '+(u.role||'')+' '+(u.division||'')+' '+(u.location||'')+' '+(u.handles||'')).toLowerCase(); return words.every(w=>hay.includes(w)); })()||(qd.length>=4&&digitsOf(u.phone).includes(qd))));
+  const rank=u=>{ const n=u.name.toLowerCase(); return n.startsWith(q)?0:n.split(/\s+/).some(w=>w.startsWith(words[0]))?1:(u.empId||'').toLowerCase()===q?0:2; };
+  return L.sort((a,b)=>rank(a)-rank(b)||a.name.localeCompare(b.name));
+}
+const findRegWanted=()=>{ const q=findQ.trim(); return DB.numReady&&q.length>=4&&(digitsOf(q).length>=4||q.indexOf('@')>-1); };
+function personRow(u,extra){ return '<button type="button" class="filerow" data-person="'+u.id+'" style="width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--line);border-radius:0;cursor:pointer;padding:11px 16px">'+avHTML(u,'')+
+  '<div style="min-width:0;flex:1"><b>'+esc(u.name)+'</b>'+(u.active?'':' <span class="tag t-bad" style="font-size:10px">Left</span>')+'<div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+(u.empId?' · '+esc(u.empId):'')+'</div>'+
+  ((u.phone||u.location)?'<div class="hint">'+(u.phone?'<span class="num">'+esc(u.phone)+'</span>':'')+(u.phone&&u.location?' · ':'')+esc(u.location||'')+'</div>':'')+(extra||'')+'</div><span class="hint" style="font-size:18px">›</span></button>'; }
+function viewFind(){
+  head('Find people','Search by name, mobile number, email or employee ID');
+  const q=findQ.trim(), hits=findHits();
+  let html='<div id="find-root"><div class="card pad" style="margin-bottom:12px"><input id="pf-q" type="text" placeholder="Name, mobile number, email, employee ID or department" value="'+esc(findQ)+'" autocomplete="off" style="width:100%;font-size:16px">'+
+    '<label style="display:flex;gap:8px;align-items:center;margin:10px 0 0;font-weight:400"><input type="checkbox" id="pf-left" '+(findLeft?'checked':'')+' style="width:auto"> <span class="hint">Also show people who have left</span></label></div>';
+  if(q.length<2){
+    const up=hierUp(ME.id), team=teamOf(ME.id);
+    html+='<div class="card pad"><p class="hint" style="margin:0">Type at least 2 letters. A mobile number saved under an old name also works — SETU shows who holds it today.</p></div>'+
+      ((up.length||team.length)?'<div class="card" style="margin-top:12px"><div style="padding:12px 16px"><b>My people</b><div class="hint">Who you report to and who reports to you</div></div>'+up.slice(0,3).map(c=>personRow(c.u)).join('')+team.slice().sort((a,b)=>a.name.localeCompare(b.name)).slice(0,30).map(x=>personRow(x)).join('')+'</div>':'');
+    return html+'</div>';
+  }
+  // the number register: today's holder and the earlier ones
+  if(findRegWanted()&&findReg&&findRegQ===q&&findReg.length){
+    const by={}, order=[]; findReg.forEach(r=>{ const k=r.kind+'|'+r.value; if(!by[k]){ by[k]=[]; order.push(k); } by[k].push(r); });
+    html+='<div class="card" style="margin-bottom:12px" id="pf-reg"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>Number register</b><div class="hint">Who holds it today, and who held it before</div></div>'+order.slice(0,8).map(k=>{ const L=by[k], cur=L.find(r=>!r.to_at), past=L.filter(r=>r.to_at);
+      return '<div style="padding:11px 16px;border-top:1px solid var(--line)"><b class="num">'+esc(L[0].value)+'</b> <span class="tag t-wait" style="font-size:10px">'+(L[0].kind==='mobile'?'Mobile':'Email')+'</span><div style="margin-top:4px">'+
+        (cur?'<span class="tag t-ok">Today</span> <b data-person="'+esc(cur.holder_id)+'" style="cursor:pointer;color:var(--indigo)">'+esc(cur.holder_name)+'</b> <span class="hint">'+esc(cur.holder_role||'')+(cur.holder_dept?' · '+esc(cur.holder_dept):'')+'</span>':'<span class="tag t-hold">Vacant</span> <span class="hint">nobody holds it today</span>')+'</div>'+
+        (past.length?'<div class="hint" style="margin-top:4px">Earlier: '+past.map(r=>'<span data-person="'+esc(r.holder_id)+'" style="cursor:pointer;text-decoration:underline">'+esc(r.holder_name)+'</span>'+(r.holder_active?'':' (left)')+' until '+esc(fmtD(ts(r.to_at)))).join(' · ')+'</div>':'')+'</div>'; }).join('')+'</div>';
+  }
+  html+='<div class="card"><div class="row" style="padding:12px 16px"><b style="flex:1">'+(hits.length?hits.length+' '+(hits.length===1?'person':'people'):'Nobody matches')+'</b></div>'+
+    (hits.length?hits.slice(0,40).map(u=>personRow(u)).join('')+(hits.length>40?'<p class="hint" style="padding:10px 16px;margin:0;border-top:1px solid var(--line)">Showing the first 40. Type more to narrow it down.</p>':'')
+      :'<p class="hint" style="padding:0 16px 14px;margin:0">Check the spelling, or try the employee ID or the mobile number.</p>')+'</div>';
+  return html+'</div>';
+}
+function wireFind(v){
+  avLoad(v); wirePersonLinks(v);
+  const qi=$('#pf-q',v);
+  qi.oninput=()=>{ findQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#pf-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
+  $('#pf-left',v).onchange=e=>{ findLeft=e.target.checked; render(); };
+  // ask the number register once the typing pauses (only for a number or an email)
+  clearTimeout(findRegT);
+  const q=findQ.trim();
+  if(findRegWanted()&&findRegQ!==q) findRegT=setTimeout(async()=>{ try{ const r=await rpc('number_lookup',{p_q:q}); if(findQ.trim()!==q) return; findReg=r||[]; findRegQ=q;
+      if(ROUTE.name==='find'&&findReg.length){ const el=$('#pf-q'), had=el&&document.activeElement===el, pos=el?el.selectionStart:0; render(); const e2=$('#pf-q'); if(had&&e2){ e2.focus(); try{ e2.setSelectionRange(pos,pos); }catch(_){} } } }catch(e){} },450);
+}
+function viewPerson(id){
+  const u=user(id);
+  if(!u||!u.id){ head('Person','Not found'); return '<div class="card pad"><h3 style="margin:0">That person could not be found</h3><p class="hint" style="margin-top:6px">They may have been removed.</p><button class="btn sm" id="pp-back" style="margin-top:10px">← Find people</button></div>'; }
+  head(u.name,(u.role||'')+(u.dept?' · '+u.dept:''));
+  const up=hierUp(u.id), team=teamOf(u.id).slice().sort((a,b)=>a.name.localeCompare(b.name)), tel=digitsOf(u.phone);
+  const row=(l,val,html)=>(val||html)?'<div class="me-row"><div class="hint">'+esc(l)+'</div><div style="min-width:0;flex:1;word-break:break-word">'+(html||'<b>'+esc(val)+'</b>')+'</div></div>':'';
+  let html='<div id="person-root"><div class="row" style="margin-bottom:10px"><button class="btn sm ghost" id="pp-back">← Find people</button></div>'+
+    '<div class="card pad" style="margin-bottom:14px"><div class="row" style="gap:14px;align-items:center;flex-wrap:wrap"><div class="av" style="width:84px;height:84px;font-size:26px"'+(u.photo?' data-avph="'+esc(u.photo)+'"':'')+'>'+inits(u.name)+'</div>'+
+    '<div style="flex:1;min-width:180px"><h3 style="margin:0">'+esc(u.name)+(u.active?'':' <span class="tag t-bad">Left</span>')+(u.noSenior?' <span class="tag t-ok">Top person</span>':'')+'</h3><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div>'+
+    '<div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">'+(tel?'<a class="btn sm primary" id="pp-call" style="text-decoration:none" href="tel:'+esc(tel.length===10?'+91'+tel:'+'+tel)+'">📞 Call</a>':'')+(u.email?'<a class="btn sm" id="pp-mail" style="text-decoration:none;color:var(--ink)" href="mailto:'+esc(u.email)+'">✉ Email</a>':'')+
+      (u.id===ME.id?'<button class="btn sm" id="pp-me">Edit my profile</button>':'')+((ME.admin||ME.owner)&&DB.numReady&&u.id!==ME.id?'<button class="btn sm ghost" id="pp-edit">Edit details</button>':'')+'</div></div></div>'+
+    '<div style="margin-top:14px">'+row('Employee ID',u.empId)+row('Mobile',u.phone,u.phone?'<b class="num">'+esc(u.phone)+'</b>':'')+row('Email',u.email)+row('Department',u.dept)+row('Division',u.division)+row('Location',u.location)+row('Joined',u.joinedOn?fmtD(new Date(u.joinedOn+'T00:00:00').getTime()):'')+row('Handles',u.handles)+'</div>'+
+    (!u.phone?'<p class="hint" style="margin:10px 0 0">No mobile number in SETU yet.</p>':'')+'</div>';
+  html+='<div class="card" style="margin-bottom:14px" id="pp-up"><div style="padding:12px 16px"><b>Reports to</b></div>'+(u.noSenior?'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody — a top person.</p>'
+    :up.length?up.map((c,i)=>personRow(c.u,'<div class="hint">Level '+(i+1)+(c.confirmed?'':' · not confirmed yet')+'</div>')).join('')
+    :'<p class="hint" style="padding:0 16px 14px;margin:0">Not filled yet.</p>')+'</div>';
+  html+='<div class="card" id="pp-team"><div class="row" style="padding:12px 16px"><b style="flex:1">Team</b><span class="tag t-prog">'+team.length+'</span></div>'+(team.length?team.map(x=>personRow(x)).join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody reports to '+esc(u.name.split(' ')[0])+' in SETU yet.</p>')+'</div>';
+  return html+'</div>';
+}
+function wirePerson(v){
+  avLoad(v); wirePersonLinks(v);
+  if($('#pp-back',v)) $('#pp-back',v).onclick=()=>go({name:'find'});
+  if($('#pp-me',v)) $('#pp-me',v).onclick=()=>go({name:'me'});
+  if($('#pp-edit',v)) $('#pp-edit',v).onclick=()=>orgEditDialog(user(ROUTE.id));
 }
 /* ============================================================
    People & masters
