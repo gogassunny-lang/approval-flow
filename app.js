@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v146';
+const APP_VER='v147';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -189,8 +189,8 @@ async function loadPeople(){
   const opt=i=>(r[i]&&!r[i].error&&r[i].data)?r[i].data:[];
   DB.profReqs=opt(8).map(q=>({id:q.id,userId:q.user_id,field:q.field,oldValue:q.old_value||'',newValue:q.new_value||'',reason:q.reason||'',status:q.status,decidedName:q.decided_name||'',note:q.note||'',createdAt:ts(q.created_at)}));
   DB.hierSug=opt(9).map(g=>({id:g.id,personId:g.person_id,seniorId:g.senior_id,byUser:g.by_user,status:g.status,createdAt:ts(g.created_at)}));
-  DB.org=opt(10)[0]||{hier_compulsory:false}; DB.orgReady=!!(r[10]&&!r[10].error); DB.numReady=!!(r[11]&&!r[11].error);
-  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,joinedOn:p.joined_on||'',division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
+  DB.org=opt(10)[0]||{hier_compulsory:false}; DB.orgReady=!!(r[10]&&!r[10].error); DB.aiReady=DB.orgReady&&typeof DB.org.ai_enabled==='boolean'; DB.numReady=!!(r[11]&&!r[11].error);
+  DB.users=prof.map(p=>({id:p.id,name:p.name,email:p.email,empId:p.emp_id||'',role:p.role||'',phone:p.phone||'',photo:p.photo||'',location:p.location||'',handles:p.handles||'',hierFinal:!!p.hier_final,noSenior:!!p.no_senior,aiOn:!!p.ai_on,joinedOn:p.joined_on||'',division:p.division||'',dept:p.dept||'',assistsId:p.assists_id||null,
     admin:p.is_admin,owner:!!p.is_owner,manager:p.is_manager,seeAll:p.see_all,gateman:!!p.gateman,gateOnly:!!p.gate_only,hrHead:!!p.hr_head,active:p.active,mustChange:!!p.must_change_password,pages:Array.isArray(p.pages)?p.pages:null,
     canCreateUsers:!!p.can_create_users,canManageUsers:!!p.can_manage_users,unit:p.unit||'',deptsVisible:Array.isArray(p.depts_visible)?p.depts_visible:[],garudaAccess:!!p.garuda_access,garudaStore:!!p.garuda_store,garudaSite:!!p.garuda_site,cngPo:!!p.cng_po,canReq:p.can_requisition!==false,garudaPages:Array.isArray(p.garuda_pages)?p.garuda_pages:null,reqAccounts:!!p.req_accounts,
     managerId:p.manager_id,managerConfirmed:p.manager_confirmed,pinDate:p.pin_date,
@@ -1044,7 +1044,7 @@ $('#si-go').onclick=async()=>{
 /* Sign out that always returns to the login screen, even if the network call
    to revoke the session hangs or fails. Local scope avoids the global revoke
    round-trip; a short race + forced leave() guarantees the UI resets. */
-async function doSignOut(){
+async function doSignOut(){ try{ askReset(); }catch(_){}
   busy(false);                                   // drop any stuck overlay so the click isn't blocked
   try{ await Promise.race([ SB.auth.signOut({scope:'local'}), new Promise(res=>setTimeout(res,2000)) ]); }catch(e){}
   try{ leave(); }catch(e){ location.reload(); }  // force back to sign-in no matter what
@@ -1556,7 +1556,7 @@ const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
-  if(k==='me'||k==='find'||k==='person') return true;
+  if(k==='me'||k==='find'||k==='person'||k==='ask') return true;
   if((k==='tasks'||k==='task')&&DB.wtReady) return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
   if(SUBADMIN()) return k==='people'||k==='gate'||k==='gpreport'||k==='inbox'||k==='garuda'||k==='req'||k==='detail';   // manage users (+ gate pass as an employee)
@@ -1567,6 +1567,7 @@ const PAGES=[
   {k:'inbox',label:'Notifications',grp:'Overview',badge:()=>unread().length},
   {k:'me',label:'My profile',grp:'Overview',when:()=>DB.orgReady,badge:()=>meBadge()},
   {k:'find',label:'Find people',grp:'Overview',when:()=>DB.orgReady},
+  {k:'ask',label:'Ask SETU ✦',grp:'Overview',when:()=>askOn()},
   {k:'new',label:'Raise a request',grp:'Overview'},
   {k:'gate',label:'Gate Pass',grp:'Overview',badge:()=>gpBadge()},
   {k:'req',label:'Requisition',grp:'Overview',when:()=>reqPageOn(),badge:()=>reqWaiting().length},
@@ -1687,6 +1688,8 @@ function render(){
   if(ROUTE.name==='gpreport'&&!canSeeReports()) ROUTE={name:GATE_ONLY()||HR_HEAD()?'gate':'dash'};
   if(OPTIONAL_PAGES.some(o=>o.k===ROUTE.name)&&!canSeePage(ROUTE.name)) ROUTE={name:'dash'};
   if(ROUTE.name==='overview'&&!ME.owner) ROUTE={name:'dash'};   // owner-only analytics
+  if(ROUTE.name==='ask'){ ROUTE=(render._last&&render._last.name!=='ask')?render._last:{name:GATE_ONLY()?'gate':'dash'}; try{ history.replaceState(ROUTE,'',routeHash(ROUTE)); }catch(_){} paintNav(); setTimeout(askOpen,0); }   // "Ask SETU" in the menu opens the chat over the page you were on
+  render._last=ROUTE;
   if(ROUTE.name==='org'&&!(ME.admin||ME.owner)) ROUTE={name:'dash'};
   if((ROUTE.name==='me'||ROUTE.name==='org'||ROUTE.name==='find'||ROUTE.name==='person')&&!DB.orgReady) ROUTE={name:GATE_ONLY()?'gate':'dash'};
   if(hierMust()&&ROUTE.name!=='me') ROUTE={name:'me'};
@@ -1695,7 +1698,7 @@ function render(){
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
   if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
   const v=$('#view');
-  try{ renderRoute(v); hierNudge(v); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
+  try{ renderRoute(v); hierNudge(v); askPaint(); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
   catch(e){ console.error(e); v.innerHTML='<div class="card pad"><h3>This page could not be drawn</h3><p class="hint" style="margin-top:6px">Something on this page is unexpected. Go back and try again; if it keeps happening, tell the super admin which page.</p><div class="hint" style="margin-top:8px;font-size:11px">'+esc(String((e&&e.message)||e))+'</div><button class="btn sm" style="margin-top:10px" onclick="go({name:\'dash\'})">Back to dashboard</button></div>'; }
 }
 function renderRoute(v){
@@ -3026,7 +3029,8 @@ function viewOrg(){
   const todo=u=>{ const k=hierState(u); return k==='none'||k==='wait'||k==='open'; };
   let html='<div id="org-root">';
   if(!DB.numReady) orgTab='people';
-  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button></div>';
+  if(DB.numReady) html+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:14px"><button class="btn sm '+(orgTab==='people'?'primary':'')+'" data-orgtab="people">Requests &amp; hierarchy</button><button class="btn sm '+(orgTab==='details'?'primary':'')+'" data-orgtab="details">Details &amp; number register</button>'+(ME.owner&&DB.aiReady?'<button class="btn sm '+(orgTab==='ai'?'primary':'')+'" data-orgtab="ai">Ask SETU</button>':'')+'</div>';
+  if(orgTab==='ai'&&ME.owner&&DB.aiReady) return html+viewOrgAI()+'</div>';
   if(orgTab==='details') return html+viewOrgDetails()+'</div>';
   html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><b style="flex:1">Change requests</b><span class="tag '+(reqs.length?'t-hold':'t-ok')+'">'+reqs.length+' waiting</span></div>'+
     (reqs.length?'<table class="cards"><thead><tr><th>Person</th><th>Detail</th><th>From → to</th><th></th></tr></thead><tbody>'+reqs.map(q=>{ const u=user(q.userId); return '<tr><td><b>'+esc(u.name)+'</b><div class="hint">'+esc(u.empId||'')+(u.dept?' · '+esc(u.dept):'')+'</div></td><td>'+esc(ME_FIELD[q.field]||q.field)+'<div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td><span class="hint">'+esc(q.oldValue||'—')+'</span> → <b>'+esc(q.newValue)+'</b>'+(q.reason?'<div class="hint">“'+esc(q.reason)+'”</div>':'')+'</td><td style="text-align:right;white-space:nowrap"><button class="btn sm ok" data-rqyes="'+q.id+'">Accept</button> <button class="btn sm" data-rqno="'+q.id+'">Decline</button></td></tr>'; }).join('')+'</tbody></table>'
@@ -3059,7 +3063,7 @@ function wireOrg(v){
   wirePersonLinks(v);
   $$('[data-orgtab]',v).forEach(b=>b.onclick=()=>{ orgTab=b.dataset.orgtab; render(); });
   $$('[data-edit]',v).forEach(b=>b.onclick=()=>orgEditDialog(user(b.dataset.edit)));
-  wireOrgDetails(v);
+  wireOrgDetails(v); wireOrgAI(v);
   $$('[data-orgf]',v).forEach(b=>b.onclick=()=>{ orgF=b.dataset.orgf; render(); });
   const qi=$('#org-q',v); if(qi) qi.oninput=()=>{ orgQ=qi.value; const pos=qi.selectionStart; render(); const el=$('#org-q'); if(el){ el.focus(); try{ el.setSelectionRange(pos,pos); }catch(_){} } };
   $$('[data-unlock]',v).forEach(b=>b.onclick=()=>act('hier_unlock',{p_user:b.dataset.unlock},user(b.dataset.unlock).name+' can correct their line now.'));
@@ -3308,7 +3312,7 @@ function wireTasks(v){
 }
 /* ---- New task ---- */
 function wtNewDialog(pre){
-  const d={kind:(pre&&pre.kind)||'single',people:((pre&&pre.people)||[]).map(id=>({id,part:'',due:''})),files:[]};
+  const d={kind:(pre&&pre.kind)||'single',people:((pre&&pre.people)||[]).map(x=>typeof x==='string'?{id:x,part:'',due:''}:{id:x.id,part:x.part||'',due:x.due_on||x.due||''}),files:[]};
   const KINDS=[['personal','For me'],['single','One person'],['shared','Shared'],['split','Split']];
   const HELP={personal:'A to-do for yourself. Only you see it.',single:'One person does it and presses Done. You accept and rate.',shared:'Given to several people together. Anyone of them presses Done and it is done for all. You give one rating, for all of them.',split:'One task with parts. Each person does and submits their own part, and you rate each person separately.'};
   modal({title:'New task',
@@ -3336,6 +3340,7 @@ function wtNewDialog(pre){
         if(!full) personPicker($('#nt-pick',pm),{placeholder:'Search a name or employee ID',exclude:()=>[ME.id].concat(d.people.map(x=>x.id)),onPick:id=>{ $$('.nt-part',m).forEach(i=>{ d.people[+i.dataset.i].part=i.value; }); $$('.nt-pdue',m).forEach(i=>{ d.people[+i.dataset.i].due=i.value; }); d.people.push({id,part:'',due:''}); paint(); }});
       };
       paint();
+      if(pre){ if(pre.title) $('#nt-title',m).value=pre.title; if(pre.details) $('#nt-det',m).value=pre.details; if(pre.due_on) $('#nt-due',m).value=pre.due_on; if(pre.priority) $('#nt-pri',m).value=pre.priority; }
       $('#nt-go',m).onclick=async()=>{ const err=$('#nt-err',m); err.textContent='';
         $$('.nt-part',m).forEach(i=>{ d.people[+i.dataset.i].part=i.value; }); $$('.nt-pdue',m).forEach(i=>{ d.people[+i.dataset.i].due=i.value; });
         const people=d.kind==='personal'?null:d.people.map(x=>({user_id:x.id,part:x.part,due_on:x.due||''}));
@@ -3436,6 +3441,131 @@ function wireTask(v){
   // comments
   if($('#tk-cfiles',v)) uploader($('#tk-cfiles',v),wtComFiles,{mode:'support',label:'Attach a file to the comment (optional)'});
   if($('#tk-comgo',v)) $('#tk-comgo',v).onclick=async()=>{ try{ busy(true); await rpc('wt_comment',{p_task:id,p_text:$('#tk-com',v).value,p_files:filesPayload(wtComFiles)}); wtComFiles=[]; $('#tk-com',v).value=''; busy(false); await after('Comment added.'); }catch(e){ busy(false); fail(e); } };
+}
+/* ============================================================
+   v147 (117): Ask SETU — the AI chat (Phase 3 of SETU AI)
+   A round button in the corner opens a chat. The question goes to the edge
+   function "ask-setu", which asks Gemini and reads SETU only AS THIS PERSON.
+   The answer comes with cards: open a person / task / file / page, or a
+   PROPOSED task that is created only when the person presses Confirm.
+   Who gets it, the daily limit and the model are the owner's (Org & profiles).
+   ============================================================ */
+const askOn=()=>!!(ME&&DB.aiReady&&DB.org&&DB.org.ai_enabled&&(ME.aiOn||ME.owner));
+let ask={open:false,msgs:[],busy:false,loaded:false,remaining:null,rec:null,listening:false};
+const ASK_LANG=[['en-IN','English'],['hi-IN','हिन्दी'],['mr-IN','मराठी']];
+const askLang=()=>{ try{ return localStorage.getItem('setu-ask-lang')||'en-IN'; }catch(_){ return 'en-IN'; } };
+const askSpeech=()=>window.SpeechRecognition||window.webkitSpeechRecognition||null;
+function askReset(){ ask={open:false,msgs:[],busy:false,loaded:false,remaining:null,rec:null,listening:false}; const a=$('#ask-fab'), b=$('#ask-panel'); if(a) a.remove(); if(b) b.remove(); }
+function askPaint(){
+  let fab=$('#ask-fab');
+  if(!askOn()||ROUTE.name==='garuda'){ if(fab) fab.remove(); if($('#ask-panel')&&!askOn()) $('#ask-panel').remove(); return; }
+  if(!fab){ fab=document.createElement('button'); fab.id='ask-fab'; fab.type='button'; fab.title='Ask SETU'; fab.setAttribute('aria-label','Ask SETU');
+    fab.innerHTML='<span style="font-size:20px;line-height:1">✦</span><span class="ask-fab-l">Ask SETU</span>'; fab.onclick=()=>ask.open?askClose():askOpen(); document.body.appendChild(fab); }
+  fab.style.display=ask.open?'none':'';
+}
+async function askOpen(){
+  if(!askOn()) return;
+  ask.open=true; askPaint(); askDraw();
+  if(!ask.loaded){ ask.loaded=true;
+    try{ const r=await SB.from('ai_messages').select('*').order('id',{ascending:false}).limit(30);
+      if(r.data&&r.data.length&&!ask.msgs.length){ ask.msgs=r.data.slice().reverse().map(m=>({role:m.role,text:m.body||'',cards:(m.role==='assistant'&&Array.isArray(m.cards))?m.cards.map(c=>c.type==='task_proposal'?Object.assign({},c,{old:true}):c):[]})); askDraw(); } }catch(_){} }
+  setTimeout(()=>{ const i=$('#ask-in'); if(i&&window.innerWidth>640) i.focus(); },50);
+}
+function askClose(){ ask.open=false; if(ask.rec){ try{ ask.rec.stop(); }catch(_){} } const p=$('#ask-panel'); if(p) p.remove(); askPaint(); }
+const askText=t=>esc(t).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
+function askCardHTML(c,mi,ci){
+  if(c.type==='task_proposal'){
+    if(c.created) return '<div class="ask-prop"><b>'+esc(c.title)+'</b><div class="hint">Created as '+esc(c.created.ref||'a task')+'.</div><button class="btn sm" data-askgo="task" data-id="'+esc(c.created.id)+'">Open the task</button></div>';
+    const who=c.kind==='personal'?'For me (personal)':(c.people||[]).map(p=>esc(p.name)+(p.part?' — '+esc(p.part):'')).join(c.kind==='split'?'<br>':', ');
+    return '<div class="ask-prop" data-prop="'+mi+'-'+ci+'"><div class="hint" style="margin-bottom:2px">Task to create — check it</div><b>'+esc(c.title)+'</b>'+(c.details?'<div class="hint">'+esc(c.details)+'</div>':'')+
+      '<div style="margin-top:6px">'+who+'</div><div class="hint" style="margin-top:4px">'+esc(WT_KIND[c.kind]||c.kind)+(c.due_on?' · due '+esc(dOn(c.due_on)):'')+' · '+esc((WT_PRI[c.priority]||WT_PRI.medium)[1])+' priority</div>'+
+      (c.old?'<div class="hint" style="margin-top:6px">From an earlier chat — ask again to create it.</div>':c.dismissed?'<div class="hint" style="margin-top:6px">Dismissed.</div>'
+        :'<div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn sm primary" data-propok="'+mi+'-'+ci+'">Confirm</button><button class="btn sm" data-proped="'+mi+'-'+ci+'">Edit</button><button class="btn sm ghost" data-propno="'+mi+'-'+ci+'">Dismiss</button></div><div class="hint ask-properr" style="color:var(--stop)"></div>')+'</div>';
+  }
+  const ic=c.type==='person'?'👤':c.type==='task'?'☑':c.type==='file'?'📄':'↗';
+  return '<button type="button" class="ask-card" data-askgo="'+esc(c.type)+'" data-id="'+esc(c.id||'')+'" data-kind="'+esc(c.kind||'')+'" data-page="'+esc(c.page||'')+'"><span>'+ic+'</span><span style="min-width:0;flex:1"><b>'+esc(c.title||'')+'</b>'+(c.sub?'<span class="hint" style="display:block">'+esc(c.sub)+'</span>':'')+'</span><span class="hint">›</span></button>';
+}
+function askDraw(){
+  if(!ask.open) return;
+  let p=$('#ask-panel'); if(!p){ p=document.createElement('div'); p.id='ask-panel'; document.body.appendChild(p); }
+  const keep=$('#ask-in',p)?$('#ask-in',p).value:'';
+  const sug=['What is waiting for me?','What are my tasks due today?','Who is '+(ME.name.split(' ')[0])+'?'];
+  p.innerHTML='<div class="ask-h"><b style="flex:1">✦ Ask SETU</b>'+(ask.remaining!=null?'<span class="hint" id="ask-left" style="color:#dbe7f7">'+ask.remaining+' left today</span>':'')+
+      '<button type="button" class="ask-x" id="ask-clear" title="Clear my chat history">Clear</button><button type="button" class="ask-x" id="ask-close" aria-label="Close">✕</button></div>'+
+    '<div class="ask-m" id="ask-m">'+(ask.msgs.length?ask.msgs.map((m,mi)=>'<div class="ask-b '+(m.role==='user'?'me':'ai')+(m.err?' err':'')+'">'+askText(m.text)+'</div>'+((m.cards&&m.cards.length)?'<div class="ask-cards">'+m.cards.map((c,ci)=>askCardHTML(c,mi,ci)).join('')+'</div>':'')).join('')
+        :'<div class="ask-hello"><b>Namaste '+esc(ME.name.split(' ')[0])+'.</b><br>Ask about people, your tasks or your files — in English, Hindi or Marathi. I can also set up a task for you to confirm.<div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">'+sug.map(x=>'<button type="button" class="ask-card" data-asksug="'+esc(x)+'"><span style="flex:1">'+esc(x)+'</span></button>').join('')+'</div></div>')+
+      (ask.busy?'<div class="ask-b ai" id="ask-wait"><span class="spin"></span> Thinking…</div>':'')+'</div>'+
+    '<div class="ask-f">'+(askSpeech()?'<select id="ask-lang" title="Language you will speak">'+ASK_LANG.map(l=>'<option value="'+l[0]+'" '+(askLang()===l[0]?'selected':'')+'>'+l[1]+'</option>').join('')+'</select><button type="button" id="ask-mic" class="'+(ask.listening?'on':'')+'" title="Speak" aria-label="Speak">🎤</button>':'')+
+      '<input id="ask-in" type="text" maxlength="1000" placeholder="'+(ask.listening?'Listening…':'Type your question')+'" autocomplete="off"><button type="button" id="ask-send" class="btn primary sm" '+(ask.busy?'disabled':'')+'>Send</button></div>';
+  $('#ask-in',p).value=keep;
+  const m=$('#ask-m',p); m.scrollTop=m.scrollHeight;
+  $('#ask-close',p).onclick=askClose;
+  $('#ask-clear',p).onclick=async()=>{ if(!ask.msgs.length) return; try{ await rpc('ai_history_clear'); ask.msgs=[]; askDraw(); toast('Your chat history is cleared.','ok'); }catch(e){ fail(e); } };
+  $('#ask-send',p).onclick=()=>askSend($('#ask-in',p).value);
+  $('#ask-in',p).onkeydown=e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); askSend($('#ask-in',p).value); } };
+  $$('[data-asksug]',p).forEach(b=>b.onclick=()=>askSend(b.dataset.asksug));
+  $$('[data-askgo]',p).forEach(b=>b.onclick=()=>{ const t=b.dataset.askgo, id=b.dataset.id;
+    const r=t==='person'?{name:'person',id}:t==='task'?{name:'task',id}:t==='file'?{name:b.dataset.kind==='flow'?'flowdetail':'detail',id}:{name:b.dataset.page||'dash'};
+    askClose(); go(r); });
+  const card=k=>{ const a=k.split('-'); return ask.msgs[+a[0]].cards[+a[1]]; };
+  $$('[data-propok]',p).forEach(b=>b.onclick=async()=>{ const c=card(b.dataset.propok), box=b.closest('.ask-prop'); b.disabled=true;
+    try{ const id=await rpc('wt_create',{p_kind:c.kind,p_title:c.title,p_details:c.details||'',p_priority:c.priority||'medium',p_due:c.due_on||null,p_people:c.kind==='personal'?null:(c.people||[]).map(x=>({user_id:x.id,part:x.part||'',due_on:x.due_on||''})),p_files:null});
+      await loadWTasks(); const t=(DB.wtasks||[]).find(x=>x.id===id); c.created={id,ref:t?t.ref:''}; askDraw(); paintNav(); toast('Task created.','ok'); if(ROUTE.name==='tasks') render(); }
+    catch(e){ b.disabled=false; $('.ask-properr',box).textContent=(e.message||'').replace(/^.*?: /,''); } });
+  $$('[data-proped]',p).forEach(b=>b.onclick=()=>{ const c=card(b.dataset.proped); c.dismissed=true; askClose(); wtNewDialog({kind:c.kind,title:c.title,details:c.details,due_on:c.due_on,priority:c.priority,people:(c.people||[])}); });
+  $$('[data-propno]',p).forEach(b=>b.onclick=()=>{ card(b.dataset.propno).dismissed=true; askDraw(); });
+  const lang=$('#ask-lang',p); if(lang) lang.onchange=()=>{ try{ localStorage.setItem('setu-ask-lang',lang.value); }catch(_){} };
+  const mic=$('#ask-mic',p); if(mic) mic.onclick=askMic;
+}
+function askMic(){
+  const SR=askSpeech(); if(!SR) return;
+  if(ask.listening&&ask.rec){ try{ ask.rec.stop(); }catch(_){} return; }
+  const rec=new SR(); ask.rec=rec; rec.lang=askLang(); rec.interimResults=true; rec.continuous=false; rec.maxAlternatives=1;
+  rec.onstart=()=>{ ask.listening=true; askDraw(); };
+  rec.onresult=e=>{ let t=''; for(let i=0;i<e.results.length;i++) t+=e.results[i][0].transcript; const inp=$('#ask-in'); if(inp) inp.value=t; };
+  rec.onerror=e=>{ ask.listening=false; askDraw(); const c=e&&e.error; toast(c==='not-allowed'||c==='service-not-allowed'?'Allow the microphone for SETU to speak your question.':c==='no-speech'?'I did not hear anything. Tap the mic and speak.':'The mic could not be used here. Please type your question.','bad'); };
+  rec.onend=()=>{ ask.listening=false; ask.rec=null; askDraw(); const i=$('#ask-in'); if(i) i.focus(); };
+  try{ rec.start(); }catch(e){ ask.listening=false; toast('The mic could not be used here. Please type your question.','bad'); }
+}
+async function askSend(text){
+  text=String(text||'').trim(); if(!text||ask.busy) return;
+  const history=ask.msgs.filter(m=>!m.err).slice(-8).map(m=>({role:m.role,text:m.text}));
+  ask.msgs.push({role:'user',text}); ask.busy=true; const inp=$('#ask-in'); if(inp) inp.value=''; askDraw();
+  let out;
+  try{ const r=await SB.functions.invoke('ask-setu',{body:{message:text,history}});
+    if(r.error) throw r.error; out=r.data; if(typeof out==='string'){ try{ out=JSON.parse(out); }catch(_){ out=null; } } }
+  catch(e){ out={ok:false,message:'Ask SETU is not reachable right now. Please try again in a minute, or use the pages.'}; }
+  ask.busy=false;
+  if(out&&out.ok){ ask.msgs.push({role:'assistant',text:out.reply||'',cards:Array.isArray(out.cards)?out.cards:[]}); if(typeof out.remaining==='number') ask.remaining=out.remaining; }
+  else ask.msgs.push({role:'assistant',text:(out&&out.message)||'Ask SETU could not answer just now.',cards:[],err:true});
+  askDraw(); const i=$('#ask-in'); if(i&&window.innerWidth>640) i.focus();
+}
+/* ---- owner: who gets Ask SETU, the limit, the model, usage ---- */
+let aiUse=null, aiUseBusy=false;
+function viewOrgAI(){
+  const o=DB.org||{}, on=DB.users.filter(u=>u.active&&u.aiOn).sort((a,b)=>a.name.localeCompare(b.name));
+  let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Ask SETU settings</h3><p class="hint" style="margin:0 0 10px">The AI answers from SETU only, as the person asking. Each question uses a little of your Google Gemini account, so it is given to the people you tick, with a daily limit.</p>'+
+    '<div class="grid g2" style="gap:12px"><div><label for="ai-on">Ask SETU</label><select id="ai-on"><option value="1" '+(o.ai_enabled?'selected':'')+'>On</option><option value="0" '+(o.ai_enabled?'':'selected')+'>Off for everyone</option></select></div>'+
+    '<div><label for="ai-limit">Questions per person a day</label><input id="ai-limit" type="number" min="1" max="1000" value="'+esc(o.ai_daily_limit||50)+'"></div></div>'+
+    '<div style="margin-top:12px"><label for="ai-model">Gemini model</label><input id="ai-model" type="text" value="'+esc(o.ai_model||'')+'" autocomplete="off"><div class="hint">Change only if Google retires this model or you want a stronger one (for example gemini-3.6-flash).</div></div>'+
+    '<div class="row" style="margin-top:12px;gap:10px;align-items:center"><button class="btn primary" id="ai-save">Save</button><span id="ai-err" class="hint" style="color:var(--stop)"></span></div></div>';
+  html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;gap:10px"><div style="flex:1"><b>Who has Ask SETU</b><div class="hint">You always have it. Add or remove people here.</div></div><span class="tag t-prog">'+on.length+'</span></div>'+
+    '<div style="padding:0 16px 12px"><div id="ai-add"></div></div>'+
+    (on.length?on.map(u=>'<div class="filerow" style="border-top:1px solid var(--line);border-radius:0;padding:10px 16px"><div style="min-width:0;flex:1"><b data-person="'+u.id+'" style="cursor:pointer">'+esc(u.name)+'</b><div class="hint">'+esc(u.role||'')+(u.dept?' · '+esc(u.dept):'')+'</div></div><button class="btn sm ghost" data-aioff="'+u.id+'">Remove</button></div>').join(''):'<p class="hint" style="padding:0 16px 14px;margin:0">Nobody else yet.</p>')+'</div>';
+  html+='<div class="card"><div style="padding:12px 16px;border-bottom:1px solid var(--line)"><b>Usage</b><div class="hint">Questions asked — today and in the last 30 days</div></div>'+
+    (aiUse===null?'<p class="hint" style="padding:14px 16px;margin:0">Loading…</p>':!aiUse.length?'<p class="hint" style="padding:14px 16px;margin:0">No question has been asked yet.</p>'
+      :'<table class="cards"><thead><tr><th>Person</th><th>Today</th><th>Last 30 days</th></tr></thead><tbody>'+aiUse.map(x=>'<tr><td><b>'+esc(x.name)+'</b></td><td class="num">'+esc(x.today)+'</td><td class="num">'+esc(x.last30)+'</td></tr>').join('')+'</tbody></table>')+'</div>';
+  return html;
+}
+function wireOrgAI(v){
+  if(!$('#ai-save',v)) return;
+  $('#ai-save',v).onclick=async()=>{ $('#ai-err',v).textContent='';
+    try{ await rpc('ai_settings_set',{p_enabled:$('#ai-on',v).value==='1',p_limit:parseInt($('#ai-limit',v).value,10)||0,p_model:$('#ai-model',v).value}); await load(['people']); render(); paintNav(); toast('Saved.','ok'); }
+    catch(e){ $('#ai-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
+  const set=async(id,on)=>{ try{ await rpc('ai_set_user',{p_user:id,p_on:on}); await load(['people']); render(); toast(user(id).name+(on?' now has Ask SETU.':' no longer has Ask SETU.'),'ok'); }catch(e){ fail(e); } };
+  personPicker($('#ai-add',v),{placeholder:'Search a name or employee ID to add',exclude:()=>DB.users.filter(u=>u.aiOn||u.owner).map(u=>u.id),onPick:id=>set(id,true)});
+  $$('[data-aioff]',v).forEach(b=>b.onclick=()=>set(b.dataset.aioff,false));
+  if(aiUse===null&&!aiUseBusy){ aiUseBusy=true; rpc('ai_usage_report').then(r=>{ aiUse=r||[]; aiUseBusy=false; if(ROUTE.name==='org'&&orgTab==='ai') render(); },()=>{ aiUse=[]; aiUseBusy=false; }); }
 }
 /* ============================================================
    People & masters
