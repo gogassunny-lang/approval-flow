@@ -77,11 +77,29 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v151';
+const APP_VER='v152';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
-async function rpc(fn,args){const {data,error}=await SB.rpc(fn,args||{}); if(error) throw error; return data}
+async function rpc(fn,args){const {data,error}=await SB.rpc(fn,args||{}); if(error) throw error; if(Date.now()-DRAFT.clickAt<45000) DRAFT.drop=true; return data}
+/* v152 (A1): what a person has typed on a page survives a redraw. Just before the page is redrawn the filled boxes
+   (and error lines) are noted; right after, they are put back into the same boxes. After a button press that
+   reached the server (a reply sent, a step signed) the next redraw starts clean instead. */
+const DRAFT={clickAt:0,drop:false,route:''};
+document.addEventListener('click',e=>{ const b=e.target&&e.target.closest&&e.target.closest('button'); if(b) DRAFT.clickAt=Date.now(); },true);
+const draftKey=el=>{ if(el.id) return '#'+el.id; if(el.classList&&el.classList.contains('pp-in')){ const m=el.closest('[id]'); return m?'pp:'+m.id:''; } return ''; };
+const draftFind=k=>{ if(!k) return null; if(k[0]==='#') return document.getElementById(k.slice(1)); const m=document.getElementById(k.slice(3)); return m?m.querySelector('.pp-in'):null; };
+function draftsTake(v){ const key=ROUTE.name+'/'+(ROUTE.id||''); const out={key,vals:{},errs:{},focus:'',sel:null};
+  if(DRAFT.drop||DRAFT.route!==key){ DRAFT.drop=false; DRAFT.route=key; return out; }
+  $$('textarea,input',v).forEach(el=>{ const t=(el.type||'text').toLowerCase(); if(['text','number','date','search','tel','email','url','textarea'].indexOf(t)<0) return; const k=draftKey(el); if(k&&el.value) out.vals[k]=el.value; });
+  $$('[id$="err"]',v).forEach(el=>{ if(!el.children.length&&el.textContent) out.errs[el.id]=el.textContent; });
+  const a=document.activeElement; if(a&&v.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)){ out.focus=draftKey(a); try{ out.sel=[a.selectionStart,a.selectionEnd]; }catch(_){} }
+  return out; }
+function draftsPut(v,d){ if(!d||d.key!==ROUTE.name+'/'+(ROUTE.id||'')) return;
+  Object.keys(d.vals).forEach(k=>{ const el=draftFind(k); if(el&&v.contains(el)&&!el.value&&!el.disabled&&!el.readOnly){ el.value=d.vals[k];
+      if(k[0]!=='#'){ try{ el.dispatchEvent(new Event('input',{bubbles:true})); }catch(_){} } } });       // a person-search box shows its matches again
+  Object.keys(d.errs).forEach(id=>{ const el=document.getElementById(id); if(el&&v.contains(el)&&!el.textContent) el.textContent=d.errs[id]; });
+  if(d.focus){ const el=draftFind(d.focus); if(el&&v.contains(el)&&document.activeElement!==el){ try{ el.focus({preventScroll:true}); if(d.sel&&d.sel[0]!=null) el.setSelectionRange(d.sel[0],d.sel[1]); }catch(_){} } } }
 let busyTimer=null;
 function busy(on){let v=$('#busy');
   if(on){ if(!v){v=document.createElement('div');v.id='busy';v.className='busy-veil';v.innerHTML='<span class="spin"></span>';document.body.appendChild(v)}
@@ -151,9 +169,14 @@ async function load(parts,flowIds,legacyIds){
   // Gate-Pass-only and HR-Head accounts only ever see the gate pages — don't download
   // every flow and request for them (500+ such accounts)
   // (legacy rows are still loaded for them: the server returns only requisitions they are part of)
-  if(gateScopeOnly()){ P.delete('flows'); DB.flows=[]; }
+  // v152 (A4): …but when such a person IS on a flow (approver, tagged, raiser) those few flows are loaded (flow_my_ids, migration 122)
+  let scopeFlowIds=null;
+  if(gateScopeOnly()&&P.has('flows')){ P.delete('flows');
+    try{ const x=await SB.rpc('flow_my_ids'); scopeFlowIds=(!x.error&&Array.isArray(x.data))?x.data:[]; }catch(_){ scopeFlowIds=[]; }
+    if(!scopeFlowIds.length) DB.flows=[]; }
   const jobs=[];
   if(P.has('legacy')) jobs.push(loadLegacy(legacyIds));
+  if(scopeFlowIds&&scopeFlowIds.length) jobs.push(loadFlowsSome(scopeFlowIds.slice(0,200)).then(()=>{ DB.flows=DB.flows.filter(f=>scopeFlowIds.indexOf(f.id)>-1); }));
   if(P.has('flows'))  jobs.push((Array.isArray(flowIds)&&flowIds.length&&flowIds.length<=8&&DB.flows.length)?loadFlowsSome(flowIds):(flowIds==='changed'&&DB.flows.length?loadFlowsChanged():loadFlows()));
   if(P.has('gate'))   jobs.push(loadGate());
   if(P.has('notif'))  jobs.push(loadNotifs());
@@ -381,7 +404,7 @@ function catchUp(){
   if(!ME||document.hidden) return;
   clearTimeout(catchUpT);
   catchUpT=setTimeout(async()=>{ if($('.veil')||$('#busy')){ catchUp(); return; }
-    try{ await Promise.all([load(['legacy','gate','notif','wtasks','meet'].concat(gateScopeOnly()?[]:['flows']),'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
+    try{ await Promise.all([load(['legacy','gate','notif','wtasks','meet','flows'],'changed'), loadFun()]); render(); paintNav(); paintPin(); }catch(e){ fail(e); } },500);
 }
 /* v137: someone is typing in a box on the page (e.g. searching a person) — a live redraw would wipe it */
 const typingInView=()=>{ const a=document.activeElement, v=document.getElementById('view'); return !!(a&&v&&v.contains(a)&&/^(INPUT|TEXTAREA)$/.test(a.tagName)&&a.value); };
@@ -1065,7 +1088,7 @@ async function enter(session){
     await load(['people']);
     if(!ME.name){ toast('Your directory entry has not been created yet. Try again in a moment.','bad'); hideSplash(); busy(false); return }
     if(!ME.active){ toast('This account is switched off. Ask an administrator.','bad'); await SB.auth.signOut(); hideSplash(); busy(false); return }
-    await Promise.all([load(gateScopeOnly()?['gate','notif','legacy','wtasks','meet']:['legacy','flows','notif','wtasks','meet']), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
+    await Promise.all([load(['legacy','flows','gate','notif','wtasks','meet'].filter(k=>k!=='gate'||gateScopeOnly())), loadFun()]);   // gate-only: legacy = only the requisitions they are on (RLS); fun = one tiny read
     $('#signin').classList.add('hide'); $('#app').classList.remove('hide');
     $('#me-av').textContent=inits(ME.name); $('#me-name').textContent=ME.name; $('#me-role').textContent=ME.role;
     pushRegister();
@@ -1492,7 +1515,7 @@ function pinDialog(){
 }
 function paintPin(){ const c=$('#pinchip'); if(!c||!ME) return;
   // gate-pass-only / HR-head accounts never sign anything with a PIN — hide the chip entirely
-  if(restrictedAcct()){ c.style.display='none'; return; }
+  if(restrictedAcct()&&!deskCount()&&!reqPageOn()){ c.style.display='none'; return; }
   c.style.display='';
   const narrow=window.innerWidth<900;
   if(pinOK(ME)){c.classList.add('ok');$('#pinchip-txt').textContent=narrow?'PIN · '+tillMidnight():'PIN active · '+tillMidnight()+' left'}
@@ -1559,8 +1582,13 @@ const ASSISTANT=()=>!!(ME&&ME.assistsId&&!ME.admin&&!ME.owner);  // a proxy who 
 const myPrincipal=()=>ASSISTANT()?user(ME.assistsId):null;
 // restricted accounts (gate-only, HR head, or assistant) are limited to their own page(s)
 const restrictedAcct=()=>GATE_ONLY()||ASSISTANT()||!!(ME&&ME.hrHead&&!ME.admin&&!ME.owner)||SUBADMIN();
+// v152 (A4): a restricted account that is ON a file (approver, tagged, accounts, raiser) gets the file pages too
+const deskCount=()=>myQueue().length+myStuck().length+flowMyTurn().length+flowTagged().length+myAmends().length;
 const restrictedPage=k=>{ if(!restrictedAcct()) return true;
   if(k==='me'||k==='find'||k==='person'||k==='ask') return true;
+  if(k==='detail'||k==='flowdetail'||k==='inbox') return true;
+  if(k==='queue') return myQueue().length+flowMyTurn().length>0||ROUTE.name==='queue';
+  if(k==='stuck') return myStuck().length+flowTagged().length+myAmends().length>0||ROUTE.name==='stuck';
   if((k==='tasks'||k==='task')&&DB.wtReady) return true;
   if((k==='meetings'||k==='meeting')&&DB.mtReady) return true;
   if(ASSISTANT()) return k==='assist'||k==='gate'||k==='detail'||k==='flowdetail'||k==='req';   // worklist + own gate passes + read-only detail
@@ -1633,6 +1661,7 @@ function paintTabbar(){
     const rq=restrictedPage('req')&&reqPageOn(), rqn=reqWaiting().length+myAmends().length;
     bar.innerHTML='<button data-k="gate" class="raise '+on('gate')+'">'+ICON.plus+'Gate Pass'+(gpBadge()?'<span class="pill">'+gpBadge()+'</span>':'')+'</button>'+
       (rq?'<button data-k="req" class="'+on('req')+'">'+ICON.desk+'Requisition'+(rqn?'<span class="pill">'+rqn+'</span>':'')+'</button>':'')+
+      (deskCount()?'<button data-k="'+(myQueue().length+flowMyTurn().length?'queue':'stuck')+'" class="'+(on('queue')||on('stuck'))+'">'+ICON.desk+'My desk<span class="pill">'+deskCount()+'</span></button>':'')+
       (canSeeReports()?'<button data-k="gpreport" class="'+on('gpreport')+'">'+ICON.desk+'Reports</button>':'')+
       '<button data-k="more" class="'+(!['gate','gpreport','req'].includes(ROUTE.name)?'on':'')+'">'+ICON.more+'More</button>';
     $$('button',bar).forEach(b=>b.onclick=()=>{ if(b.dataset.k==='more') moreSheet(); else go({name:b.dataset.k}) });
@@ -1654,7 +1683,7 @@ function moreSheet(){
   modal({title:'More',
     body:'<div class="sheet-list">'+items.map(p=>{const b=p.badge?p.badge():0;
         return '<button data-go="'+p.k+'">'+esc(p.label)+(b?'<span class="pill">'+b+'</span>':'')+'</button>'}).join('')+
-      ((restrictedAcct()&&!reqPageOn())?'':'<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>')+
+      ((restrictedAcct()&&!reqPageOn()&&!deskCount())?'':'<button data-act="pin">'+(pinOK(ME)?"Reset today's PIN":"Set today's PIN")+'</button>')+
       '<button data-act="me">'+(DB.orgReady?'My profile':'My directory entry')+'</button><button data-act="pw">Change password</button>'+
       '<button data-act="out" style="color:var(--stop)">Sign out</button></div>'+
       '<div class="hint" style="margin-top:12px;text-align:center">'+esc(ME.name)+' · '+esc(ME.role||'')+'<br>Built by Sunny Gupta</div>',
@@ -1698,13 +1727,13 @@ function render(){
   render._last=ROUTE;
   if(ROUTE.name==='org'&&!(ME.admin||ME.owner)) ROUTE={name:'dash'};
   if((ROUTE.name==='me'||ROUTE.name==='org'||ROUTE.name==='find'||ROUTE.name==='person')&&!DB.orgReady) ROUTE={name:GATE_ONLY()?'gate':'dash'};
-  if(hierMust()&&ROUTE.name!=='me') ROUTE={name:'me'};
+  if(hierMust()&&['me','detail','flowdetail','queue','stuck','inbox','req','task','tasks'].indexOf(ROUTE.name)<0) ROUTE={name:'me'};   // v152 (A7): files, tasks and notifications stay open
   if(ROUTE.name!=='me'){ meErr=''; meHErr=''; }          // 114: the owner made the reporting line compulsory
   // Garuda takes over the screen (its own top bar + column dropdown); SETU nav hides
   const appEl=document.getElementById('app'); if(appEl) appEl.classList.toggle('garuda-mode', ROUTE.name==='garuda');
   if(ROUTE.name==='garuda'&&ROUTE.id&&GAR_NAV().some(c=>c[0]===ROUTE.id)){ garudaTab=ROUTE.id; ROUTE={name:'garuda'}; paintNav(); }   // #garuda/inward, #garuda/approvals …
   const v=$('#view');
-  try{ renderRoute(v); hierNudge(v); askPaint(); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
+  try{ const dr=draftsTake(v); renderRoute(v); draftsPut(v,dr); hierNudge(v); askPaint(); if(FUN.thought&&(ROUTE.name==='dash'||ROUTE.name==='gate')) v.insertAdjacentHTML('afterbegin',funThoughtHTML()); }
   catch(e){ console.error(e); v.innerHTML='<div class="card pad"><h3>This page could not be drawn</h3><p class="hint" style="margin-top:6px">Something on this page is unexpected. Go back and try again; if it keeps happening, tell the super admin which page.</p><div class="hint" style="margin-top:8px;font-size:11px">'+esc(String((e&&e.message)||e))+'</div><button class="btn sm" style="margin-top:10px" onclick="go({name:\'dash\'})">Back to dashboard</button></div>'; }
 }
 function renderRoute(v){
@@ -4041,11 +4070,32 @@ function wireOwnChats(v){
     const r=await SB.from('ai_messages').select('*').eq('user_id',C.uid).order('id',{ascending:false}).limit(300); if(C.uid!==b.dataset.ochat) return;
     C.msgs=(r.data||[]).slice().reverse(); if(ROUTE.name==='org'&&orgTab==='chats') render(); });
 }
+/* ---- v152 (A5): tell a person when a newer SETU has been published (the app can stay open for days on a phone) ---- */
+let verAt=0, verShown=false;
+async function verCheck(){
+  if(verShown||!ME||document.visibilityState!=='visible'||Date.now()-verAt<20*60*1000) return; verAt=Date.now();
+  try{ const r=await fetch('./sw.js?v='+Date.now(),{cache:'no-store'}); if(!r.ok) return;
+    const m=(await r.text()).match(/setu-shell-v(\d+)/); if(!m||+m[1]<=+APP_VER.slice(1)) return;
+    verShown=true; const b=document.createElement('div'); b.id='ver-bar';
+    b.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:97;background:var(--ink);color:#fff;border-radius:999px;padding:8px 10px 8px 16px;display:flex;gap:10px;align-items:center;font-size:13.5px;box-shadow:0 8px 24px -8px rgba(0,0,0,.5);white-space:nowrap';
+    b.innerHTML='<span>A new version of SETU is ready</span><button class="btn sm primary" id="ver-go">Update</button>'; document.body.appendChild(b);
+    $('#ver-go',b).onclick=()=>{ if(REC.on) return toast('Stop the recording first, then update.',''); location.reload(); }; }catch(_){}
+}
+document.addEventListener('visibilitychange',verCheck); setInterval(verCheck,30*60*1000);
 /* ---- Org & profiles → Clean up (owner) ---- */
 function viewOwnClean(){
   const K=ownClean, reqs=(DB.profReqs||[]);
   if(K.log==null&&!K.logBusy){ K.logBusy=true; SB.from('owner_delete_log').select('*').order('id',{ascending:false}).limit(60).then(r=>{ K.log=(r&&r.data)||[]; K.logBusy=false; if(ROUTE.name==='org'&&orgTab==='clean') render(); }); }
   let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Tasks</h3><p class="hint" style="margin:0 0 10px">Every task in SETU is listed under My tasks → All tasks. Tick the ones to delete there.</p><button class="btn" id="oc-tasks">Open All tasks</button></div>';
+  { const N=K.names;   // v152 (A6): name checks
+    html+='<div class="card pad" style="margin-bottom:14px" id="oc-names"><h3 style="margin:0 0 4px">Name checks</h3><p class="hint" style="margin:0 0 10px">Fixed flows find people by name. Two accounts with one name, or a name that starts like another, can send a step to the wrong account. Steps with nobody on them cannot move.</p>'+
+      '<button class="btn" id="oc-namego">'+(N?'Check again':'Run the check')+'</button><span class="hint" id="oc-nameerr" style="color:var(--stop);margin-left:10px"></span>';
+    if(N==='busy') html+='<p class="hint" style="margin:10px 0 0">Checking…</p>';
+    else if(N){ const acc=p=>'<span class="tag '+(p.gate_only?'t-wait':'t-prog')+'" data-person="'+esc(p.id)+'" style="cursor:pointer;margin:2px 4px 2px 0">'+esc(p.emp_id||p.email||'account')+(p.gate_only?' · gate-pass only':'')+(p.last_login?'':' · never signed in')+'</span>';
+      html+='<div style="margin-top:12px"><b>One name, two or more accounts</b> <span class="tag '+(N.same_name.length?'t-hold':'t-ok')+'">'+N.same_name.length+'</span>'+(N.same_name.length?N.same_name.slice(0,60).map(x=>'<div style="padding:8px 0;border-top:1px solid var(--line);margin-top:6px"><b>'+esc(x.name)+'</b><div style="margin-top:4px">'+x.people.map(acc).join('')+'</div></div>').join(''):'<div class="hint">None.</div>')+'</div>'+
+        '<div style="margin-top:14px"><b>Names that start like another name</b> <span class="tag '+(N.look_alike.length?'t-hold':'t-ok')+'">'+N.look_alike.length+'</span>'+(N.look_alike.length?'<div class="hint" style="margin:4px 0">A flow step written for the short name goes to the short-name account; check that is the right person.</div>'+N.look_alike.slice(0,80).map(x=>'<div style="padding:6px 0;border-top:1px solid var(--line)"><b data-person="'+esc(x.short_id)+'" style="cursor:pointer">'+esc(x.short)+'</b> <span class="hint">and</span> <b data-person="'+esc(x.long_id)+'" style="cursor:pointer">'+esc(x.long)+'</b></div>').join(''):'<div class="hint">None.</div>')+'</div>'+
+        '<div style="margin-top:14px"><b>Live flow steps with nobody on them</b> <span class="tag '+(N.empty_steps.length?'t-bad':'t-ok')+'">'+N.empty_steps.length+'</span>'+(N.empty_steps.length?N.empty_steps.slice(0,80).map(x=>'<div style="padding:6px 0;border-top:1px solid var(--line)"><a href="#flowdetail/'+esc(x.flow_id)+'" data-ocflow="'+esc(x.flow_id)+'">'+esc(x.title)+'</a> <span class="hint">· '+esc(x.ref)+' · '+esc(x.step)+'</span></div>').join('')+'<div class="hint" style="margin-top:6px">Open the file and use “Change approver” on that step.</div>':'<div class="hint">None.</div>')+'</div>'; }
+    html+='</div>'; }
   html+='<div class="card" style="margin-bottom:14px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:10px"><div style="flex:1"><b>Profile change requests</b><div class="hint">Removes the request only. A detail that was already changed stays as it is.</div></div><button class="btn sm" id="oc-reqgo" style="'+GDEL_RED+'" '+(K.sel.size?'':'disabled')+'>Remove '+(K.sel.size||'')+'</button></div>'+
     (reqs.length?'<table class="cards"><thead><tr><th style="width:34px"></th><th>Person</th><th>Detail</th><th>Status</th></tr></thead><tbody>'+reqs.map(q=>'<tr><td><input type="checkbox" class="oc-req" data-id="'+q.id+'" '+(K.sel.has(q.id)?'checked':'')+' style="width:18px;height:18px;accent-color:var(--stop)"></td><td><b>'+esc(user(q.userId).name)+'</b><div class="hint">'+esc(fmtD(q.createdAt))+'</div></td><td>'+esc(ME_FIELD[q.field]||q.field)+'<div class="hint">'+esc(q.oldValue||'—')+' → '+esc(q.newValue)+'</div></td><td class="hint">'+esc(q.status)+'</td></tr>').join('')+'</tbody></table>'
       :'<p class="hint" style="padding:14px 16px;margin:0">There are no change requests.</p>')+'</div>';
@@ -4061,6 +4111,10 @@ function viewOwnClean(){
   return html;
 }
 function wireOwnClean(v){
+  if($('#oc-namego',v)){ $('#oc-namego',v).onclick=async()=>{ const K=ownClean; K.names='busy'; render();
+      try{ K.names=await rpc('owner_name_checks'); }catch(e){ K.names=null; render(); const x=$('#oc-nameerr'); if(x) x.textContent=(e&&e.code==='PGRST202')?'Run the latest database file first.':(e.message||'').replace(/^.*?: /,''); return; }
+      if(ROUTE.name==='org'&&orgTab==='clean') render(); };
+    wirePersonLinks($('#oc-names',v)); $$('[data-ocflow]',v).forEach(a=>a.onclick=e=>{ e.preventDefault(); go({name:'flowdetail',id:a.dataset.ocflow}); }); }
   if(!$('#oc-tasks',v)) return;
   const K=ownClean, done=async(msg,part)=>{ K.log=null; if(part) await load([part]); render(); paintNav(); toast(msg,'ok'); };
   $('#oc-tasks',v).onclick=()=>{ wtTab='all'; DB.wtAll=null; wtDelSel.clear(); go({name:'tasks'}); };
@@ -6416,6 +6470,7 @@ function flowSidePanelOne(f){
         (tot>1?'It goes to each person in turn, then comes back to you.':'It comes back to you once they respond.')+' It is off your “Waiting on me” until then.</p>';
       if(tot>1) w+='<div style="margin-top:10px">'+flowTagChain(s)+'</div>';
       if((s.infoReplies||[]).length) w+=s.infoReplies.map(e=>'<div class="banner" style="margin-top:8px"><div class="hint"><b>'+esc(e.name||user(e.user_id).name)+'</b>'+(e.at?' · '+esc(fmtDT(ts(e.at))):'')+': '+esc(e.text)+'</div></div>').join('');
+      if(DB.flowWithdrawOK!==false) w+='<div style="margin-top:12px"><button class="btn sm" id="fw-go" data-step="'+esc(s.id)+'">Withdraw my question and decide now</button><div class="hint" id="fw-err" style="color:var(--stop);margin-top:6px"></div></div>';
       return w+'</div>'; }
     const approving=(s.action==='approve'||s.action==='confirm');
     let body='<div class="card pad"><h3>'+esc(s.label)+'</h3><p class="hint" style="margin-top:4px">'+esc(f.ref)+' · '+esc(flowHeadLabelF(f))+' · '+esc(f.division)+'</p>';
@@ -6453,6 +6508,9 @@ function flowSidePanelOne(f){
   return '<div class="card pad"><h3>With '+esc(withWho)+'</h3><p class="hint" style="margin-top:6px">Current step: <b>'+esc(s.label)+'</b>. You can watch its progress on the left.</p></div>';
 }
 function wireFlowDetail(v){
+  if($('#fw-go',v)) $('#fw-go',v).onclick=async()=>{ const b=$('#fw-go',v), x=flowFindStep(b.dataset.step); b.disabled=true;
+    try{ await rpc('flow_ask_withdraw',{p_step:b.dataset.step}); await load(['flows','notif'],x?[x.f.id]:null); render(); paintNav(); toast('Question withdrawn. The step is with you again.','ok'); }
+    catch(e){ b.disabled=false; if(e&&e.code==='PGRST202'){ DB.flowWithdrawOK=false; render(); } else $('#fw-err',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
   if($('#fl-back',v)) $('#fl-back',v).onclick=()=>history.back();
   $$('[data-flpick]',v).forEach(b=>b.onclick=()=>{ flowPick[ROUTE.id]=b.dataset.flpick; render(); });
   if($('#fl-del',v)) $('#fl-del',v).onclick=()=>flowCancelDialog(ROUTE.id);
