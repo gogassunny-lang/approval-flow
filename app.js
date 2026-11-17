@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v150';
+const APP_VER='v151';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -232,7 +232,7 @@ async function loadLegacy(ids){
   const [req,steps,tasks,files,notes,audit]=r.map(x=>x.data||[]);
   const R={};
   const built=req.map(x=>R[x.id]={id:x.id,ref:x.ref,type:x.type,requesterId:x.requester_id,status:x.status,
-    current:x.current_step,amendId:x.amend_id||null,priority:x.priority||'',dueAt:x.due_at?ts(x.due_at):0,chainLocked:!!x.chain_locked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,acctUsers:(Array.isArray(x.acct_users)&&x.acct_users.length)?x.acct_users:(x.acct_user?[x.acct_user]:[]),infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    current:x.current_step,amendId:x.amend_id||null,priority:x.priority||'',dueAt:x.due_at?ts(x.due_at):0,chainLocked:!!x.chain_locked,infoParked:!!x.info_parked,acctPending:!!x.acct_pending,acctUser:x.acct_user||null,acctUsers:(Array.isArray(x.acct_users)&&x.acct_users.length)?x.acct_users:(x.acct_user?[x.acct_user]:[]),infoStep:x.info_step,infoTo:x.info_to,infoTos:x.info_tos||[],infoReplies:x.info_replies||[],f:x.fields||{},createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     chain:[],files:[],notes:[]});
   const S={};
   steps.forEach(s=>{const r=R[s.request_id]; if(!r) return;
@@ -2237,7 +2237,9 @@ function viewDetail(id){
     const altNames=(s.status==='pending'||s.status==='waiting')&&s.altUsers&&s.altUsers.length?' / '+s.altUsers.map(id=>user(id).name).join(' / '):'';
     const cls=s.status==='approved'?'done':s.status==='conditional'?'done cond':s.status==='rejected'?'stop':s.status==='info'?'parked':live?'live':s.status==='waiting'?'locked':'';
     let parkedWith='';
-    if(s.status==='info'){ const h=holder(r); parkedWith='<div class="pending-with tagged" style="margin-top:7px">Pending with <b>'+esc(h?h.name:'the requester')+'</b> <span class="pw-sub">· asked by '+esc(u.name)+'</span></div>'+legacyTagChain(r)+legacyReplyThread(r); }
+    if(s.status==='info'&&r.infoParked){ const tg=legacyActiveTag(r), tu=tg?user(tg):user(r.requesterId);   // 121: the question waits behind a cross-check
+      parkedWith='<div class="pending-with tagged" style="margin-top:7px">On hold for the cross-check above <span class="pw-sub">· then back to <b>'+esc(tu.name)+'</b> to reply to '+esc(u.name)+'</span></div>'+legacyReplyThread(r); }
+    else if(s.status==='info'){ const h=holder(r); parkedWith='<div class="pending-with tagged" style="margin-top:7px">Pending with <b>'+esc(h?h.name:'the requester')+'</b> <span class="pw-sub">· asked by '+esc(u.name)+'</span></div>'+legacyTagChain(r)+legacyReplyThread(r); }
     let tag={approved:'<span class="tag t-ok">Approved</span>',conditional:'<span class="tag t-ok">Approved with a condition</span>',rejected:'<span class="tag t-bad">Rejected</span>',info:'<span class="tag t-wait">Asked for more — waiting</span>',
       pending:stepBlocked(s)?'<span class="tag t-hold">Work given out</span>':'<span class="tag t-prog">Holding it now</span>',waiting:'<span class="tag t-wait">Waiting turn</span>'}[s.status]||'';
     if(s.systemApproved) tag='<span class="tag t-ok" style="background:var(--indigo);color:#fff">System Approved — by super admin</span>';
@@ -2249,8 +2251,9 @@ function viewDetail(id){
     else if(ME.owner&&(s.status==='approved'||s.status==='conditional'||s.status==='rejected'))
       ownerLegacyBtn='<button class="btn ghost sm" data-rwd="'+i+'" style="color:var(--hold);padding:2px 9px">↩ Reopen from here</button>';
     let detourLegBtn='';
-    if((r.status==='In Progress'||r.status==='Info Requested')&&!r.amendId&&!(r.chainLocked&&!ME.owner)&&(s.status==='pending'||s.status==='waiting')&&(r.requesterId===ME.id||ME.admin||ME.owner))
-      detourLegBtn='<button class="btn ghost sm" data-ldetour="'+i+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
+    const askHere=s.status==='info'&&r.status==='Info Requested'&&!r.infoParked;   // 121: a question is open at this step → a cross-check added here goes first
+    if((r.status==='In Progress'||r.status==='Info Requested')&&!r.amendId&&!(r.chainLocked&&!ME.owner)&&(s.status==='pending'||s.status==='waiting'||askHere)&&(r.requesterId===ME.id||ME.admin||ME.owner||(askHere&&needsMyInfo(r))))
+      detourLegBtn='<button class="btn ghost sm" data-ldetour="'+i+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check'+(askHere?' first':'')+'</button>';
     const sysBtn=(ownerLegacyBtn||detourLegBtn)?'<div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">'+ownerLegacyBtn+detourLegBtn+'</div>':'';
     nodes+='<div class="node '+cls+'" id="step-'+i+'"'+(s.isDetour?' style="margin-left:22px;border-left:3px solid var(--indigo);padding-left:12px"':'')+'><div class="dot">'+dot+'</div><div class="body"><div class="row"><div><h4>'+(s.isDetour?'<span class="tag" style="font-size:10px;background:var(--indigo);color:#fff;border-color:var(--indigo)">↪ CROSS-CHECK</span> ':'')+(s.kind==='bills'?'Upload the bills — ':'')+esc(u.name)+esc(altNames)+(altNames?' <span class="hint" style="font-weight:400">(either one)</span>':'')+(isManager(u)?' <span class="hint" style="font-weight:400">· manager</span>':'')+'</h4><div class="meta">'+esc(u.role)+(u.dept?' · '+esc(u.dept):'')+'</div></div><span style="margin-left:auto">'+tag+'</span></div>'+
       parkedWith+(s.actedAt?'<div class="meta" style="margin-top:6px">'+esc(fmtDT(s.actedAt))+'</div>':'')+(s.condition?'<div class="said"><b>Condition:</b> '+esc(s.condition)+'</div>':'')+(s.remark&&!s.systemApproved?'<div class="said">'+esc(s.remark)+'</div>':'')+
@@ -2354,7 +2357,7 @@ function rewindTo(position){
 // cross-check detour (legacy chain): insert ordered extra approvers after a position
 function legacyDetourDialog(reqId,afterPos){
   const r=DB.requests.find(x=>x.id===reqId); if(!r) return;
-  if(!(r.requesterId===ME.id||ME.admin||ME.owner)) return;
+  if(!(r.requesterId===ME.id||ME.admin||ME.owner||needsMyInfo(r))) return;
   const afterName=r.chain[afterPos]?user(r.chain[afterPos].userId).name:('step '+(afterPos+2));
   const chosen=[];
   const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
@@ -2364,7 +2367,9 @@ function legacyDetourDialog(reqId,afterPos){
       :'<p class="hint" style="margin:6px 0 0">No one added yet.</p>';
     $$('.ld-rm',mv).forEach(b=>b.onclick=()=>{chosen.splice(+b.dataset.i,1);paint(mv);}); };
   modal({title:'Add a cross-check',
-    body:'<p class="hint" style="margin-top:0">'+((afterPos===r.current&&r.status==='In Progress')
+    body:'<p class="hint" style="margin-top:0">'+((r.status==='Info Requested'&&afterPos===r.infoStep)
+        ?'The request goes to these people <b>now</b> — one after another, in this order. When they approve, it comes back for the reply to <b>'+esc(afterName)+'</b>’s question, and then to '+esc(afterName)+'.'
+        :(afterPos===r.current&&r.status==='In Progress')
         ?'The request goes to these people <b>now</b> — one after another, in this order. <b>'+esc(afterName)+'</b> waits and gets it back once they approve.'
         :'The request will go to these people — one after another, in this order — right after <b>'+esc(afterName)+'</b>, then carry on down the chain.')+' Each can approve or reject (a reject sends it back to you). Someone who already has an open cross-check cannot be added again.</p>'+
       '<div class="row" style="gap:8px;margin-top:12px"><select id="ld-u" style="flex:1"><option value="">— choose a person —</option>'+opts+'</select><button class="btn sm" id="ld-add">Add</button></div>'+
@@ -2375,7 +2380,7 @@ function legacyDetourDialog(reqId,afterPos){
       $('#ld-add',mv).onclick=()=>{ const id=$('#ld-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#ld-err',mv).textContent='Already added.';return;} chosen.push(id); $('#ld-u',mv).value=''; $('#ld-err',mv).textContent=''; paint(mv); };
       $('#ld-go',mv).onclick=async()=>{ if(!chosen.length) return $('#ld-err',mv).textContent='Add at least one person.';
         $('#ld-go',mv).disabled=true;
-        try{ const now=(afterPos===r.current&&r.status==='In Progress'); const n=await rpc('legacy_add_detour',{p_request:reqId,p_after_pos:afterPos,p_users:chosen}); await load(['legacy','notif']); cl(); toast(now?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
+        try{ const park=(r.status==='Info Requested'&&afterPos===r.infoStep), now=(afterPos===r.current&&r.status==='In Progress')||park; const n=await rpc('legacy_add_detour',{p_request:reqId,p_after_pos:afterPos,p_users:chosen}); await load(['legacy','notif']); cl(); toast(park?'Cross-check added — it is with '+user(chosen[0]).name+' now. It comes back for the reply after that.':now?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' inserted.','ok'); render(); }
         catch(e){ $('#ld-go',mv).disabled=false; $('#ld-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
 }
 function wireDetail(v){
@@ -6107,7 +6112,7 @@ const flowActiveTag=s=>{ if(!s||!s.infoRequested) return null; const tg=infoTarg
 const flowActionableByMe=f=>{const s=flowLive(f); return !!(!f.amendId&&s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
 // an ask stays open on its step even when a cross-check was put in front of it (98)
 const flowAskStep=f=>{const s=flowLives(f).find(x=>x.infoRequested); if(s) return s; return f.steps.find(x=>x.status==='waiting'&&x.infoRequested)||null};
-const flowTaggedToMe=f=>{const s=flowAskStep(f); if(!s||!s.infoRequested) return false; const tg=infoTargets(s);
+const flowTaggedToMe=f=>{const s=flowAskStep(f); if(!s||!s.infoRequested||s.status!=='pending') return false; const tg=infoTargets(s);   // 121: not while a cross-check is in front of the question
   return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
 const flowAwaitingMyReply=f=>{const s=flowLives(f).find(x=>x.infoRequested); if(!s) return false;
   return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
@@ -6300,7 +6305,8 @@ function flowStepRow(f,s){
     assignBtn='<button class="btn ghost sm" data-fassign="'+s.id+'" style="color:var(--seal);padding:2px 9px">👤 Change approver</button>';
   // cross-check detour: the raiser or an admin can insert extra approver(s) after this step (not yet passed)
   let detourBtn='';
-  if(f.status==='running'&&!f.amendId&&(s.status==='pending'||s.status==='waiting')&&(f.requesterId===ME.id||ME.admin||ME.owner))
+  const tagHere=s.status==='pending'&&s.infoRequested&&(flowActiveTag(s)===ME.id||(!infoTargets(s).length&&f.requesterId===ME.id));   // 121: I was asked for more at this step
+  if(f.status==='running'&&!f.amendId&&(s.status==='pending'||s.status==='waiting')&&(f.requesterId===ME.id||ME.admin||ME.owner||tagHere))
     detourBtn='<button class="btn ghost sm" data-fdetour="'+s.id+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
   const sysBtn=(ownerBtn||assignBtn||detourBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+detourBtn+'</div>':'';
   // item 9: show clearly WHO the live step is pending with (the tagged person when parked, else the actors)
@@ -6724,7 +6730,7 @@ function flowAssignActor(stepId){
 // cross-check detour (ALDS): insert ordered extra approvers after a step
 function flowDetourDialog(stepId){
   const x=flowFindStep(stepId); if(!x) return; const s=x.s, f=x.f;
-  if(!(f.requesterId===ME.id||ME.admin||ME.owner)) return;
+  if(!(f.requesterId===ME.id||ME.admin||ME.owner||(s.status==='pending'&&s.infoRequested&&flowActiveTag(s)===ME.id))) return;
   const chosen=[];
   const opts=DB.users.filter(u=>u.active).slice().sort((a,b)=>a.name.localeCompare(b.name))
     .map(u=>'<option value="'+u.id+'">'+esc(u.name)+(u.empId?' ('+esc(u.empId)+')':'')+(u.dept?' — '+esc(u.dept):'')+'</option>').join('');
@@ -6744,7 +6750,7 @@ function flowDetourDialog(stepId){
       $('#cd-add',mv).onclick=()=>{ const id=$('#cd-u',mv).value; if(!id) return; if(chosen.indexOf(id)>-1){$('#cd-err',mv).textContent='Already added.';return;} chosen.push(id); $('#cd-u',mv).value=''; $('#cd-err',mv).textContent=''; paint(mv); };
       $('#cd-go',mv).onclick=async()=>{ if(!chosen.length) return $('#cd-err',mv).textContent='Add at least one person.';
         $('#cd-go',mv).disabled=true;
-        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast((s.status==='pending'&&s.actorKind!=='raiser'&&s.pos>0)?'Cross-check added — it is with '+user(chosen[0]).name+' now.':'Cross-check added — '+n+' approver'+(n===1?'':'s')+' after '+s.label+'.','ok'); render(); }
+        try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast((s.status==='pending'&&s.actorKind!=='raiser'&&s.pos>0)?'Cross-check added — it is with '+user(chosen[0]).name+' now.'+(s.infoRequested?' It comes back for the reply after that.':''):'Cross-check added — '+n+' approver'+(n===1?'':'s')+' after '+s.label+'.','ok'); render(); }
         catch(e){ $('#cd-go',mv).disabled=false; $('#cd-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
 }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
