@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v152';
+const APP_VER='v153';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -843,7 +843,7 @@ async function uploadFile(file,kind){
   const safe=file.name.replace(/[^\w.\-]+/g,'_').slice(-80);
   const path=ME.id+'/'+uid()+'-'+safe;
   const {error}=await SB.storage.from('documents').upload(path,file,{contentType:MIME[extOf(file.name)]||file.type,upsert:false});
-  if(error) throw error;
+  if(error){ if(/row-level security|policy/i.test(error.message||'')) throw new Error('The file could not be added. You may have reached today’s limit of files — try again tomorrow, or tell the super admin.'); throw error; }
   // v132: photos get a ~240px list thumbnail in the background (lists never download the full photo)
   if(kindOf(file.name)==='img'&&/\.jpg$/i.test(path)) (async()=>{ try{ const tb=await downscaleToJpeg(file,240,0.7); if(tb) await SB.storage.from('documents').upload(thumbOf(path),tb,{contentType:'image/jpeg',upsert:false}); }catch(e){} })();
   return {id:uid(),name:file.name,path,size:file.size,kind:kind||'primary',original};
@@ -1108,6 +1108,7 @@ async function enter(session){
     if(!gateScopeOnly()) load(['gate']).then(()=>reloadSoon(['gate'])).catch(()=>{});   // stream gate passes in behind the first screen
     const incomplete=()=>!ME.role||(!ME.admin&&(!ME.dept||DB.departments.indexOf(ME.dept)<0));
     // gate-only accounts don't approve anything: no PIN, no directory-completion nag, no pending-work popup
+    try{ const mc=await SB.rpc('my_must_change'); if(!mc.error) ME.mustChange=!!mc.data; }catch(_){}   // 123: the flag is no longer on the shared profile row
     if(ME.mustChange) setTimeout(()=>newPasswordDialog({title:'Choose your own password',intro:'You signed in with a temporary password from your administrator. Pick your own to continue.',
         onDone:async()=>{ try{ await rpc('password_changed') }catch(e){} ME.mustChange=false; if(!restrictedAcct()&&incomplete()) profileDialog(); else if(!restrictedAcct()&&!pinOK(ME)) pinDialog() }}),300);
     else if(restrictedAcct()) {}
@@ -1440,6 +1441,7 @@ function newPasswordDialog(opts){
         }
         // success: close the dialog and let the app proceed, whatever the follow-ups do
         close(); toast('Password saved.','ok');
+        if(!opts.onDone){ try{ SB.rpc('password_changed').then(()=>{},()=>{}); }catch(_){} }   // 123: any password change clears "choose your own password"
         try{ if(opts.onDone) opts.onDone(); }catch(e){}
       };
     }});
@@ -1468,7 +1470,8 @@ function subscribe(){
       if(x.id){ DB.notifs=[mapNotif(x)].concat(DB.notifs.filter(n=>n.id!==x.id)).slice(0,60); renderSoon(); }
       else reloadSoon(['notif']);
       if(/^#tasks?(\/|$)/.test(x.route||'')) reloadSoon(['wtasks']);
-      if(/^#meetings?(\/|$)/.test(x.route||'')) reloadSoon(['meet']);    // 119: minutes were shared with me      // 116: a task moved — refresh the task lists only
+      if(/^#meetings?(\/|$)/.test(x.route||'')) reloadSoon(['meet']);
+      if(/^#flowdetail\//.test(x.route||'')&&gateScopeOnly()) reloadSoon(['flows']);   // v153: these accounts do not listen to flow changes; a notification about a flow fetches their flows    // 119: minutes were shared with me      // 116: a task moved — refresh the task lists only
       if(document.visibilityState!=='visible'&&'Notification' in window&&Notification.permission==='granted'){
         try{ const nn=new Notification(x.title||'SETU',{body:(x.body||'').split('\n')[0],icon:'icon-192.png',tag:'setu-'+x.id});
           nn.onclick=()=>{window.focus(); gotoNotif(x); nn.close()} }catch(e){}
@@ -3642,7 +3645,7 @@ function wireOrgAI(v){
    data + the delete log). The server refuses everyone else; nothing here
    notifies anyone or marks a page other people can open.
    ============================================================ */
-let wtDelSel=new Set(), wtAllQ='', wtAllBusy=false, ownChat={people:null,uid:null,msgs:null,busy:false}, ownClean={sel:new Set(),numQ:'',num:null,numSel:new Set(),log:null};
+let wtDelSel=new Set(), wtAllQ='', wtAllBusy=false, ownChat={people:null,uid:null,msgs:null,busy:false}, ownClean={sel:new Set(),numQ:'',num:null,numSel:new Set(),log:null,first:null,names:null};
 function viewWtAll(){
   if(DB.wtAll==null){ if(!wtAllBusy){ wtAllBusy=true; rpc('wt_all').then(r=>{ DB.wtAll=(r||[]).map(wtMap); wtAllBusy=false; if(ROUTE.name==='tasks'&&wtTab==='all') render(); },e=>{ DB.wtAll=[]; wtAllBusy=false; fail(e); }); }
     return '<div class="card pad"><p class="hint" style="margin:0">Loading every task…</p></div>'; }
@@ -4087,6 +4090,15 @@ function viewOwnClean(){
   const K=ownClean, reqs=(DB.profReqs||[]);
   if(K.log==null&&!K.logBusy){ K.logBusy=true; SB.from('owner_delete_log').select('*').order('id',{ascending:false}).limit(60).then(r=>{ K.log=(r&&r.data)||[]; K.logBusy=false; if(ROUTE.name==='org'&&orgTab==='clean') render(); }); }
   let html='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Tasks</h3><p class="hint" style="margin:0 0 10px">Every task in SETU is listed under My tasks → All tasks. Tick the ones to delete there.</p><button class="btn" id="oc-tasks">Open All tasks</button></div>';
+  { const F=K.first;   // v153 (B2/B5): first passwords, upload limit
+    html+='<div class="card pad" style="margin-bottom:14px" id="oc-first"><h3 style="margin:0 0 4px">First passwords</h3><p class="hint" style="margin:0 0 10px">Accounts that still have the password they were created with (or a temporary one from a reset). Until such a person chooses their own password they cannot set a PIN or sign anything. You can give all of them a fresh, different password and download the list to hand out.</p>'+
+      '<div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><button class="btn" id="oc-firstgo">'+(F&&F!=='busy'?'Count again':'Count them')+'</button>'+(F&&F!=='busy'&&F.count?'<button class="btn" id="oc-firstnew" style="'+GDEL_RED+'">Give '+F.count+' account'+(F.count===1?'':'s')+' a new password</button>':'')+'<span class="hint" id="oc-firsterr" style="color:var(--stop)"></span></div>';
+    if(F==='busy') html+='<p class="hint" style="margin:10px 0 0">Counting…</p>';
+    else if(F) html+='<p style="margin:10px 0 0"><b class="num">'+F.count+'</b> account'+(F.count===1?' is':'s are')+' still on a first or temporary password'+(F.count?' — <b class="num">'+F.never_signed_in+'</b> of them have never signed in.':'.')+'</p>'+
+        (F.people&&F.people.length?'<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">Show the names</summary><div style="max-height:260px;overflow:auto;margin-top:6px">'+F.people.map(x=>'<div style="padding:5px 0;border-top:1px solid var(--line)"><b data-person="'+esc(x.id)+'" style="cursor:pointer">'+esc(x.name)+'</b> <span class="hint">'+esc(x.emp_id)+(x.dept?' · '+esc(x.dept):'')+(x.last_login?'':' · never signed in')+'</span></div>').join('')+'</div></details>':'');
+    html+='</div>';
+    if(DB.org&&DB.org.upload_daily!=null) html+='<div class="card pad" style="margin-bottom:14px"><h3 style="margin:0 0 4px">Upload limit</h3><p class="hint" style="margin:0 0 10px">The most files one person can add in 24 hours (photos, PDFs, audio). Admins and you are not limited.</p>'+
+      '<div class="row" style="gap:8px;align-items:center;flex-wrap:wrap"><input id="oc-upl" type="number" min="50" max="20000" value="'+esc(DB.org.upload_daily)+'" style="width:130px"><button class="btn" id="oc-uplgo">Save</button><span class="hint" id="oc-uplerr" style="color:var(--stop)"></span></div></div>'; }
   { const N=K.names;   // v152 (A6): name checks
     html+='<div class="card pad" style="margin-bottom:14px" id="oc-names"><h3 style="margin:0 0 4px">Name checks</h3><p class="hint" style="margin:0 0 10px">Fixed flows find people by name. Two accounts with one name, or a name that starts like another, can send a step to the wrong account. Steps with nobody on them cannot move.</p>'+
       '<button class="btn" id="oc-namego">'+(N?'Check again':'Run the check')+'</button><span class="hint" id="oc-nameerr" style="color:var(--stop);margin-left:10px"></span>';
@@ -4111,6 +4123,19 @@ function viewOwnClean(){
   return html;
 }
 function wireOwnClean(v){
+  if($('#oc-firstgo',v)){ const K=ownClean, why=e=>(e&&e.code==='PGRST202')?'Run the latest database file first.':(e.message||'').replace(/^.*?: /,'');
+    $('#oc-firstgo',v).onclick=async()=>{ K.first='busy'; render(); try{ K.first=await rpc('owner_first_passwords'); render(); }catch(e){ K.first=null; render(); const x=$('#oc-firsterr'); if(x) x.textContent=why(e); } };
+    wirePersonLinks($('#oc-first',v));
+    if($('#oc-firstnew',v)) $('#oc-firstnew',v).onclick=()=>modal({title:'Give new passwords',
+      body:'<p style="margin-top:0">Every account still on a first or temporary password gets a <b>new, different password</b>. The old shared password stops working at once, and anyone signed in on those accounts is signed out.</p><p class="hint" style="margin:0">An Excel list (name, employee ID, new password) is downloaded <b>once</b>. SETU does not keep it — store it safely and hand each person their own line. They will be asked to choose their own password at first sign-in.</p>',
+      footer:'<button class="btn" data-x>Cancel</button><button class="btn" id="fp-yes" style="'+GDEL_RED+'">Continue</button>',
+      onOpen:(m,close)=>{ $('#fp-yes',m).onclick=()=>{ close(); setTimeout(()=>confirmPin('give new passwords',async pin=>{
+        const r=await rpc('owner_reset_first_passwords',{p_pin:pin}); const L=(r&&r.list)||[];
+        if(L.length){ const rows=[['Name','Employee ID','Department','Sign in with','New password']].concat(L.map(x=>[x.name,x.employee_id,x.department,x.sign_in_with,x.new_password]));
+          const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(rows),'New passwords'); XLSX.writeFile(wb,'SETU-new-passwords-'+DAY()+'.xlsx'); }
+        K.first=null; K.log=null; render(); toast(L.length?L.length+' account'+(L.length===1?'':'s')+' given a new password. The list is downloaded.':'No account needed a new password.','ok');
+      }),0); }; }}); }
+  if($('#oc-uplgo',v)) $('#oc-uplgo',v).onclick=async()=>{ $('#oc-uplerr',v).textContent=''; try{ await rpc('upload_limit_set',{p_daily:parseInt($('#oc-upl',v).value,10)||0}); await load(['people']); render(); toast('Saved.','ok'); }catch(e){ $('#oc-uplerr',v).textContent=(e.message||'').replace(/^.*?: /,''); } };
   if($('#oc-namego',v)){ $('#oc-namego',v).onclick=async()=>{ const K=ownClean; K.names='busy'; render();
       try{ K.names=await rpc('owner_name_checks'); }catch(e){ K.names=null; render(); const x=$('#oc-nameerr'); if(x) x.textContent=(e&&e.code==='PGRST202')?'Run the latest database file first.':(e.message||'').replace(/^.*?: /,''); return; }
       if(ROUTE.name==='org'&&orgTab==='clean') render(); };
