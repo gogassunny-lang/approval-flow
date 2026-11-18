@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v154';
+const APP_VER='v155';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -6400,7 +6400,11 @@ function flowStepRow(f,s){
   const tagHere=s.status==='pending'&&s.infoRequested&&(flowActiveTag(s)===ME.id||(!infoTargets(s).length&&f.requesterId===ME.id));   // 121: I was asked for more at this step
   if(f.status==='running'&&!f.amendId&&(s.status==='pending'||s.status==='waiting')&&(f.requesterId===ME.id||ME.admin||ME.owner||tagHere))
     detourBtn='<button class="btn ghost sm" data-fdetour="'+s.id+'" style="color:var(--indigo);padding:2px 9px">↪ Add cross-check</button>';
-  const sysBtn=(ownerBtn||assignBtn||detourBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+detourBtn+'</div>':'';
+  // 125: the super admin or an admin can take a cross-check off while it is still waiting or pending
+  let rmDetourBtn='';
+  if((ME.owner||ME.admin)&&s.isDetour&&f.status==='running'&&!f.amendId&&(s.status==='pending'||s.status==='waiting'))
+    rmDetourBtn='<button class="btn ghost sm" data-frmdetour="'+s.id+'" style="color:var(--stop);padding:2px 9px">✕ Remove cross-check</button>';
+  const sysBtn=(ownerBtn||assignBtn||detourBtn||rmDetourBtn)?'<div class="row" style="margin-top:6px;gap:6px;flex-wrap:wrap">'+ownerBtn+assignBtn+detourBtn+rmDetourBtn+'</div>':'';
   // item 9: show clearly WHO the live step is pending with (the tagged person when parked, else the actors)
   let pendingWith='';
   if(s.status==='pending'){
@@ -6570,6 +6574,7 @@ function wireFlowDetail(v){
   $$('[data-frwd]',v).forEach(b=>b.onclick=()=>flowRewind(b.dataset.frwd));
   $$('[data-fassign]',v).forEach(b=>b.onclick=()=>flowAssignActor(b.dataset.fassign));
   $$('[data-fdetour]',v).forEach(b=>b.onclick=()=>flowDetourDialog(b.dataset.fdetour));
+  $$('[data-frmdetour]',v).forEach(b=>b.onclick=()=>flowRemoveDetourDialog(b.dataset.frmdetour));
   // requester's reply panel (answer an "ask for more")
   const reply={files:[]};
   if($('#fr-files',v)) uploader($('#fr-files',v),reply.files,{mode:'support',single:false,label:'Attach the corrected document or anything asked'});
@@ -6848,6 +6853,19 @@ function flowDetourDialog(stepId){
         $('#cd-go',mv).disabled=true;
         try{ const n=await rpc('flow_add_detour',{p_request:f.id,p_after_pos:s.pos,p_users:chosen}); await load(['flows','notif'],[f.id]); cl(); toast((s.status==='pending'&&s.actorKind!=='raiser'&&s.pos>0)?'Cross-check added — it is with '+user(chosen[0]).name+' now.'+(s.infoRequested?' It comes back for the reply after that.':''):'Cross-check added — '+n+' approver'+(n===1?'':'s')+' after '+s.label+'.','ok'); render(); }
         catch(e){ $('#cd-go',mv).disabled=false; $('#cd-err',mv).textContent=(e&&e.message)||'Could not add.'; } }; }});
+}
+// 125: remove a cross-check from a running file (super admin / admin)
+function flowRemoveDetourDialog(stepId){
+  const x=flowFindStep(stepId); if(!x) return; const s=x.s, f=x.f;
+  if(!(ME.owner||ME.admin)) return;
+  modal({title:'Remove this cross-check?',
+    body:'<p style="margin-top:0"><b>'+esc(s.label)+'</b> will be taken off this file.</p>'+
+      '<p class="hint">'+(s.status==='pending'?'The file is with this person now. It will move on to the next step straight away.':'The file has not reached this person yet. Nothing else changes.')+' The removal is written to the trail.</p>'+
+      '<div id="rd-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="rd-go" style="background:var(--stop);border-color:var(--stop)">Remove</button>',
+    onOpen:(mv,cl)=>{ $('#rd-go',mv).onclick=async()=>{ $('#rd-go',mv).disabled=true;
+      try{ await rpc('flow_remove_detour',{p_step:stepId}); await load(['flows','notif'],[f.id]); cl(); toast('Cross-check removed.','ok'); render(); }
+      catch(e){ $('#rd-go',mv).disabled=false; $('#rd-err',mv).textContent=(e&&e.message)||'Could not remove.'; } }; }});
 }
 function flowFindStep(id){ for(const f of DB.flows) for(const s of f.steps) if(s.id===id) return {f,s}; return null; }
 async function flowCall(stepId,kind,remark,files,datetime,data,okMsg){
