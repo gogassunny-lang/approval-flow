@@ -77,10 +77,24 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v153';
+const APP_VER='v154';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
+/* v154: content converted from an attached Word or Excel file is cleaned before it is shown — no scripts, no
+   event handlers, no frames, and links / pictures only to ordinary web or mail addresses (a link like
+   "javascript:…" inside a document would otherwise run as the person who clicks it). */
+function safeHTML(html){
+  const t=document.createElement('template'); t.innerHTML=String(html||'');
+  t.content.querySelectorAll('script,iframe,frame,object,embed,link,meta,base,style,form,input,button,textarea,select,svg,math,audio,video,source').forEach(n=>n.remove());
+  t.content.querySelectorAll('*').forEach(el=>{
+    [...el.attributes].forEach(a=>{ const n=a.name.toLowerCase(), v=String(a.value||'').replace(/[\u0000-\u0020]+/g,'').toLowerCase();
+      if(n.startsWith('on')||n==='style'||n==='srcdoc'||n==='formaction') return el.removeAttribute(a.name);
+      if((n==='href'||n==='xlink:href'||n==='action')&&!/^(https?:|mailto:|tel:|#)/.test(v)) return el.removeAttribute(a.name);
+      if(n==='src'&&!/^(https?:|data:image\/(png|jpe?g|gif|webp);base64,|blob:)/.test(v)) return el.removeAttribute(a.name); });
+    if(el.tagName==='A'){ el.setAttribute('target','_blank'); el.setAttribute('rel','noopener noreferrer'); } });
+  return t.innerHTML;
+}
 async function rpc(fn,args){const {data,error}=await SB.rpc(fn,args||{}); if(error) throw error; if(Date.now()-DRAFT.clickAt<45000) DRAFT.drop=true; return data}
 /* v152 (A1): what a person has typed on a page survives a redraw. Just before the page is redrawn the filled boxes
    (and error lines) are noted; right after, they are put back into the same boxes. After a button press that
@@ -373,7 +387,6 @@ async function gpExpireSweep(){
     const cut=Date.now()-7*864e5, paths=[];
     DB.passes.forEach(g=>{ if(g.requesterId===ME.id&&g.createdAt<cut){ [g.reqSelfie,g.hodSelfie,g.hrSelfie].forEach(p=>{ if(p) paths.push(p) }) } });
     if(paths.length){ try{ await SB.storage.from('documents').remove(withThumbs(paths)) }catch(e){} }
-    await SB.rpc('gp_expire_photos');
   }catch(e){}
 }
 let reloadT=null, renderT=null, hiddenAt=0;
@@ -678,7 +691,7 @@ function grabUntilGap(lines,lineRe,labelRe){
   return out.join(' ').replace(/\s+/g,' ').trim();
 }
 async function readPdf(blob){
-  const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer()}).promise;
+  const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer(),isEvalSupported:false}).promise;
   const page=await pdf.getPage(1), vp=page.getViewport({scale:1}), tc=await page.getTextContent();
   const items=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({str:i.str,x:i.transform[4],y:vp.height-i.transform[5],w:i.width||0}));
   const split=vp.width*0.49;
@@ -763,7 +776,7 @@ async function parseDocument(blob,expect){
 }
 /* read every page's lines (PO/GRN tables can run past page 1) */
 async function readPdfAll(blob){
-  const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer()}).promise;
+  const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer(),isEvalSupported:false}).promise;
   let all=[]; const n=Math.min(pdf.numPages,12);
   for(let p=1;p<=n;p++){ const page=await pdf.getPage(p), vp=page.getViewport({scale:1}), tc=await page.getTextContent();
     const items=tc.items.filter(i=>i.str&&i.str.trim()).map(i=>({str:i.str,x:i.transform[4],y:vp.height-i.transform[5],w:i.width||0}));
@@ -938,7 +951,7 @@ async function openViewer(f){
     const blob=f._blob||await fetchFile(f);
     if($('#vdl',m.el)) $('#vdl',m.el).onclick=()=>{ try{ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=f.name||'file'; document.body.appendChild(a); a.click(); setTimeout(()=>a.remove(),0);}catch(e){fail(e)} };
     if(k==='pdf'){
-      const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer()}).promise; let scale=1.35;
+      const pdf=await pdfjsLib.getDocument({data:await blob.arrayBuffer(),isEvalSupported:false}).promise; let scale=1.35;
       const draw=async()=>{ body.innerHTML='';
         for(let p=1;p<=pdf.numPages;p++){ const pg=await pdf.getPage(p), vp=pg.getViewport({scale});
           const c=document.createElement('canvas'); c.width=vp.width; c.height=vp.height; body.appendChild(c);
@@ -951,7 +964,7 @@ async function openViewer(f){
     } else if(k==='xls'){
       const wb=XLSX.read(await blob.arrayBuffer(),{type:'array'}); body.innerHTML='';
       wb.SheetNames.slice(0,6).forEach(n=>{const d=document.createElement('div');d.className='sheet';
-        d.innerHTML='<h3 style="margin-bottom:10px">'+esc(n)+'</h3>'+XLSX.utils.sheet_to_html(wb.Sheets[n]);body.appendChild(d)});
+        d.innerHTML='<h3 style="margin-bottom:10px">'+esc(n)+'</h3>'+safeHTML(XLSX.utils.sheet_to_html(wb.Sheets[n]));body.appendChild(d)});
       foot.textContent=wb.SheetNames.length+' sheet(s) · viewing only';
     } else if(k==='img'){
       const url=URL.createObjectURL(blob);
@@ -959,7 +972,7 @@ async function openViewer(f){
       foot.textContent=kb(blob.size)+' · viewing only';
     } else if(extOf(f.name)==='docx'&&window.mammoth){
       const r=await mammoth.convertToHtml({arrayBuffer:await blob.arrayBuffer()});
-      body.innerHTML='<div class="sheet" style="max-width:760px;line-height:1.6">'+(r.value||'<i>Empty document.</i>')+'</div>';
+      body.innerHTML='<div class="sheet" style="max-width:760px;line-height:1.6">'+(safeHTML(r.value)||'<i>Empty document.</i>')+'</div>';
       foot.textContent='Word document · viewing only';
     } else body.innerHTML='<div class="sheet"><b>No preview for this file type.</b><div class="hint">'+esc(f.name)+'</div></div>';
   }catch(e){ body.innerHTML='<div class="sheet"><b>Could not open this file.</b><div class="hint">'+esc(e.message||'')+'</div></div>' }
