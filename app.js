@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v156';
+const APP_VER='v157';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -311,6 +311,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
   const FR={};
   const list=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,department:x.department||(x.fields&&x.fields.department)||'ALDS',requesterId:x.requester_id,
     title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,amendId:x.amend_id||null,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
+    held:!!x.held,heldReason:x.held_reason||'',heldBy:x.held_by||null,heldAt:ts(x.held_at),   // 127: put on hold by the raiser
     steps:[],audit:[]});
   const FS={};
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
@@ -6244,10 +6245,11 @@ const flowActiveTag=s=>{ if(!s||!s.infoRequested) return null; const tg=infoTarg
 //   actionable  : it's with me and I can act now (not parked on an ask)
 //   taggedToMe  : I'm the person it's currently parked on (my input needed)
 //   awaitingMine: I asked / own the step but it's parked on someone else right now
-const flowActionableByMe=f=>{const s=flowLive(f); return !!(!f.amendId&&s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
+const flowHeld=f=>!!(f&&f.held&&f.status==='running');   // v157 (127): the raiser put the whole file on hold — nobody has anything to do on it
+const flowActionableByMe=f=>{const s=flowLive(f); return !!(!flowHeld(f)&&!f.amendId&&s&&s.actors.indexOf(ME.id)>-1&&!s.infoRequested)};
 // an ask stays open on its step even when a cross-check was put in front of it (98)
 const flowAskStep=f=>{const s=flowLives(f).find(x=>x.infoRequested); if(s) return s; return f.steps.find(x=>x.status==='waiting'&&x.infoRequested)||null};
-const flowTaggedToMe=f=>{const s=flowAskStep(f); if(!s||!s.infoRequested||s.status!=='pending') return false; const tg=infoTargets(s);   // 121: not while a cross-check is in front of the question
+const flowTaggedToMe=f=>{const s=flowAskStep(f); if(flowHeld(f)||!s||!s.infoRequested||s.status!=='pending') return false; const tg=infoTargets(s);   // 121: not while a cross-check is in front of the question
   return tg.length?(flowActiveTag(s)===ME.id):(f.requesterId===ME.id)};
 const flowAwaitingMyReply=f=>{const s=flowLives(f).find(x=>x.infoRequested); if(!s) return false;
   return s.actors.indexOf(ME.id)>-1 && !flowTaggedToMe(f)};
@@ -6257,7 +6259,7 @@ const flowAwaitingReply=()=>SETU_FLOWS().filter(f=>f.status==='running'&&flowAwa
 const flowMine=()=>SETU_FLOWS().filter(f=>f.requesterId===ME.id);
 const flowStageList=f=>{const order=[],seen={}; f.steps.forEach(s=>{if(!seen[s.stage]){seen[s.stage]=1;order.push(s.stage)}}); return order;};
 const flowWhere=f=>{ if(f.status==='completed') return 'Completed'; const L=flowLives(f); return L.length?L.map(s=>s.stage+' · '+s.label).join('  +  '):'—'; };
-const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed</span>':f.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':'<span class="tag t-prog">In progress</span>';
+const flowStatusTag=f=>f.status==='completed'?'<span class="tag t-ok">Completed</span>':f.status==='cancelled'?'<span class="tag t-bad">Cancelled</span>':flowHeld(f)?'<span class="tag t-hold">On hold</span>':'<span class="tag t-prog">In progress</span>';
 
 let flowWhoAll=false;   // "Pending by person" table: show all people or the top 8
 /* days the live step has been waiting: since the previous step was signed, else since the file was raised */
@@ -6490,7 +6492,10 @@ function viewFlowDetail(id){
   head(flowRemark(f)||f.ref,(flowRemark(f)?f.ref+' · ':'')+'Fixed flow · '+flowHeadLabelF(f)+' · '+f.division+(f.title?' · '+f.title:''));
   let left='<div class="row" style="margin-bottom:12px;flex-wrap:wrap;gap:6px"><button class="btn sm" id="fl-back">← Back</button><span style="margin-left:auto">'+flowStatusTag(f)+'</span>'+
     (ME.gateOnly?'':'<button class="btn sm" id="fl-nudge" title="Ask someone to move this file — they get a notification with your message">👉 Nudge</button>')+
+    (f.status==='running'&&!f.held&&f.requesterId===ME.id&&DB.flowHoldOK!==false?'<button class="btn sm hold" id="fl-hold" title="Pause the whole file, whoever has it now">⏸ Put on hold</button>':'')+
     (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del">Delete request</button>':'')+'</div>';
+  if(flowHeld(f)) left+='<div class="banner hold" id="fl-heldbar"><div style="flex:1;min-width:0"><b>On hold</b> — put on hold by '+esc(user(f.heldBy||f.requesterId).name)+(f.heldAt?' on '+esc(fmtDT(f.heldAt)):'')+'.<div style="margin-top:4px">Reason: '+esc(f.heldReason||'—')+'</div><div class="hint" style="margin-top:4px">Nobody can act on this file until it is resumed. It will go on from the same stage.</div></div>'+
+    (f.requesterId===ME.id||ME.owner?'<button class="btn primary sm" id="fl-resume">▶ Resume</button>':'')+'</div>';
   flowStageList(f).forEach(stage=>{
     const steps=f.steps.filter(s=>s.stage===stage);
     const anyLive=steps.some(s=>s.status==='pending');
@@ -6510,6 +6515,7 @@ function viewFlowDetail(id){
 /* the right-hand options panel for whoever is viewing; with two live steps (payment + goods
    paths) a switcher on top picks which one the panel is about */
 function flowSidePanel(f){
+  if(flowHeld(f)) return '<div class="card pad" id="fl-heldside"><h3>This file is on hold</h3><p class="hint" style="margin-top:6px">'+esc(user(f.heldBy||f.requesterId).name)+' paused it: <b>'+esc(f.heldReason||'')+'</b></p><p class="hint" style="margin-top:8px">'+(f.requesterId===ME.id?'Press Resume when it should go on. It continues from the same stage.':'There is nothing to do on it until it is resumed. You will get a notification.')+'</p></div>';
   const L=flowLives(f);
   if(L.length<2||(f.amendId&&f.status==='running')) return flowSidePanelOne(f);
   const cur=flowLive(f);
@@ -6600,6 +6606,8 @@ function wireFlowDetail(v){
   $$('[data-flpick]',v).forEach(b=>b.onclick=()=>{ flowPick[ROUTE.id]=b.dataset.flpick; render(); });
   if($('#fl-del',v)) $('#fl-del',v).onclick=()=>flowCancelDialog(ROUTE.id);
   if($('#fl-nudge',v)) $('#fl-nudge',v).onclick=()=>nudgeDialog('flow',ROUTE.id);
+  if($('#fl-hold',v)) $('#fl-hold',v).onclick=()=>flowRaiserHoldDialog(ROUTE.id);
+  if($('#fl-resume',v)) $('#fl-resume',v).onclick=async()=>{ const b=$('#fl-resume',v); b.disabled=true; try{ await rpc('flow_raiser_resume',{p_request:ROUTE.id}); await load(['flows','notif'],[ROUTE.id]); toast('Resumed. The file goes on from the same stage.','ok'); render(); paintNav(); }catch(e){ b.disabled=false; fail(e); } };
   wireAmend(v,'flow',ROUTE.id);
   $$('[data-famend]',v).forEach(b=>b.onclick=()=>amendAskDialog('flow',ROUTE.id,b.dataset.famend));
   $$('[data-ffile]',v).forEach(b=>b.onclick=()=>{ const id=b.dataset.ffile;
@@ -6934,6 +6942,19 @@ function flowReject(stepId){
       flowPinThen(()=>flowCall(stepId,'reject',reason,null,null,null,'Sent back for changes.')); }}});
 }
 /* CNG "Hold": pause the step in place (reason + PIN). It does not go back to the raiser. */
+// v157 (127): the raiser pauses the whole file
+function flowRaiserHoldDialog(id){
+  const f=DB.flows.find(x=>x.id===id); if(!f||f.requesterId!==ME.id) return;
+  const live=flowLive(f), act=live?[...new Set(flowLives(f).reduce((a,x)=>a.concat(x.actors),[]))].map(u=>user(u).name).slice(0,4).join(', '):'';
+  modal({title:'Put this file on hold',
+    body:'<p style="margin-top:0">The whole file is paused'+(act?' — it is with <b>'+esc(act)+'</b> now':'')+'. Nobody can approve, reject or ask on it until you resume it, and reminders stop. It then goes on from the same stage.</p>'+
+      '<div><label for="rh-why">Reason for the hold</label><textarea id="rh-why" maxlength="300" placeholder="Why it is being paused"></textarea></div><div id="rh-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+    footer:'<button class="btn" data-x>Cancel</button><button class="btn hold" id="rh-go">Put on hold</button>',
+    onOpen:(mv,cl)=>{ $('#rh-go',mv).onclick=async()=>{ const why=$('#rh-why',mv).value.trim(); if(why.length<3) return $('#rh-err',mv).textContent='Give the reason for the hold.';
+      $('#rh-go',mv).disabled=true;
+      try{ await rpc('flow_raiser_hold',{p_request:id,p_reason:why}); await load(['flows','notif'],[id]); cl(); toast('On hold. Press Resume when it should go on.','ok'); render(); paintNav(); }
+      catch(e){ $('#rh-go',mv).disabled=false; if(e&&e.code==='PGRST202'){ DB.flowHoldOK=false; cl(); toast('Hold is not switched on yet.','bad'); render(); return; } $('#rh-err',mv).textContent=(e&&e.message)||'Could not put it on hold.'; } }; }});
+}
 function flowHoldDialog(stepId){
   const x=flowFindStep(stepId); if(!x) return;
   modal({title:'Put this step on hold',
