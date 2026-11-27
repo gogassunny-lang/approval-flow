@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v157';
+const APP_VER='v158';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -312,6 +312,7 @@ function buildFlows(freq,fsteps,factors,ffiles,faudit){
   const list=freq.map(x=>FR[x.id]={id:x.id,ref:x.ref,head:x.head,division:x.division,department:x.department||(x.fields&&x.fields.department)||'ALDS',requesterId:x.requester_id,
     title:x.title||'',fields:x.fields||{},status:x.status,currentPos:x.current_pos,amendId:x.amend_id||null,createdAt:ts(x.created_at),closedAt:ts(x.closed_at),
     held:!!x.held,heldReason:x.held_reason||'',heldBy:x.held_by||null,heldAt:ts(x.held_at),   // 127: put on hold by the raiser
+    paGate:!!x.pa_gate,paTerms:x.pa_terms||'',paType:x.pa_type||'',paCount:x.pa_count||0,   // 128: Payment Advice type and terms (files raised after 128)
     steps:[],audit:[]});
   const FS={};
   fsteps.forEach(s=>{const f=FR[s.request_id]; if(!f) return;
@@ -6229,6 +6230,15 @@ const flowLive=f=>{ const L=f.steps.filter(s=>s.status==='pending'); if(L.length
   const p=flowPick[f.id]&&L.find(s=>s.id===flowPick[f.id]); if(p) return p;
   return L.find(s=>s.actors.indexOf(ME.id)>-1&&!s.infoRequested)||L.find(s=>s.actors.indexOf(ME.id)>-1)||L.find(s=>s.infoRequested)||L[0]; };
 const FLOW_PATH={pay:'Payment path',goods:'Goods path'};
+// v158 (128): Payment Advice 1 is the path 'pay'; PA 2, 3 … are 'pay2', 'pay3' …
+const flowPaNo=b=>b==='pay'?1:(/^pay\d{1,2}$/.test(b||'')?+b.slice(3):0);
+const flowPathLabel=(b,f)=>{ const k=flowPaNo(b); return k?(f&&f.paCount>1?'Payment Advice '+k+' of '+f.paCount:(k>1?'Payment Advice '+k:FLOW_PATH.pay)):(FLOW_PATH[b]||b||''); };
+const flowPaStarted=f=>f.steps.filter(x=>x.action==='payment'&&x.status==='done'&&(flowPaNo(x.branch)||!x.branch)).length;
+// the goods side of a new-rule file waits for the Payment Advice (always until the first is initiated; on Advance until all are paid)
+const flowGoodsLock=f=>{ if(!f.paGate||f.status!=='running') return ''; const g=f.steps.filter(x=>x.branch==='goods'); if(!g.length||g.some(x=>x.status!=='waiting')) return '';
+  if(!f.steps.some(x=>x.action==='payment')) return '';
+  if(!flowPaStarted(f)) return 'Opens when the first Payment Advice is initiated.';
+  return f.paTerms==='advance'?'Advance payment: locked until '+(f.paCount>1?'all '+f.paCount+' Payment Advices are':'the payment is')+' fully paid.':''; };
 const flowIsMine=f=>{const s=flowLive(f); return !!(s&&s.actors.indexOf(ME.id)>-1)};
 // a flow's first approval group = the division's Indent / Work Order approvers
 // the raiser's HOD = the person the raiser reports to. Only they may escalate past CMD,
@@ -6413,7 +6423,7 @@ function flowStepRow(f,s){
   if(s.dataVal&&s.dataVal.condition) meta+='<div class="hint" style="color:var(--hold)">Condition: '+esc(s.dataVal.condition)+'</div>';
   if(s.datetimeVal) meta+='<div class="hint">Confirmed: '+esc(fmtDT(s.datetimeVal))+'</div>';
   if(s.dataVal&&s.action==='data') meta+='<div class="hint">'+Object.entries(s.dataVal).filter(([k])=>k!=='condition').map(([k,val])=>esc(k)+': '+esc(val)).join(' · ')+'</div>';
-  if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):'')+'</div>';
+  if(s.dataVal&&s.action==='payment') meta+='<div class="hint">'+(s.dataVal.pa_type?esc(s.dataVal.pa_type==='multiple'?'Multiple ('+(s.dataVal.pa_count||'')+')':'Single')+' · '+esc(s.dataVal.pa_terms==='advance'?'Advance':'Credit'):esc((s.dataVal.mode||'').toUpperCase())+(s.dataVal.advices?' · '+s.dataVal.advices.map(a=>a.pct+'%').join(', '):''))+'</div>';
   // (who it's pending with is shown by the highlighted "Pending with" pill below; with
   //  several people tagged, the order chain shows who has it now and who is next)
   if(s.infoRequested){ const tg=infoTargets(s); if(tg.length>1) meta+='<div style="margin-top:6px">'+flowTagChain(s)+'</div>'; }
@@ -6496,13 +6506,20 @@ function viewFlowDetail(id){
     (flowCanDelete(f)?'<button class="btn bad sm" id="fl-del">Delete request</button>':'')+'</div>';
   if(flowHeld(f)) left+='<div class="banner hold" id="fl-heldbar"><div style="flex:1;min-width:0"><b>On hold</b> — put on hold by '+esc(user(f.heldBy||f.requesterId).name)+(f.heldAt?' on '+esc(fmtDT(f.heldAt)):'')+'.<div style="margin-top:4px">Reason: '+esc(f.heldReason||'—')+'</div><div class="hint" style="margin-top:4px">Nobody can act on this file until it is resumed. It will go on from the same stage.</div></div>'+
     (f.requesterId===ME.id||ME.owner?'<button class="btn primary sm" id="fl-resume">▶ Resume</button>':'')+'</div>';
+  if(f.paGate&&f.paTerms){ const started=flowPaStarted(f), tot=f.paCount||1;
+    left+='<div class="card pad" id="fl-pabar" style="margin-bottom:12px;padding:10px 16px"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><b>Payment Advice</b>'+
+      '<span class="tag '+(f.paTerms==='advance'?'t-hold':'t-ok')+'">'+(f.paTerms==='advance'?'Advance':'Credit')+'</span>'+
+      '<span class="tag t-wait">'+(tot>1?'Multiple · '+started+' of '+tot+' initiated':'Single')+'</span>'+
+      ((ME.admin||ME.owner)&&f.status==='running'?'<button class="btn ghost sm" id="fl-pacount" style="margin-left:auto;padding:2px 9px">Correct the number</button>':'')+'</div>'+
+      '<div class="hint" style="margin-top:4px">'+(f.paTerms==='advance'?'SRN / GRN opens after '+(tot>1?'every Payment Advice is':'the payment is')+' fully paid.':'SRN / GRN runs alongside the payment. The file stays open until the payment is cleared.')+
+        (tot>1&&started<tot&&f.status==='running'?' The next one (Payment Advice '+(started+1)+') is open for the purchase team to initiate.':'')+'</div></div>'; }
   flowStageList(f).forEach(stage=>{
     const steps=f.steps.filter(s=>s.stage===stage);
     const anyLive=steps.some(s=>s.status==='pending');
     const anyParked=steps.some(s=>s.status==='pending'&&s.infoRequested);   // with tagged people, not the approver
     const paths=[...new Set(steps.map(s=>s.branch).filter(Boolean))];
     left+='<div class="card" style="margin-bottom:12px'+(anyParked?';border-color:var(--hold)':anyLive?';border-color:var(--indigo)':'')+'"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap"><h3>'+esc(stage)+'</h3>'+
-      paths.map(b=>'<span class="tag '+(b==='pay'?'t-prog':'t-ok')+'" style="font-size:11px">'+esc(FLOW_PATH[b]||b)+'</span>').join('')+'</div>'+
+      paths.map(b=>'<span class="tag '+(flowPaNo(b)?'t-prog':'t-ok')+'" style="font-size:11px">'+esc(flowPathLabel(b,f))+'</span>').join('')+(paths.indexOf('goods')>-1&&flowGoodsLock(f)?'<span class="tag t-hold" style="font-size:11px" data-goodslock>🔒 '+esc(flowGoodsLock(f))+'</span>':'')+'</div>'+
       '<div style="padding:10px 16px">'+steps.map(s=>flowStepRow(f,s)).join('')+'</div></div>';
   });
   if(f.audit.length) left+='<div class="card" style="margin-bottom:12px"><div class="row" style="padding:12px 16px;border-bottom:1px solid var(--line)"><h3>History</h3></div><div style="padding:10px 16px">'+
@@ -6519,8 +6536,8 @@ function flowSidePanel(f){
   const L=flowLives(f);
   if(L.length<2||(f.amendId&&f.status==='running')) return flowSidePanelOne(f);
   const cur=flowLive(f);
-  return '<div class="card pad" style="margin-bottom:10px"><div class="hint">This file is moving on two paths at once — pick one:</div>'+
-    '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">'+L.map(s=>'<button class="btn sm'+(s===cur?' primary':'')+'" data-flpick="'+s.id+'">'+esc(FLOW_PATH[s.branch]||s.stage)+(s.actors.indexOf(ME.id)>-1?' · with you':'')+'</button>').join('')+'</div></div>'+flowSidePanelOne(f);
+  return '<div class="card pad" style="margin-bottom:10px"><div class="hint">This file is moving on '+(L.length>2?'several':'two')+' paths at once — pick one:</div>'+
+    '<div class="row" style="gap:6px;flex-wrap:wrap;margin-top:8px">'+L.map(s=>'<button class="btn sm'+(s===cur?' primary':'')+'" data-flpick="'+s.id+'">'+esc(flowPathLabel(s.branch,f)||s.stage)+(s.actors.indexOf(ME.id)>-1?' · with you':'')+'</button>').join('')+'</div></div>'+flowSidePanelOne(f);
 }
 function flowSidePanelOne(f){
   const am=amendOpen('flow',f.id); if(am&&f.status==='running') return amendPanelHTML(am);
@@ -6607,6 +6624,14 @@ function wireFlowDetail(v){
   if($('#fl-del',v)) $('#fl-del',v).onclick=()=>flowCancelDialog(ROUTE.id);
   if($('#fl-nudge',v)) $('#fl-nudge',v).onclick=()=>nudgeDialog('flow',ROUTE.id);
   if($('#fl-hold',v)) $('#fl-hold',v).onclick=()=>flowRaiserHoldDialog(ROUTE.id);
+  if($('#fl-pacount',v)) $('#fl-pacount',v).onclick=()=>{ const f=DB.flows.find(x=>x.id===ROUTE.id); if(!f) return; const started=flowPaStarted(f);
+    modal({title:'Correct the number of Payment Advices',
+      body:'<p class="hint" style="margin-top:0">Declared: <b>'+(f.paCount||1)+'</b>. Already initiated: <b>'+started+'</b>. The new number cannot be less than what is already initiated. The change is written to the trail.</p><label for="pc-n">Total number of Payment Advices</label><input id="pc-n" type="number" min="'+Math.max(1,started)+'" max="20" value="'+(f.paCount||1)+'"><div id="pc-err" class="hint" style="color:var(--stop);margin-top:8px"></div>',
+      footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="pc-go">Save</button>',
+      onOpen:(mv,cl)=>{ $('#pc-go',mv).onclick=async()=>{ const n=parseInt($('#pc-n',mv).value,10); if(!(n>=1&&n<=20)) return $('#pc-err',mv).textContent='Enter a number from 1 to 20.';
+        $('#pc-go',mv).disabled=true;
+        try{ await rpc('flow_pa_set_count',{p_request:f.id,p_count:n}); await load(['flows','notif'],[f.id]); cl(); toast('Number of Payment Advices is now '+n+'.','ok'); render(); }
+        catch(e){ $('#pc-go',mv).disabled=false; $('#pc-err',mv).textContent=(e&&e.message)||'Could not change it.'; } }; }}); };
   if($('#fl-resume',v)) $('#fl-resume',v).onclick=async()=>{ const b=$('#fl-resume',v); b.disabled=true; try{ await rpc('flow_raiser_resume',{p_request:ROUTE.id}); await load(['flows','notif'],[ROUTE.id]); toast('Resumed. The file goes on from the same stage.','ok'); render(); paintNav(); }catch(e){ b.disabled=false; fail(e); } };
   wireAmend(v,'flow',ROUTE.id);
   $$('[data-famend]',v).forEach(b=>b.onclick=()=>amendAskDialog('flow',ROUTE.id,b.dataset.famend));
@@ -6770,7 +6795,7 @@ function flowSysApprove(stepId){
   modal({title:'System-approve as super admin',
     body:'<p style="margin-top:0">Approve every step up to and including <b>'+esc(s.label)+'</b> in one go.</p>'+
       '<div class="banner" style="margin-top:8px"><div class="hint"><b>'+span+' step'+(span===1?'':'s')+'</b> will be marked <b style="color:var(--indigo)">System Approved — by super admin</b> and locked. '+
-      (next?('It then sits live with <b>'+esc(next.actors.map(id=>user(id).name).join(', ')||'—')+'</b> at “'+esc(next.label)+'”, whose action buttons go active.'):otherOpen?'This finishes the <b>'+esc(FLOW_PATH[s.branch]||'')+'</b>; the other path carries on.':'This <b>completes</b> the request.')+'</div></div>'+
+      (next?('It then sits live with <b>'+esc(next.actors.map(id=>user(id).name).join(', ')||'—')+'</b> at “'+esc(next.label)+'”, whose action buttons go active.'):otherOpen?'This finishes the <b>'+esc(flowPathLabel(s.branch,x&&x.f)||'')+'</b>; the other path carries on.':'This <b>completes</b> the request.')+'</div></div>'+
       '<p class="hint" style="margin-top:8px">The full hierarchy stays visible to everyone. Signed with your PIN.</p>',
     footer:'<button class="btn" data-x>Cancel</button><button class="btn primary" id="fsa-go">System-approve</button>',
     onOpen:(mv,cl)=>{ $('#fsa-go',mv).onclick=()=>{ cl(); flowPinThen(()=>flowSysCall(stepId)); }; }});
@@ -7032,7 +7057,16 @@ function flowAct(stepId,kind){
       '<div id="po-note" class="hint" style="margin-top:6px"></div>'+
       '<datalist id="cng-po-items-dl"></datalist></div>';
   }
-  if(s.action==='payment'){
+  const paNew=!!(f&&f.paGate&&s.action==='payment'), paNo=flowPaNo(s.branch)||1;      // v158 (128): type and terms instead of full / partial
+  if(paNew){
+    body+=(paNo>1
+      ?'<div class="banner live" style="margin:8px 0"><div><b>Payment Advice '+paNo+' of '+(f.paCount||paNo)+'</b><div class="hint">'+(f.paTerms==='advance'?'Advance':'Credit')+' · it goes through its own approvals. The one after it opens when you submit this.</div></div></div>'
+      :'<div class="grid g2" style="gap:12px;margin:8px 0"><div><label for="pa-type">Payment Advice type</label><select id="pa-type"><option value="">— choose —</option><option value="single">Single</option><option value="multiple">Multiple</option></select></div>'+
+        '<div><label for="pa-terms">Payment terms</label><select id="pa-terms"><option value="">— choose —</option><option value="advance">Advance</option><option value="credit">Credit</option></select></div></div>'+
+        '<div id="pa-countbox" class="hide" style="margin-bottom:8px"><label for="pa-count">How many Payment Advices in total?</label><input id="pa-count" type="number" min="2" max="20" placeholder="2 to 20"><div class="hint">Exactly this many must be submitted. Each one has its own approvals, and they can run at the same time. This is the first.</div></div>'+
+        '<div class="hint" id="pa-help" style="margin-bottom:8px"></div>')+
+      '<div style="margin-top:10px"><label>Advice document</label><div id="fa-files"></div></div>';
+  } else if(s.action==='payment'){
     body+='<div class="seg" id="fp-mode" style="margin:8px 0"><button data-m="full" class="on">Full advice</button><button data-m="partial">Partial advice</button></div>'+
       '<div id="fp-partial" class="hide"><div class="hint">Add up to 4 advices, each with its percentage and PDF.</div><div id="fp-adv"></div></div>'+
       '<div style="margin-top:10px"><label>Advice document</label><div id="fa-files"></div></div>';
@@ -7065,6 +7099,9 @@ function flowAct(stepId,kind){
       if($('#fp-adv',mv)){ const paint=()=>{ $('#fp-adv',mv).innerHTML=advices.map((a,i)=>'<div class="row" style="gap:8px;margin-top:6px;align-items:center"><input type="number" min="0" max="100" placeholder="%" data-pct="'+i+'" value="'+esc(a.pct)+'" style="width:80px"><div style="flex:1" id="adv-f-'+i+'"></div></div>').join('');
         advices.forEach((a,i)=>{ $('[data-pct="'+i+'"]',mv).oninput=e=>a.pct=e.target.value; a._list=a._list||[]; uploader($('#adv-f-'+i,mv),a._list,{mode:'support',single:true,label:'Advice '+(i+1)+' PDF'}); }); };
         paint(); }
+      if($('#pa-type',mv)){ const upd=()=>{ $('#pa-countbox',mv).classList.toggle('hide',$('#pa-type',mv).value!=='multiple'); const t=$('#pa-terms',mv).value;
+          $('#pa-help',mv).textContent=t==='advance'?'Advance: SRN / GRN stays locked until the whole payment is completed.':t==='credit'?'Credit: SRN / GRN opens as soon as you submit this. The file stays open until the payment is cleared.':''; };
+        $('#pa-type',mv).onchange=upd; $('#pa-terms',mv).onchange=upd; }
       $$('#fp-mode button',mv).forEach(b=>b.onclick=()=>{payMode=b.dataset.m; $$('#fp-mode button',mv).forEach(x=>x.classList.toggle('on',x.dataset.m===payMode)); $('#fp-partial',mv).classList.toggle('hide',payMode!=='partial'); });
       if(cngGrn){
         const dl=$('#cng-items-dl',mv), fillDl=()=>{ if(dl&&!dl.children.length) dl.innerHTML=(DB.garudaItems||[]).map(i=>'<option value="'+esc(i.code)+'">'+esc(i.name)+'</option>').join(''); };
@@ -7146,7 +7183,13 @@ function flowAct(stepId,kind){
         if(s.needsFile && !primary.length && s.action!=='payment') return err.textContent='Upload the document first.';
         if(s.needsDatetime){ dt=$('#fa-dt',mv).value; if(!dt) return err.textContent='Select the date & time.'; }
         if(s.action==='data'){ let miss=false; s.fieldsSpec.forEach((lbl,i)=>{const val=$('[data-df="'+i+'"]',mv).value.trim(); if(!val)miss=true; dataFields[lbl]=val;}); if(miss) return err.textContent='Fill all the fields.'; data=dataFields; }
-        if(s.action==='payment'){ data={mode:payMode};
+        if(paNew){ data={};
+          if(paNo===1){ const ty=$('#pa-type',mv).value, tm=$('#pa-terms',mv).value, n=parseInt($('#pa-count',mv).value,10);
+            if(!ty) return err.textContent='Choose the Payment Advice type: Single or Multiple.'; if(!tm) return err.textContent='Choose the payment terms: Advance or Credit.';
+            if(ty==='multiple'&&!(n>=2&&n<=20)) return err.textContent='Enter how many Payment Advices there will be in total (2 to 20).';
+            data={pa_type:ty,pa_terms:tm}; if(ty==='multiple') data.pa_count=n; }
+          if(!primary.length) return err.textContent='Upload the advice document.';
+        } else if(s.action==='payment'){ data={mode:payMode};
           if(payMode==='partial'){ const adv=[]; advices.forEach((a,i)=>{ if(a.pct&&a._list&&a._list.length){ adv.push({pct:Number(a.pct),name:a._list[0].name,path:a._list[0].path}); files=files.concat(filesPayload(a._list)); } });
             if(!adv.length) return err.textContent='Add at least one advice with a % and PDF.'; data.advices=adv; }
           else if(!primary.length) return err.textContent='Upload the advice document.';
