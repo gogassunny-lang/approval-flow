@@ -77,7 +77,7 @@ function modal({title,body,footer,cls,onOpen,sticky}){
 }
 /* every failed call surfaces its reason; the database writes them to be read */
 // v136: the version on screen (sidebar footer) — bump with SHELL in sw.js on every release
-const APP_VER='v160';
+const APP_VER='v159';
 const fail=e=>{const m=(e&&(e.message||e.error_description||e.hint))||'Something went wrong.'; let t=m.replace(/^.*?: /,'');
   if(t.replace(/["'\s]/g,'').length<4) t=m;   // a stripped message too short to mean anything (e.g. "c") → show it whole
   toast(t,'bad');console.error(e)};
@@ -4153,40 +4153,16 @@ function wireOwnChats(v){
 }
 /* ---- v152 (A5): tell a person when a newer SETU has been published (the app can stay open for days on a phone) ---- */
 let verAt=0, verShown=false;
-// v160: when a newer version is on the server, SETU stops and asks for one tap on Update, so nobody keeps working on old screens.
-//   Checked when the app opens, whenever it comes back to the front, and every 5 minutes. Never in the middle of typing or recording.
-async function verCheck(force){
-  if(verShown||!ME||document.visibilityState!=='visible'||(force!==true&&Date.now()-verAt<5*60*1000)) return;
-  if(force!==true&&typeof typingInView==='function'&&typingInView()) return;
-  verAt=Date.now();
+async function verCheck(){
+  if(verShown||!ME||document.visibilityState!=='visible'||Date.now()-verAt<20*60*1000) return; verAt=Date.now();
   try{ const r=await fetch('./sw.js?v='+Date.now(),{cache:'no-store'}); if(!r.ok) return;
-    const m=(await r.text()).match(/setu-shell-v(\d+)/), cur=+APP_VER.slice(1); if(!m) return; const want=+m[1];
-    if(want<=cur){ try{ sessionStorage.removeItem('setu-ver-try'); }catch(_){} return; }
-    let tried=null; try{ tried=JSON.parse(sessionStorage.getItem('setu-ver-try')||'null'); }catch(_){}
-    const stuck=!!(tried&&tried.v===want&&Date.now()-tried.at<10*60*1000);     // Update was just pressed for this version and the old files still came
-    const doUpdate=async()=>{ if(REC.on) return toast('Stop the recording first, then update.','');
-      try{ sessionStorage.setItem('setu-ver-try',JSON.stringify({v:want,at:Date.now()})); }catch(_){}
-      try{ if(window.caches){ const ks=await caches.keys(); await Promise.all(ks.map(k=>caches.delete(k))); } }catch(_){}
-      try{ if(navigator.serviceWorker){ const reg=await navigator.serviceWorker.getRegistration(); if(reg) await reg.update(); } }catch(_){}
-      location.reload(); };
-    verShown=true;
-    if(REC.on){ const b=document.createElement('div'); b.id='ver-bar';
-      b.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:97;background:var(--ink);color:#fff;border-radius:999px;padding:8px 10px 8px 16px;display:flex;gap:10px;align-items:center;font-size:13.5px;box-shadow:0 8px 24px -8px rgba(0,0,0,.5);white-space:nowrap';
-      b.innerHTML='<span>A new version of SETU is ready</span><button class="btn sm primary" id="ver-go">Update</button>'; document.body.appendChild(b); $('#ver-go',b).onclick=doUpdate; return; }
-    const g=document.createElement('div'); g.id='ver-gate';
-    g.style.cssText='position:fixed;inset:0;z-index:9999;background:var(--surface);display:flex;align-items:center;justify-content:center;padding:24px';
-    g.innerHTML='<div style="max-width:380px;text-align:center"><div style="font-size:26px;font-weight:800;letter-spacing:.06em;color:var(--indigo)">SETU</div>'+
-      '<h2 style="margin:18px 0 6px">SETU has been updated</h2><p class="hint" style="margin:0 0 18px">Tap Update to get the latest version (v'+want+'). It takes a few seconds. You are on '+esc(APP_VER)+'.</p>'+
-      (stuck?'<p class="hint" id="ver-stuck" style="margin:0 0 14px;color:var(--hold)">The update has not reached this device yet. Try again in a few minutes.</p>':'')+
-      '<button class="btn primary" id="ver-go" style="width:100%">Update</button>'+
-      (stuck?'<button class="btn ghost" id="ver-later" style="width:100%;margin-top:8px">Continue for now</button>':'')+'</div>';
-    document.body.appendChild(g);
-    $('#ver-go',g).onclick=doUpdate;
-    if($('#ver-later',g)) $('#ver-later',g).onclick=()=>{ g.remove(); verShown=false; verAt=Date.now(); };
-  }catch(_){}
+    const m=(await r.text()).match(/setu-shell-v(\d+)/); if(!m||+m[1]<=+APP_VER.slice(1)) return;
+    verShown=true; const b=document.createElement('div'); b.id='ver-bar';
+    b.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:97;background:var(--ink);color:#fff;border-radius:999px;padding:8px 10px 8px 16px;display:flex;gap:10px;align-items:center;font-size:13.5px;box-shadow:0 8px 24px -8px rgba(0,0,0,.5);white-space:nowrap';
+    b.innerHTML='<span>A new version of SETU is ready</span><button class="btn sm primary" id="ver-go">Update</button>'; document.body.appendChild(b);
+    $('#ver-go',b).onclick=()=>{ if(REC.on) return toast('Stop the recording first, then update.',''); location.reload(); }; }catch(_){}
 }
-document.addEventListener('visibilitychange',()=>verCheck(true)); setInterval(verCheck,5*60*1000);
-{ const vt=setInterval(()=>{ if(typeof ME!=='undefined'&&ME&&ME.id){ clearInterval(vt); verCheck(true); } },3000); }   // once, as soon as the person is signed in
+document.addEventListener('visibilitychange',verCheck); setInterval(verCheck,30*60*1000);
 /* ---- Org & profiles → Clean up (owner) ---- */
 function viewOwnClean(){
   const K=ownClean, reqs=(DB.profReqs||[]);
